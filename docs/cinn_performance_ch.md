@@ -4,8 +4,9 @@
 
 ## 结论
 
-在本次测试负载下，65 个具备 CINN 路径的注册权重均完成 eager 和 CINN 测试。
-全部权重的 warm 加速比中位数为 1.11x，范围为 0.51x 至 4.36x。
+在本次测试负载下，测量时具备 CINN 路径的 65 个注册权重均完成 eager 和 CINN 测试。
+OMatG 于本次测量之后注册，其行待维护者重跑本矩阵后补入。被测量权重的 warm
+加速比中位数为 1.11x，范围为 0.51x 至 4.36x。
 
 - 全部注册权重均加速的模型系列及其中位数：SphereNet MD17 3.24x、MatterSim
   2.85x、SFIN 2.23x、CHGNet 2.07x、DimeNet++ 1.87x、SphereNet QM9 1.47x、

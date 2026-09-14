@@ -50,6 +50,7 @@ from ppmat.datasets.msd_nmr_dataset import MSDnmrDataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrinfos
 from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
 from ppmat.datasets.oc20_s2ef_dataset import OC20S2EFDataset  # noqa
+from ppmat.datasets.omatg_dataset import OMATGStructureDataset
 from ppmat.datasets.omol25_dataset import OMol25Dataset
 from ppmat.datasets.qm9_dataset import QM9Dataset  # noqa
 from ppmat.datasets.sfin_dataset import SFINDataset
@@ -79,6 +80,7 @@ __all__ = [
     "SFINDataset",
     "OMol25Dataset",
     "MD17Dataset",
+    "OMATGStructureDataset",
 ]
 
 INFO_CLASS_REGISTRY: Dict[str, type] = {

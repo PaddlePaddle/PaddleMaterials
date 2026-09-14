@@ -1,0 +1,188 @@
+Global:
+  do_train: True
+  do_eval: True
+  do_test: False
+
+Trainer:
+  max_epochs: 2000
+  seed: 42
+  output_dir: ./output/omatg_mp20_csp
+  save_freq: 100
+  log_freq: 10
+  start_eval_epoch: 1
+  eval_freq: 1
+  pretrained_model_path: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: 'O1'
+  eval_with_no_grad: True
+  gradient_accumulation_steps: 1
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: "loss"
+  greater_is_better: False
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'step'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: OMATGCSPNetFull
+  __init_params__:
+    hidden_dim: 512
+    num_layers: 6
+    max_atoms: 100
+    act_fn: silu
+    dis_emb: sin
+    num_freqs: 128
+    edge_style: fc
+    cutoff: 7.0
+    max_neighbors: 20
+    ln: True
+    ip: True
+    smooth: False
+    pred_type: False
+    pred_scalar: False
+    time_embed_dim: 256
+    use_si: True
+    si_scheduler_cfg:
+      # SI hyper-parameters from the official OMatG csp_linear_ode_mp_20.yaml.
+      # Top-level keys are data fields (species / pos / cell) plus the
+      # metadata entries 'integration_time_steps' (required) and
+      # 'relative_si_costs' (optional). All other top-level keys are
+      # rejected by build_si_from_cfg to prevent silent typos.
+      species:
+        __class_name__: SingleStochasticInterpolantIdentity
+      pos:
+        __class_name__: SingleStochasticInterpolant
+        __init_params__:
+          interpolant:
+            __class_name__: PeriodicLinearInterpolant
+          gamma: null
+          epsilon: null
+          differential_equation_type: ODE
+          integrator_kwargs: null
+          correct_center_of_mass_motion: True
+          velocity_annealing_factor: 10.182659004291072
+      cell:
+        __class_name__: SingleStochasticInterpolant
+        __init_params__:
+          interpolant:
+            __class_name__: LinearInterpolant
+          gamma: null
+          epsilon: null
+          differential_equation_type: ODE
+          integrator_kwargs: null
+          correct_center_of_mass_motion: False
+          velocity_annealing_factor: 1.824475401606087
+      integration_time_steps: 210
+      relative_si_costs:
+        species_loss: 0.0
+        pos_loss_b: 0.9994149341846618
+        cell_loss_b: 0.0005850658153382233
+    sampler_cfg:
+      dataset_name: mp_20
+      mirror_species: True
+      mask_species: False
+    # Official OMatG csp config keeps the base positions unpermuted.
+    use_min_perm_dist: False
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    weight_decay: 0.0
+    lr:
+      # Official OMatG csp_linear_ode_mp_20.yaml learning rate.
+      __class_name__: Cosine
+      __init_params__:
+        learning_rate: 0.0006689636445843722
+        by_epoch: True
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: OMATGStructureDataset
+      __init_params__:
+        file_path: "./data/mp_20/train.lmdb"
+        lazy_storage: True
+        convert_to_fractional: True
+        niggli_reduce: False
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: False
+        batch_size: 1024
+  val:
+    dataset:
+      __class_name__: OMATGStructureDataset
+      __init_params__:
+        file_path: "./data/mp_20/val.lmdb"
+        lazy_storage: True
+        convert_to_fractional: True
+        niggli_reduce: False
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 1024
+  test:
+    dataset:
+      __class_name__: OMATGStructureDataset
+      __init_params__:
+        file_path: "./data/mp_20/test.lmdb"
+        lazy_storage: True
+        convert_to_fractional: True
+        niggli_reduce: False
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: DistributedBatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 1024
+
+Sample:
+  data:
+    dataset:
+      __class_name__: NumAtomsCrystalDataset
+      __init_params__:
+        total_num: 10
+        prop_names: []
+        prop_values: []
+    loader:
+      num_workers: 0
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 10
+
+  build_structure_cfg:
+    format: array
+    niggli: False
+
+  model_sample_params:
+    num_inference_steps: 100
+
+  metrics:
+    __class_name__: OMatGMetric
+    __init_params__:
+      metric_type: match
+      gt_file_path: "./data/mp_20/test.csv"

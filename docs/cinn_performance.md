@@ -4,9 +4,11 @@
 
 ## Conclusion
 
-Under the tested workloads, all 65 registered weights with a CINN path
-completed in eager and CINN modes. The median warm speedup across all weights
-was 1.11x, ranging from 0.51x to 4.36x.
+Under the tested workloads, all 65 registered weights with a CINN path at the
+time of the measurement completed in eager and CINN modes. OMatG was registered
+afterwards, so its rows are pending a maintainer re-run of this matrix. The
+median warm speedup across the measured weights was 1.11x, ranging from 0.51x
+to 4.36x.
 
 - Families where every registered weight was faster, with median speedup:
   SphereNet MD17 3.24x, MatterSim 2.85x, SFIN 2.23x, CHGNet 2.07x, DimeNet++
