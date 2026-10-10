@@ -21,6 +21,7 @@ from typing import Optional
 
 from omegaconf import OmegaConf
 
+from ppmat.models.chemeleon.chemeleon import Chemeleon
 from ppmat.models.chgnet.chgnet import CHGNet
 from ppmat.models.chgnet.chgnet_graph_converter import CHGNetGraphConverter
 from ppmat.models.comformer.comformer import iComformer
@@ -75,6 +76,7 @@ __all__ = [
     "InfGCN",
     "SFIN",
     "SphereNet",
+    "Chemeleon",
 ]
 
 # Warning:

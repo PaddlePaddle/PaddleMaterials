@@ -1,0 +1,172 @@
+Global:
+  # Whether to train, evaluate or test
+  do_train: True
+  do_eval: False
+  do_test: False
+  # Number of training timesteps for the diffusion schedulers
+  num_train_timesteps: 1000
+
+Trainer:
+  # Max epochs to train
+  max_epochs: 1000
+  # Random seed
+  seed: 0
+  # Save path for checkpoints and logs
+  output_dir: ./output/chemeleon_mp40
+  # Save frequency [epoch], for example, save_freq=10 means save checkpoints every 10 epochs
+  save_freq: 100 # set 0 to disable saving during training
+  # Logging frequency [step], for example, log_freq=10 means log every 10 steps
+  log_freq: 10 # log frequency [step]
+
+  # Start evaluation epoch, for example, start_eval_epoch=10 means start evaluation from epoch 10
+  start_eval_epoch: 1
+  # Evaluation frequency [epoch], for example, eval_freq=1 means evaluate every 1 epoch
+  eval_freq: 1 # set 0 to disable evaluation during training
+  # Pretrained model path, if null, no pretrained model will be loaded
+  pretrained_model_path: null # set your pretrained model path here
+  # Resume from checkpoint path, useful for resuming training
+  resume_from_checkpoint: null
+  # whether use automatic mixed precision
+  use_amp: False
+  # automatic mixed precision level
+  amp_level: 'O1'
+  # whether run a model on no_grad mode during evaluation, useful for saving memory
+  # If the model contains higher-order derivatives in the forward, it should be set to
+  # False
+  eval_with_no_grad: True
+  # gradient accumulation steps, for example, gradient_accumulation_steps=2 means
+  # gradient accumulation every 2 forward steps
+  gradient_accumulation_steps: 1
+
+  # best metric indicator, you can choose from "train_loss", "eval_loss", "train_metric", "eval_metric"
+  best_metric_indicator: 'eval_loss' # "train_loss", "eval_loss", "train_metric", "eval_metric"
+  # The name of the best metric, since you may have multiple metrics, such as "mae", "rmse", "mape"
+  name_for_best_metric: "loss"
+  # The metric whether is better when it is greater
+  greater_is_better: False
+
+  # compute metric during training or evaluation
+  compute_metric_during_train: False # True: the metric will be calculated on train dataset
+  metric_strategy_during_eval: 'step' # step or epoch, compute metric after step or epoch
+
+  # whether use visualdl, wandb, tensorboard to log
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: Chemeleon
+  __init_params__:
+    _config:
+      # decoder
+      hidden_dim: 512
+      time_dim: 128
+      text_dim: 512
+      max_atoms: 104 # 103 elements + 1 dummy atom
+      num_layers: 6
+      act_fn: silu
+      dis_emb: sin
+      num_freqs: 128
+      edge_style: fc
+      max_neighbors: 20
+      cutoff: 6.0
+      ln: true
+      ip: true
+      smooth: false
+      pred_atom_types: true
+      # diffusion
+      text_guide: true
+      cond_drop_prob: 0.2 # conditional drop probability
+      beta_schedule: cosine # "cosine", "linear", "quadratic", "sigmoid"
+      timesteps: ${Global.num_train_timesteps}
+      d3pm_hybrid_coeff: 1.0 # hybrid coefficient for D3PM
+      # loss weights for the three diffusion channels
+      cost_atom_types: 1.0
+      cost_lattice: 1.0
+      cost_coords: 1.0
+    # bundled text front-end (WordPiece tokenizer + MinimalBert + wrapper)
+    text_encoder_cfg:
+      text_embed_dim: 768 # embedding dimension of the text encoder
+      max_text_len: 256 # max length of text guide
+      text_dim: 512
+      trainable_text_encoder: false # freeze the transformer backbone
+
+Optimizer:
+  # gradient clipping by global norm
+  clip_norm_global: 0.5
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr:
+      __class_name__: ReduceOnPlateau
+      __init_params__:
+        learning_rate: 0.001
+        factor: 0.8
+        by_epoch: True
+        patience: 200
+        min_lr: 0.000001
+        indicator: "train_loss"
+        indicator_name: 'loss'
+    weight_decay: 0.0
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MP40Dataset
+      __init_params__:
+        data_dir: "./data/mp-40/"
+        split: train
+        text_targets: ["composition"] # csv columns joined into the text condition
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: False
+        batch_size: 128 # for 1 gpu, total batch size = 128 * 1 gpus = 128
+  val:
+    dataset:
+      __class_name__: MP40Dataset
+      __init_params__:
+        data_dir: "./data/mp-40/"
+        split: val
+        text_targets: ["composition"]
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 128
+  test:
+    dataset:
+      __class_name__: MP40Dataset
+      __init_params__:
+        data_dir: "./data/mp-40/"
+        split: test
+        text_targets: ["composition"]
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: DistributedBatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 128
+
+# Sampling entry: structure_generation/sample.py --mode by_condition with
+# --condition text=<composition string>
+Sample:
+  build_structure_cfg:
+    format: ase_atoms
+    niggli: False
+  model_sample_params:
+    num_inference_steps: 1000
+    cond_scale: 2.0 # scale for conditional sampling
+    step_lr: 1.0e-5 # step size of the Langevin corrector
