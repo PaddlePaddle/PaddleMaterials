@@ -1,0 +1,150 @@
+Global:
+  # Whether to train, evaluate or test
+  do_train: True
+  do_eval: False
+  do_test: False
+  # Number of training timesteps for diffusion scheduler
+  num_train_timesteps: 1000
+  # Time embedding dimension, shared by the decoder latent and the model
+  time_dim: 256
+
+Trainer:
+  # Max epochs to train
+  max_epochs: 4000
+  # Random seed
+  seed: 42
+  # Save path for checkpoints and logs
+  output_dir: ./output/xrd2mof_cgmof50
+  # Save frequency [epoch], for example, save_freq=10 means save checkpoints every 10 epochs
+  save_freq: 100 # set 0 to disable saving during training
+  # Logging frequency [step], for example, log_freq=10 means log every 10 steps
+  log_freq: 10 # log frequency [step]
+
+  # Start evaluation epoch, for example, start_eval_epoch=10 means start evaluation from epoch 10
+  start_eval_epoch: 1
+  # Evaluation frequency [epoch], for example, eval_freq=1 means evaluate every 1 epoch
+  eval_freq: 1 # set 0 to disable evaluation during training
+  # Pretrained model path, if null, no pretrained model will be loaded
+  pretrained_model_path: null # set your pretrained model path here
+  # Resume from checkpoint path, useful for resuming training
+  resume_from_checkpoint: null
+  # whether use automatic mixed precision
+  use_amp: False
+  # automatic mixed precision level
+  amp_level: 'O1'
+  # whether run a model on no_grad mode during evaluation, useful for saving memory
+  # If the model contains higher-order derivatives in the forward, it should be set to
+  # False
+  eval_with_no_grad: True
+  # gradient accumulation steps, for example, gradient_accumulation_steps=2 means
+  # gradient accumulation every 2 forward steps
+  # Note:
+  # one complete step  = gradient_accumulation_steps * forward steps + backward steps
+  gradient_accumulation_steps: 1
+
+  # best metric indicator, you can choose from "train_loss", "eval_loss", "train_metric", "eval_metric"
+  best_metric_indicator: 'eval_loss' # "train_loss", "eval_loss", "train_metric", "eval_metric"
+  # The name of the best metric, since you may have multiple metrics, such as "mae", "rmse", "mape"
+  name_for_best_metric: "loss"
+  # The metric whether is better when it is greater
+  greater_is_better: False
+
+  # compute metric during training or evaluation
+  compute_metric_during_train: False # True: the metric will be calculated on train dataset
+  metric_strategy_during_eval: 'step' # step or epoch, compute metric after step or epoch, if set to 'step', the metric will be calculated after every step, else after epoch
+
+  # whether use visualdl, wandb, tensorboard to log
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: Xrd2Mof
+  __init_params__:
+    decoder_cfg:
+      hidden_dim: 512
+      feature_dim: 256
+      latent_dim: ${Global.time_dim}
+      num_layers: 3
+      num_atom_types: 2
+      act_fn: silu
+      dis_emb: sin
+      num_freqs: 128
+      edge_style: fc
+      ln: True
+      ip: True
+    lattice_noise_scheduler_cfg:
+      __class_name__: DDPMScheduler
+      __init_params__:
+        beta_schedule: 'squaredcos_cap_v2'
+        num_train_timesteps: ${Global.num_train_timesteps}
+        clip_sample: False
+    coord_noise_scheduler_cfg:
+      __class_name__: ScoreSdeVeSchedulerWrapped
+      __init_params__:
+        num_train_timesteps: ${Global.num_train_timesteps}
+        sigma_min: 0.005
+        sigma_max: 0.5
+        snr: 1e-5
+    num_train_timesteps: ${Global.num_train_timesteps}
+    time_dim: ${Global.time_dim}
+    lattice_loss_weight: 0.1
+    coord_loss_weight: 1.0
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr:
+      __class_name__: ReduceOnPlateau
+      __init_params__:
+        learning_rate: 0.001
+        factor: 0.6
+        by_epoch: True
+        patience: 30
+        min_lr: 0.0001
+        indicator: "train_loss"
+        indicator_name: 'loss'
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: Xrd2MofDataset
+      __init_params__:
+        path: "./data/xrd2mof_cgmof50/train.npz"
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: False
+        batch_size: 4 # for 1 gpu, total batch size = 4 * 1 gpus = 4
+  val:
+    dataset:
+      __class_name__: Xrd2MofDataset
+      __init_params__:
+        path: "./data/xrd2mof_cgmof50/val.npz"
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 4
+
+Sample:
+  data:
+    dataset:
+      __class_name__: Xrd2MofTestDataset
+      __init_params__:
+        path: "./data/xrd2mof_cgmof50/test.npz"
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 16
+  model_sample_params:
+    num_inference_steps: 1000

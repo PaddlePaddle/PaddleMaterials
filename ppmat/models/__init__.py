@@ -43,6 +43,8 @@ from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
 from ppmat.models.megnet.megnet import MEGNetPlus
 from ppmat.models.sfin.sfin import SFIN
 from ppmat.models.spherenet.spherenet import SphereNet
+from ppmat.models.xrd2mof.feature_extractor import Xrd2MofFeatureExtractor
+from ppmat.models.xrd2mof.xrd2mof import Xrd2Mof
 from ppmat.utils import download
 from ppmat.utils import logger
 from ppmat.utils import save_load
@@ -73,6 +75,8 @@ __all__ = [
     "InfGCN",
     "SFIN",
     "SphereNet",
+    "Xrd2Mof",
+    "Xrd2MofFeatureExtractor",
 ]
 
 # Warning:
@@ -104,6 +108,7 @@ MODEL_REGISTRY = {
     "megnet_jarvis_dft_3d_e_form": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/megnet/megnet_jarvis_dft_3d_e_form.zip",
     "megnet_jarvis_alex_pbe_2d_all_e_form": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/megnet/megnet_jarvis_alex_pbe_2d_all_e_form.zip",
     "diffcsp_mp20": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/diffcsp/diffcsp_mp20.zip",
+    "xrd2mof_cgmof50": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/spectrum_elucidation/xrd2mof/xrd2mof_cgmof50.zip",
     "mattergen_mp20": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_mp20.zip",
     "mattergen_mp20_chemical_system": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_mp20_chemical_system.zip",
     "mattergen_mp20_dft_band_gap": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_mp20_dft_band_gap.zip",
