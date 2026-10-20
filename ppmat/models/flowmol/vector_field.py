@@ -492,7 +492,7 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         prev_dst_dict: dict = None,
     ) -> dict:
         """Predict the endpoint of the trajectory given the state at time t."""
-        return self._runtime_denoise_step(
+        return self._denoise_step(
             state,
             t,
             node_batch_idx,
@@ -515,8 +515,7 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
             return bool((paddle.rand([1]) > self.scprop).item())
         return bool((t == 0).all().item())
 
-    @runtime_boundary("denoise_step")
-    def _runtime_denoise_step(
+    def _denoise_step(
         self,
         state: dict,
         t: paddle.Tensor,
@@ -569,7 +568,7 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
 
         if self_condition_now:
             with paddle.no_grad():
-                prev_dst_dict = self.denoise_graph(
+                prev_dst_dict = self._runtime_denoise_step(
                     state,
                     node_scalar_features.clone(),
                     node_vec_features.clone(),
@@ -601,7 +600,7 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
                 upper_edge_mask,
             )
 
-        dst_dict = self.denoise_graph(
+        dst_dict = self._runtime_denoise_step(
             state,
             node_scalar_features,
             node_vec_features,
@@ -617,7 +616,8 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         )
         return dst_dict
 
-    def denoise_graph(
+    @runtime_boundary("denoise_step")
+    def _runtime_denoise_step(
         self,
         state,
         node_scalar_features,

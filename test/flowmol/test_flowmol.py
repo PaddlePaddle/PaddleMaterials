@@ -594,17 +594,17 @@ def test_cinn_trainer_resume_orchestration(tmp_path, monkeypatch):
     assert resumed_state.keys() == straight_state.keys()
 
 
+@pytest.mark.parametrize(
+    "vector_field_config",
+    [SMALL_VECTOR_FIELD, {**SMALL_VECTOR_FIELD_RELEASED, "scprop": 0.0}],
+    ids=["base", "self_conditioning"],
+)
 @requires_gpu_cinn
-def test_gpu_cinn_matches_eager(tmp_path):
-    """One real compiled training epoch must match the eager weights.
+def test_gpu_cinn_matches_eager(tmp_path, vector_field_config):
+    """Compare compiled training with eager, including forced self-conditioning.
 
-    Only the base vector field is trained here: the released self-conditioning
-    configuration hits a Paddle CINN symbol-shape limitation on the training
-    (backward) path, so the documented sampling workflow is covered by
-    ``test_gpu_cinn_sampling_matches_eager`` instead. Compilation itself draws
-    from the global RNG, so the compiled boundary is warmed up before the
-    seeding below; otherwise the eager and CINN runs would sample different
-    interpolation times and masks.
+    Warm up compilation before resetting the seeds so both modes sample the
+    same interpolation times and masks during the compared training epoch.
     """
 
     gpu_cinn_or_skip()
@@ -612,8 +612,8 @@ def test_gpu_cinn_matches_eager(tmp_path):
     train_loader = _training_loader(dataset)
     val_loader = _training_loader(dataset)
 
-    eager_model = _build_unique_model()
-    cinn_model = _build_unique_model()
+    eager_model = _build_unique_model(vector_field_config)
+    cinn_model = _build_unique_model(vector_field_config)
     cinn_model.set_state_dict(eager_model.state_dict())
     # SGD keeps the weight comparison free of Adam's first-step sign
     # normalization, which would amplify compiled gradient noise.

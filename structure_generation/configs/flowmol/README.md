@@ -195,3 +195,13 @@ sampler.model.save_samples(results["pred"], sampler.output_dir)
   year={2025}
 }
 ```
+
+## CINN execution boundary
+
+Eager execution remains the default. The model-owned `denoise_step` boundary
+compiles the shared GVP denoising core. Feature embeddings and the
+self-conditioning residual execute eagerly in both modes, avoiding the Paddle
+3.3 symbolic backward shape conflict in the residual's masked edge updates.
+The computation and checkpoint layout are shared across backends. GPU
+integration coverage includes self-conditioning training and molecule sampling;
+these short checks do not establish full GEOM training convergence.
