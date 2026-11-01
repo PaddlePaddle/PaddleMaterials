@@ -2206,7 +2206,11 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
         decoder_cfg (dict): Decoder configuration.
         lattice_noise_scheduler_cfg (dict): Lattice noise scheduler configuration.
         coord_noise_scheduler_cfg (dict): Coordinate noise scheduler configuration.
-        atom_noise_scheduler_cfg (dict): Atom type noise scheduler configuration.
+        atom_noise_scheduler_cfg (dict, optional): Atom type noise scheduler
+            configuration. If None, the model runs in crystal structure prediction
+            (CSP) mode: atom types are never corrupted and are not part of the loss,
+            and sampling keeps the atom types and atom counts given in the input
+            batch. Defaults to None.
         num_train_timesteps (int, optional): Number of training steps for diffusion.
             Defaults to 1000.
         max_t (float, optional): Maximum diffusion time. Defaults to 1.0.
@@ -2222,7 +2226,7 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
         decoder_cfg: dict,
         lattice_noise_scheduler_cfg: dict,
         coord_noise_scheduler_cfg: dict,
-        atom_noise_scheduler_cfg: dict,
+        atom_noise_scheduler_cfg: Optional[dict] = None,
         num_train_timesteps: int = 1000,
         max_t: float = 1.0,
         time_dim: int = 256,
@@ -2250,6 +2254,11 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
         self.d3pm_hybrid_lambda = d3pm_hybrid_lambda
 
         self.timestep_sampler = UniformTimestepSampler(min_t=1e-05, max_t=max_t)
+
+    @property
+    def supports_num_atoms_sampling(self):
+        # In CSP mode the atom types must be given, the number of atoms is not enough.
+        return self.atom_scheduler is not None
 
     def _denoise(self, structure_array, times):
         interaction_graph = self.model.build_interaction_graph(structure_array)
@@ -2302,12 +2311,16 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
         atom_type = structure_array["atom_types"]
         atom_type_zero_based = atom_type - 1
 
-        input_atom_type_zero_based = self.atom_scheduler.add_noise(
-            atom_type_zero_based,
-            timesteps=times,
-            batch_idx=batch_idx,
-        )
-        input_atom_type = input_atom_type_zero_based + 1
+        if self.atom_scheduler is None:
+            # CSP mode: atom types are never corrupted
+            input_atom_type = atom_type
+        else:
+            input_atom_type_zero_based = self.atom_scheduler.add_noise(
+                atom_type_zero_based,
+                timesteps=times,
+                batch_idx=batch_idx,
+            )
+            input_atom_type = input_atom_type_zero_based + 1
 
         noise_batch = {
             "frac_coords": input_frac_coords,
@@ -2335,6 +2348,22 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
         # lattice loss
         loss_lattice = (score_model_output["lattice"] + rand_l).square()
         loss_lattice = loss_lattice.mean(axis=[1, 2])
+
+        if self.atom_scheduler is None:
+            # CSP mode: atom types are not part of the loss
+            loss_coord = loss_coord.mean()
+            loss_lattice = loss_lattice.mean()
+            loss = (
+                self.coord_loss_weight * loss_coord
+                + self.lattice_loss_weight * loss_lattice
+            )
+            return {
+                "loss_dict": {
+                    "loss": loss,
+                    "loss_coord": loss_coord,
+                    "loss_lattice": loss_lattice,
+                }
+            }
 
         # atom type loss
         (
@@ -2397,10 +2426,15 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
         frac_coords = self.coord_scheduler.prior_sampling(
             shape=(num_atoms.sum(), 3), num_atoms=num_atoms, batch_idx=batch_idx
         )
-        atom_types_zero_based = self.atom_scheduler.prior_sampling(
-            shape=(num_atoms.sum(),)
-        )
-        atom_types = atom_types_zero_based + 1
+        if self.atom_scheduler is None:
+            # CSP mode: keep the given atom types
+            assert "atom_types" in structure_array, "CSP mode needs atom_types."
+            atom_types = structure_array["atom_types"]
+        else:
+            atom_types_zero_based = self.atom_scheduler.prior_sampling(
+                shape=(num_atoms.sum(),)
+            )
+            atom_types = atom_types_zero_based + 1
 
         # update the structure_array with the initial noise
         structure_array.update(
@@ -2495,14 +2529,17 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
                 score=score_out["lattice"],
                 num_atoms=num_atoms,
             )
-            atom_type, atom_type_mean = self.atom_scheduler.step(
-                x=structure_array["atom_types"] - 1,
-                t=t,
-                batch_idx=batch_idx,
-                score=score_out["atom_types"],
-            )
-            atom_type += 1
-            atom_type_mean += 1
+            if self.atom_scheduler is None:
+                atom_type = atom_type_mean = structure_array["atom_types"]
+            else:
+                atom_type, atom_type_mean = self.atom_scheduler.step(
+                    x=structure_array["atom_types"] - 1,
+                    t=t,
+                    batch_idx=batch_idx,
+                    score=score_out["atom_types"],
+                )
+                atom_type += 1
+                atom_type_mean += 1
 
             structure_array.update(
                 {"frac_coords": frac_coords, "lattice": cell, "atom_types": atom_type}
