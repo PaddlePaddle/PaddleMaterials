@@ -168,6 +168,14 @@ Optional fields include `material_id`, `spacegroup`, `energy`, and dataset split
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | diffcsp_mp20 | mp20 | 51.72 | 0.0591 | 1 | ~13.5 hours | [diffcsp_mp20.yaml](diffcsp_mp20.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/diffcsp/diffcsp_mp20.zip) |
 
+| Model | Dataset | S.U.N. (%) | Stable (%) | Unique (%) | Novel (%) | RMSD (Å) | GPUs | Training Time | Config | Checkpoint / Log |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| diffcsp_mp20_ab_initio | mp20 | 13.71 | 37.19 | 99.21 | 73.60 | 0.429 | 1 | ~15.5 hours | [diffcsp_mp20_ab_initio.yaml](diffcsp_mp20_ab_initio.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/diffcsp/diffcsp_mp20_ab_initio.zip) |
+
+`diffcsp_mp20_ab_initio` is evaluated on 1,000 generated structures relaxed with MatterSim 5M. S.U.N. is the
+fraction of stable, unique and novel structures, and RMSD is the mean displacement during relaxation. The 110
+structures that contain elements without a reference entry are not scored.
+
 ---
 
 ## Command
@@ -213,6 +221,7 @@ the atom types. Sampling draws the number of atoms from the MP-20 training distr
 writes one CIF per structure.
 ```bash
 python structure_generation/train.py -c structure_generation/configs/diffcsp/diffcsp_mp20_ab_initio.yaml
+python structure_generation/sample.py --model_name='diffcsp_mp20_ab_initio' --weights_name='best.pdparams' --output_path='result_diffcsp_mp20_ab_initio/' --mode='by_dataloader'
 python structure_generation/sample.py --config_path='structure_generation/configs/diffcsp/diffcsp_mp20_ab_initio.yaml' --checkpoint_path='./output/diffcsp_mp20_ab_initio_t_<timestamp>_s_42/checkpoints/best.pdparams' --output_path='result_diffcsp_mp20_ab_initio/' --mode='by_dataloader'
 ```
 
