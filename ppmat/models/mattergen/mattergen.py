@@ -41,6 +41,7 @@ from tqdm import tqdm
 from ppmat.models.common.activation import ScaledSiLU
 from ppmat.models.common.activation import SiQU
 from ppmat.models.common.initializer import he_orthogonal_init
+from ppmat.models.common.initializer import linear_init_
 from ppmat.models.common.radial_basis import RadialBasis
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
@@ -1304,6 +1305,8 @@ class GemNetT(paddle.nn.Layer):
             paddle.nn.ReLU(),
             paddle.nn.Linear(in_features=emb_size_edge, out_features=emb_size_edge),
         )
+        linear_init_(self.angle_edge_emb[0])
+        linear_init_(self.angle_edge_emb[2])
         AutomaticFit.reset()
         self.radial_basis = RadialBasis(
             num_radial=num_radial, cutoff=cutoff, rbf=rbf, envelope=envelope
@@ -1335,6 +1338,7 @@ class GemNetT(paddle.nn.Layer):
         self.atom_latent_emb = paddle.nn.Linear(
             in_features=emb_dim_atomic_number + latent_dim, out_features=emb_size_atom
         )
+        linear_init_(self.atom_latent_emb)
         self.edge_emb = EdgeEmbedding(
             emb_size_atom, num_radial, emb_size_edge, activation=activation
         )
@@ -1958,6 +1962,7 @@ class GemNetTDenoiser(paddle.nn.Layer):
         self.fc_atom = paddle.nn.Linear(
             in_features=hidden_dim, out_features=MAX_ATOMIC_NUM + int(with_mask_type)
         )
+        linear_init_(self.fc_atom)
         self.property_embeddings_adapt_cfg = property_embeddings_adapt_cfg
         if property_embeddings_adapt_cfg is not None:
             self.property_embeddings_adapt = paddle.nn.LayerDict()

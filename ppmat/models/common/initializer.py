@@ -455,7 +455,7 @@ def _standardize(kernel):
     if len(tuple(kernel.shape)) == 3:
         axis = 0, 1
     else:
-        axis = 1
+        axis = 0
     var, mean = tuple(
         [
             paddle.var(kernel, axis=axis, unbiased=True, keepdim=True),
