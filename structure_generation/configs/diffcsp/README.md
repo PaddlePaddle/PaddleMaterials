@@ -207,6 +207,15 @@ python structure_generation/sample.py --model_name='diffcsp_mp20' --weights_name
 python structure_generation/sample.py --config_path='structure_generation/configs/diffcsp/diffcsp_mp20.yaml' --checkpoint_path='./output/diffcsp_mp20/checkpoints/latest.pdparams' --output_path='result_diffcsp_mp20/' --chemical_formula='LiMnO2'
 ```
 
+### Ab initio generation
+`diffcsp_mp20_ab_initio.yaml` trains `DiffCSPWithType`, the DiffCSP variant that also diffuses
+the atom types. Sampling draws the number of atoms from the MP-20 training distribution and
+writes one CIF per structure.
+```bash
+python structure_generation/train.py -c structure_generation/configs/diffcsp/diffcsp_mp20_ab_initio.yaml
+python structure_generation/sample.py --config_path='structure_generation/configs/diffcsp/diffcsp_mp20_ab_initio.yaml' --checkpoint_path='./output/diffcsp_mp20_ab_initio_t_<timestamp>_s_42/checkpoints/best.pdparams' --output_path='result_diffcsp_mp20_ab_initio/' --mode='by_dataloader'
+```
+
 ---
 
 ## Citation

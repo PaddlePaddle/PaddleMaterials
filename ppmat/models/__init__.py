@@ -30,6 +30,7 @@ from ppmat.models.common.graph_converter import FindPointsInSpheres
 from ppmat.models.common.graph_converter import MolecularGraphConverter
 from ppmat.models.common.graph_converter import RadiusGraphConverter
 from ppmat.models.diffcsp.diffcsp import DiffCSP
+from ppmat.models.diffcsp.diffcsp import DiffCSPWithType
 from ppmat.models.diffnmr.diffnmr import DiffNMR
 from ppmat.models.diffnmr.diffnmr import DiffPrior
 from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
@@ -54,6 +55,7 @@ __all__ = [
     "iComformer",
     "ComformerGraphConverter",
     "DiffCSP",
+    "DiffCSPWithType",
     "FindPointsInSpheres",
     "MEGNetPlus",
     "MatterGen",

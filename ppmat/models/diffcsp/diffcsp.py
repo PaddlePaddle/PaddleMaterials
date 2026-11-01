@@ -616,3 +616,184 @@ class DiffCSP(RuntimeMixin, paddle.nn.Layer):
             start_idx += structure_array["num_atoms"][i]
 
         return {"result": result}
+
+
+class DiffCSPWithType(DiffCSP):
+    """DiffCSP for ab initio generation, which also diffuses the atom types.
+
+    Port of ``diffcsp/pl_modules/diffusion_w_type.py`` in
+    https://github.com/jiaor17/DiffCSP. Atom types are one-hot vectors over
+    ``decoder_cfg["num_classes"]`` elements that are noised with the lattice DDPM
+    schedule, so the decoder must use ``smooth=True`` and ``pred_type=True``. The
+    sampled types are ``argmax + 1``.
+
+    Args:
+        type_loss_weight (float, optional): Atom type loss weight. Defaults to 20.0.
+        Other arguments are the same as `DiffCSP`.
+    """
+
+    supports_num_atoms_sampling = True
+
+    def __init__(
+        self,
+        decoder_cfg: dict,
+        lattice_noise_scheduler_cfg: dict,
+        coord_noise_scheduler_cfg: dict,
+        num_train_timesteps: int = 1000,
+        time_dim: int = 256,
+        lattice_loss_weight: float = 1.0,
+        coord_loss_weight: float = 1.0,
+        type_loss_weight: float = 20.0,
+        execution_backend: str = "eager",
+        runtime_options: dict | None = None,
+    ) -> None:
+        super().__init__(
+            decoder_cfg,
+            lattice_noise_scheduler_cfg,
+            coord_noise_scheduler_cfg,
+            num_train_timesteps=num_train_timesteps,
+            time_dim=time_dim,
+            lattice_loss_weight=lattice_loss_weight,
+            coord_loss_weight=coord_loss_weight,
+            execution_backend=execution_backend,
+            runtime_options=runtime_options,
+        )
+        if not (self.decoder.smooth and self.decoder.pred_type):
+            raise ValueError("DiffCSPWithType needs smooth=True and pred_type=True.")
+        self.type_loss_weight = type_loss_weight
+
+    def _time_embedding(self, timesteps):
+        # The schedulers index diffusion steps from 0 to T - 1; the time embedding
+        # takes the step number 1..T.
+        return self.time_embedding(timesteps + 1)
+
+    def forward(self, batch, **kwargs):
+        structure_array = batch["structure_array"]
+        num_atoms = structure_array["num_atoms"]
+        batch_size = num_atoms.shape[0]
+        batch_idx = paddle.repeat_interleave(
+            paddle.arange(batch_size), repeats=num_atoms
+        )
+
+        times = uniform_sample_t(batch_size, self.num_train_timesteps)
+        times_per_atom = times.repeat_interleave(repeats=num_atoms)
+        time_emb = self._time_embedding(times)
+
+        if "lattice" in structure_array.keys():
+            lattices = structure_array["lattice"]
+        else:
+            lattices = lattice_params_to_matrix_paddle(
+                structure_array["lengths"], structure_array["angles"]
+            )
+        frac_coords = structure_array["frac_coords"]
+        rand_l = paddle.randn(shape=lattices.shape, dtype=lattices.dtype)
+        rand_x = paddle.randn(shape=frac_coords.shape, dtype=frac_coords.dtype)
+        input_lattice = self.lattice_scheduler.add_noise(
+            lattices, rand_l, timesteps=times
+        )
+        input_frac_coords = (
+            self.coord_scheduler.add_noise(
+                frac_coords, rand_x, timesteps=times_per_atom
+            )
+            % 1.0
+        )
+
+        gt_atom_types_onehot = paddle.nn.functional.one_hot(
+            structure_array["atom_types"] - 1, num_classes=self.decoder.num_classes
+        ).astype(frac_coords.dtype)
+        rand_t = paddle.randn(
+            shape=gt_atom_types_onehot.shape, dtype=gt_atom_types_onehot.dtype
+        )
+        atom_type_probs = self.lattice_scheduler.add_noise(
+            gt_atom_types_onehot, rand_t, timesteps=times_per_atom
+        )
+
+        pred_l, pred_x, pred_t = self._decode(
+            time_emb,
+            atom_type_probs,
+            input_frac_coords,
+            input_lattice,
+            num_atoms,
+            batch_idx,
+        )
+
+        sigmas_per_atom = self.coord_scheduler.discrete_sigmas[times_per_atom][:, None]
+        sigmas_norm_per_atom = self.coord_scheduler.discrete_sigmas_norm[
+            times_per_atom
+        ][:, None]
+        tar_x = d_log_p_wrapped_normal(
+            sigmas_per_atom * rand_x, sigmas_per_atom
+        ) / paddle.sqrt(x=sigmas_norm_per_atom)
+
+        loss_lattice = paddle.nn.functional.mse_loss(input=pred_l, label=rand_l)
+        loss_coord = paddle.nn.functional.mse_loss(input=pred_x, label=tar_x)
+        loss_type = paddle.nn.functional.mse_loss(input=pred_t, label=rand_t)
+        loss = (
+            self.lattice_loss_weight * loss_lattice
+            + self.coord_loss_weight * loss_coord
+            + self.type_loss_weight * loss_type
+        )
+        return {
+            "loss_dict": {
+                "loss": loss,
+                "loss_lattice": loss_lattice,
+                "loss_coord": loss_coord,
+                "loss_type": loss_type,
+            }
+        }
+
+    @paddle.no_grad()
+    def sample(self, batch_data, num_inference_steps=1000, **kwargs):
+        num_atoms = batch_data["structure_array"]["num_atoms"]
+        batch_size = num_atoms.shape[0]
+        batch_idx = paddle.repeat_interleave(
+            paddle.arange(batch_size), repeats=num_atoms
+        )
+        num_nodes = int(num_atoms.sum())
+        l_t = paddle.randn(shape=[batch_size, 3, 3])
+        x_t = paddle.rand(shape=[num_nodes, 3])
+        t_t = paddle.randn(shape=[num_nodes, self.decoder.num_classes])
+
+        self.lattice_scheduler.set_timesteps(num_inference_steps)
+        self.coord_scheduler.set_timesteps(num_inference_steps)
+
+        for lattice_t, coord_t in tqdm(
+            zip(self.lattice_scheduler.timesteps, self.coord_scheduler.timesteps),
+            total=num_inference_steps,
+            desc="Sampling...",
+        ):
+            time_emb = self._time_embedding(
+                paddle.ones([batch_size], dtype="int64") * lattice_t
+            )
+            # Corrector: only the fractional coordinates move.
+            _, pred_x, _ = self._decode(time_emb, t_t, x_t, l_t, num_atoms, batch_idx)
+            x_t = self.coord_scheduler.step_correct(pred_x, coord_t, x_t).prev_sample
+
+            # Predictor: coordinates, lattice and atom types.
+            pred_l, pred_x, pred_t = self._decode(
+                time_emb, t_t, x_t, l_t, num_atoms, batch_idx
+            )
+            output = self.coord_scheduler.step_pred(pred_x, coord_t, x_t)
+            x_t, x_t_mean = output.prev_sample, output.prev_sample_mean
+            l_t = self.lattice_scheduler.step(pred_l, lattice_t, l_t).prev_sample
+            t_t = self.lattice_scheduler.step(pred_t, lattice_t, t_t).prev_sample
+            x_t = x_t % 1.0
+
+        x_t = x_t_mean % 1.0
+        atom_types = t_t.argmax(axis=-1) + 1
+
+        start_idx = 0
+        result = []
+        for i in range(batch_size):
+            end_idx = start_idx + num_atoms[i]
+            result.append(
+                {
+                    "num_atoms": num_atoms[i].tolist(),
+                    "atom_types": atom_types[start_idx:end_idx].tolist(),
+                    "frac_coords": x_t[start_idx:end_idx].tolist(),
+                    "lattice": l_t[i].tolist(),
+                }
+            )
+            start_idx += num_atoms[i]
+
+        return {"result": result}
