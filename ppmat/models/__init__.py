@@ -133,6 +133,7 @@ MODEL_REGISTRY = {
     "dimenetpp_qm9_r2": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_r2.zip",
     "dimenetpp_qm9_zpve": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_zpve.zip",
     "dimenetpp_qm9_U0": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_U0.zip",
+    "dimenetpp_qm9_U": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_U.zip",
     "dimenetpp_qm9_H": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_H.zip",
     "dimenetpp_qm9_G": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_G.zip",
     "dimenetpp_qm9_Cv": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_Cv.zip",

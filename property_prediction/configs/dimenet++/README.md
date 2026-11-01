@@ -267,6 +267,16 @@ Through its architectural improvements, DimeNet++ achieves up to an **8× speedu
             <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_U0.zip">checkpoint | log</a></td>
         </tr>
         <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_U</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">U (meV)</td>
+            <td  nowrap="nowrap">7.420 / 7.273</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">62 hours 2 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_U.yaml">dimenet++_qm9_U</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_U.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
             <td  nowrap="nowrap">dimenetpp_qm9_H</td>
             <td  nowrap="nowrap">QM9</td>
             <td  nowrap="nowrap">H (meV)</td>
