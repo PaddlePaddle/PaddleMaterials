@@ -267,7 +267,7 @@ class ASECalculator(Calculator):
                 elif calc_key == "stress":
                     stress = pred[pred_key]
                     stress_voigt = full_3x3_to_voigt_6_stress(stress)
-                    self.results["stress"] = stress_voigt
+                    self.results["stress"] = stress_voigt * units.GPa
 
     def _check_atoms_pbc(self, atoms) -> None:
         """
