@@ -1,3 +1,4 @@
+import math
 from typing import Callable
 from typing import Optional
 
@@ -55,11 +56,8 @@ class BesselBasisLayer(paddle.nn.Layer):
             .numpy()
             .dtype,
             default_initializer=paddle.nn.initializer.Assign(
-                paddle.empty(
-                    shape=[
-                        num_radial,
-                    ]
-                )
+                paddle.arange(1, num_radial + 1, dtype=paddle.get_default_dtype())
+                * math.pi
             ),
         )
         self.freq.stop_gradient = False
@@ -418,7 +416,7 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         else:
             raise ValueError(f"Unknown loss type {loss_type}.")
 
-    def triplets(self, edge_index, num_nodes):
+    def triplets(self, edge_index, cell_offsets, num_nodes):
         row, col = edge_index
         value = paddle.arange(1, row.shape[0] + 1, dtype="int64")
         # build matrix of edge ids per target
@@ -438,7 +436,9 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         idx_k = paddle.index_select(row, idx_kj, axis=0)
         idx_j = paddle.index_select(row, idx_ji, axis=0)
         idx_i = paddle.index_select(col, idx_ji, axis=0)
-        mask2 = idx_i != idx_k
+        # Remove i == k triplets with the same cell offset.
+        cell_offset_kji = cell_offsets[idx_kj] + cell_offsets[idx_ji]
+        mask2 = (idx_i != idx_k) | paddle.any(cell_offset_kji != 0, axis=-1)
         return (
             col,
             row,
@@ -484,8 +484,8 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         edge_index = out["edge_index"]
         dist = out["distances"]
         offsets = out["offsets"]
-        j, i, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
-            edge_index, num_nodes=atom_types.shape[0]
+        i, j, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
+            edge_index, to_jimages, num_nodes=atom_types.shape[0]
         )
         # compute angles
         pos_i = pos[idx_i]
