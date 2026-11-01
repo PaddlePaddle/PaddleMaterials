@@ -31,6 +31,7 @@ __all__ = [
     "LatticePolarDecomposition",
     "Scale",
     "Abs",
+    "AtomRef",
 ]
 
 
@@ -139,6 +140,28 @@ class Abs:
             if key not in data:
                 continue
             data[key] = np.abs(data[key])
+        return data
+
+
+class AtomRef:
+    """Subtract the sum of per-element reference values from a property, e.g. to train
+    on QM9 atomization energies instead of total energies.
+
+    Args:
+        atomref (Dict[int, float]): Reference value of each atomic number.
+        apply_keys (Tuple[str, ...]): Properties to shift.
+    """
+
+    def __init__(self, atomref: Dict[int, float], apply_keys: Tuple[str, ...]):
+        self.atomref = {int(k): float(v) for k, v in atomref.items()}
+        self.apply_keys = [apply_keys] if isinstance(apply_keys, str) else apply_keys
+
+    def __call__(self, data):
+        atom_types = data["graph"].node_feat["atom_types"]
+        ref = sum(self.atomref[int(z)] for z in atom_types)
+        for key in self.apply_keys:
+            if key in data:
+                data[key] = (data[key] - ref).astype(data[key].dtype)
         return data
 
 

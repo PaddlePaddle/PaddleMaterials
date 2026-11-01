@@ -463,27 +463,34 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         # unpack graph dict
         graph = data["graph"]
         batch = graph.graph_node_id
-        lattices = graph.node_feat["lattice"]
         pos = graph.node_feat["cart_coords"]
-        frac = graph.node_feat["frac_coords"]
         edge_index = graph.edges
-        to_jimages = graph.edge_feat["pbc_offset"]
-        num_atoms = graph.node_feat["num_atoms"]
-        num_bonds = graph.edge_feat["num_edges"]
         atom_types = graph.node_feat["atom_types"]
 
-        out = get_pbc_distances(
-            frac,
-            edge_index.T,
-            lattices,
-            to_jimages,
-            num_atoms,
-            num_bonds,
-            return_offsets=True,
-        )
-        edge_index = out["edge_index"]
-        dist = out["distances"]
-        offsets = out["offsets"]
+        if "lattice" in graph.node_feat:
+            lattices = graph.node_feat["lattice"]
+            frac = graph.node_feat["frac_coords"]
+            to_jimages = graph.edge_feat["pbc_offset"]
+            num_atoms = graph.node_feat["num_atoms"]
+            num_bonds = graph.edge_feat["num_edges"]
+            out = get_pbc_distances(
+                frac,
+                edge_index.T,
+                lattices,
+                to_jimages,
+                num_atoms,
+                num_bonds,
+                return_offsets=True,
+            )
+            edge_index = out["edge_index"]
+            dist = out["distances"]
+            offsets = out["offsets"]
+        else:
+            # Molecules have no periodic images.
+            edge_index = edge_index.T
+            to_jimages = paddle.zeros([edge_index.shape[1], 3], dtype="int64")
+            offsets = paddle.zeros([edge_index.shape[1], 3], dtype=pos.dtype)
+            dist = (pos[edge_index[0]] - pos[edge_index[1]]).norm(axis=-1)
         i, j, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
             edge_index, to_jimages, num_nodes=atom_types.shape[0]
         )
