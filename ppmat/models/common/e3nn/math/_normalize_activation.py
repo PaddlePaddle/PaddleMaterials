@@ -24,8 +24,16 @@ def moment(f, n, dtype=None, device=None):
     <f(z)^n> for z normal
     """
     dtype, device = explicit_default_types(dtype, device)
-    gen = paddle.framework.core.default_cpu_generator().manual_seed(0)
-    z = paddle.randn(shape=[1000000], dtype="float64").to(dtype=dtype, device=device)
+    # Draw the samples on the CPU, where the generator seeded below is used, so
+    # the moment is the same in every process whatever the current device is.
+    current_device = paddle.get_device()
+    paddle.set_device("cpu")
+    try:
+        paddle.framework.core.default_cpu_generator().manual_seed(0)
+        z = paddle.randn(shape=[1000000], dtype="float64")
+    finally:
+        paddle.set_device(current_device)
+    z = z.to(dtype=dtype, device=device)
     return f(z).pow(y=n).mean()
 
 
