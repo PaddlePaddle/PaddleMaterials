@@ -52,7 +52,7 @@ Model:
     tokenizer_name_or_path: roberta-base
     vocab_sup_file: ./data/vocab/vocab_sup_PE_I.csv
     blocksize: 411
-    smiles_key: smiles
+    smiles_key: input
     use_token_cache: True
     drop_rate: 0.1
     hidden_dropout_prob: 0.1
@@ -86,11 +86,11 @@ Dataset:
 
   train:
     dataset:
-      __class_name__: TransPolymerCsvDataset
+      __class_name__: TransPolymerDataset
       __init_params__:
         path: ./data/train_PE_I.csv
         property_names: ${Global.label_names}
-        smiles_key: smiles
+        smiles_key: input
     loader:
       num_workers: 8
       use_shared_memory: False
@@ -104,11 +104,11 @@ Dataset:
 
   val:
     dataset:
-      __class_name__: TransPolymerCsvDataset
+      __class_name__: TransPolymerDataset
       __init_params__:
         path: ./data/test_PE_I.csv
         property_names: ${Global.label_names}
-        smiles_key: smiles
+        smiles_key: input
     loader:
       num_workers: 8
       use_shared_memory: False
@@ -122,11 +122,11 @@ Dataset:
 
   test:
     dataset:
-      __class_name__: TransPolymerCsvDataset
+      __class_name__: TransPolymerDataset
       __init_params__:
         path: ./data/test_PE_I.csv
         property_names: ${Global.label_names}
-        smiles_key: smiles
+        smiles_key: input
     loader:
       num_workers: 8
       use_shared_memory: False

@@ -1,17 +1,40 @@
+import json
 import os
 import shutil
 import subprocess
 import tempfile
-from copy import deepcopy
 
 import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
 import pandas as pd
 
-from ppmat.models.transpolymer.modeling import RobertaConfig
 from ppmat.models.transpolymer.modeling import RobertaModel
 from ppmat.models.transpolymer.tokenizer import PolymerSmilesTokenizer
+from ppmat.utils import download
+
+
+TRANS_POLYMER_VOCAB_URL = (
+    "https://paddle-org.bj.bcebos.com/paddlematerials/assets/vocabs/"
+    "transpolymer_vocab.tar.gz"
+)
+TRANS_POLYMER_VOCAB_MD5 = "4983d7128d9f7dbd587cf3ed0bd8ff6e"
+
+ROBERTA_BACKBONE_CONFIG_KEYS = (
+    "vocab_size",
+    "hidden_size",
+    "num_hidden_layers",
+    "num_attention_heads",
+    "intermediate_size",
+    "hidden_dropout_prob",
+    "attention_probs_dropout_prob",
+    "max_position_embeddings",
+    "type_vocab_size",
+    "initializer_range",
+    "layer_norm_eps",
+    "pad_token_id",
+    "position_embedding_type",
+)
 
 
 class TransPolymerRegressor(nn.Layer):
@@ -62,6 +85,48 @@ class TransPolymerRegressor(nn.Layer):
                     "Please check that Git LFS is installed and enabled."
                 )
 
+    @staticmethod
+    def _load_pretrained_encoder(pretrained_model_path):
+        """Build the backbone from checkpoint metadata and load matching tensors."""
+        config_path = os.path.join(pretrained_model_path, "config.json")
+        with open(config_path, "r", encoding="utf-8") as f:
+            checkpoint_config = json.load(f)
+        backbone_params = {
+            key: checkpoint_config[key]
+            for key in ROBERTA_BACKBONE_CONFIG_KEYS
+            if key in checkpoint_config
+        }
+        encoder = RobertaModel(**backbone_params)
+
+        state_path = os.path.join(pretrained_model_path, "model_state.pdparams")
+        raw_state = paddle.load(state_path)
+        current_state = encoder.state_dict()
+        loaded_state = {}
+        for key, value in raw_state.items():
+            model_key = key[len("roberta.") :] if key.startswith("roberta.") else key
+            if model_key in current_state and list(current_state[model_key].shape) == list(
+                value.shape
+            ):
+                loaded_state[model_key] = value
+        current_state.update(loaded_state)
+        encoder.set_state_dict(current_state)
+        print(f"Loaded {len(loaded_state)} RobertaModel tensors from {state_path}")
+        return encoder
+
+    @staticmethod
+    def _resolve_vocab_file(vocab_sup_file, vocab_url, vocab_md5):
+        if vocab_sup_file is None or os.path.exists(vocab_sup_file):
+            return vocab_sup_file
+
+        root_path = download.get_datasets_path_from_url(vocab_url, vocab_md5)
+        downloaded_path = os.path.join(root_path, os.path.basename(vocab_sup_file))
+        if not os.path.exists(downloaded_path):
+            raise FileNotFoundError(
+                f"{os.path.basename(vocab_sup_file)} is missing from downloaded "
+                f"TransPolymer vocabulary archive at {root_path}."
+            )
+        return downloaded_path
+
     def __init__(
         self,
         pretrained_model_path=None,
@@ -77,7 +142,10 @@ class TransPolymerRegressor(nn.Layer):
         drop_rate=0.1,
         resize_vocab_size=None,
         tokenizer_name_or_path="roberta-base",
+        tokenizer_cache_dir=None,
         vocab_sup_file=None,
+        vocab_url=TRANS_POLYMER_VOCAB_URL,
+        vocab_md5=TRANS_POLYMER_VOCAB_MD5,
         blocksize=411,
         smiles_key="smiles",
         use_token_cache=True,
@@ -91,9 +159,9 @@ class TransPolymerRegressor(nn.Layer):
             self._prepare_pretrained_checkpoint(
                 pretrained_model_path, pretrained_model_url
             )
-            encoder = RobertaModel.from_pretrained(pretrained_model_path)
+            encoder = self._load_pretrained_encoder(pretrained_model_path)
         else:
-            config = RobertaConfig(
+            encoder = RobertaModel(
                 vocab_size=vocab_size,
                 hidden_size=hidden_size,
                 intermediate_size=intermediate_size,
@@ -103,13 +171,16 @@ class TransPolymerRegressor(nn.Layer):
                 hidden_dropout_prob=hidden_dropout_prob,
                 attention_probs_dropout_prob=attention_probs_dropout_prob,
             )
-            encoder = RobertaModel(config=config)
 
-        encoder.config.hidden_dropout_prob = hidden_dropout_prob
-        encoder.config.attention_probs_dropout_prob = attention_probs_dropout_prob
-        self.encoder = deepcopy(encoder)
+        self.encoder = encoder
+        tokenizer_kwargs = {"max_len": blocksize}
+        if tokenizer_cache_dir is not None:
+            tokenizer_kwargs["cache_dir"] = tokenizer_cache_dir
         self.tokenizer = PolymerSmilesTokenizer.from_pretrained(
-            tokenizer_name_or_path, max_len=blocksize
+            tokenizer_name_or_path, **tokenizer_kwargs
+        )
+        vocab_sup_file = self._resolve_vocab_file(
+            vocab_sup_file, vocab_url, vocab_md5
         )
         if vocab_sup_file is not None:
             vocab_sup = pd.read_csv(vocab_sup_file, header=None).values.flatten()
@@ -135,7 +206,7 @@ class TransPolymerRegressor(nn.Layer):
         else:
             raise ValueError(f"Unknown loss type {loss_type}.")
 
-        hidden_size = self.encoder.config.hidden_size
+        hidden_size = self.encoder.hidden_size
         self.regressor = nn.Sequential(
             nn.Dropout(drop_rate),
             nn.Linear(hidden_size, hidden_size),
@@ -150,8 +221,8 @@ class TransPolymerRegressor(nn.Layer):
         return tensor * self.data_std + self.data_mean
 
     def _forward(self, input_ids, attention_mask):
-        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
-        cls_embedding = outputs.last_hidden_state[:, 0, :]
+        hidden_states = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
+        cls_embedding = hidden_states[:, 0, :]
         return self.regressor(cls_embedding)
 
     def _encode_smiles(self, smiles):

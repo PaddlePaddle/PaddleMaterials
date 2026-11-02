@@ -34,35 +34,22 @@ provided train/test split, while the other downstream tasks are reported with
 | PE-I | 34803 / 146 | smiles | Conductivity [S/cm] | [transpolymer_pe_i_finetune.yaml](transpolymer_pe_i_finetune.yaml) |
 | PE-II | 271 | SMILES descriptor 1 | logCond60 | [transpolymer_pe_ii_finetune.yaml](transpolymer_pe_ii_finetune.yaml) |
 
-The downstream datasets are provided in one artifact:
+### Automatic data download
 
-| Artifact | Link | Extraction code |
+The dataset class downloads the official data archive automatically when a CSV
+configured under `Dataset.*.dataset.__init_params__.path` is absent. It is cached
+under `~/.paddlemat/datasets/transpolymer_data/` and verified with MD5.
+
+| Artifact | URL | MD5 |
 | :---: | :---: | :---: |
-| Datasets | [download](https://pan.baidu.com/s/12Y6iJXOXzff5AQzJhVlzOg) | 1227 |
+| Downstream datasets | [transpolymer_data.tar.gz](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/TransPolymer_data/transpolymer_data.tar.gz) | `d483359a1607aecd4453ba286a66b6c9` |
+| Supplementary vocabularies | [transpolymer_vocab.tar.gz](https://paddle-org.bj.bcebos.com/paddlematerials/assets/vocabs/transpolymer_vocab.tar.gz) | `4983d7128d9f7dbd587cf3ed0bd8ff6e` |
 
-Download `transpolymer_pretrain_and_data.zip` and extract the `data/` directory
-to the PaddleMaterials root directory. After extraction, the dataset directory
-structure should be:
-
-```text
-PaddleMaterials/
-|-- data/
-|   |-- Eea.csv
-|   |-- Egb.csv
-|   |-- Egc.csv
-|   |-- Ei.csv
-|   |-- EPS.csv
-|   |-- Nc.csv
-|   |-- Xc.csv
-|   |-- OPV.csv
-|   |-- PE_II.csv
-|   |-- train_PE_I.csv
-|   |-- test_PE_I.csv
-|   `-- vocab/
-|       |-- vocab_sup_OPV.csv
-|       |-- vocab_sup_PE_I.csv
-|       `-- vocab_sup_PE_II.csv
-```
+The model automatically downloads the supplementary vocabulary archive when an
+OPV, PE-I, or PE-II `vocab_sup_file` is missing. The base RoBERTa tokenizer files
+(`vocab.json` and `merges.txt`) are cached in
+`~/.cache/transpolymer/roberta-base/`; Hugging Face is attempted first and
+`hf-mirror` is used as a fallback.
 
 The converted Paddle pretrained checkpoint is hosted in the model repository:
 
@@ -95,42 +82,9 @@ PaddleMaterials/
         `-- model_state.pdparams
 ```
 
-The training configs use relative paths under `./data`, `./data/vocab`, and
-`./ckpt/pretrain.pt`.
-
-The complete downstream finetuned weights, training logs, finetune configs, and
-summary file are provided separately:
-
-| Artifact | Datasets | Link | Extraction code |
-| :---: | :---: | :---: | :---: |
-| Downstream outputs part 1 | Eea, Egb, Egc | [download](https://pan.baidu.com/s/1ogiNbW7KBamiok59fLQTkA) | 1227 |
-| Downstream outputs part 2a | Ei, EPS | [download](https://pan.baidu.com/s/16AyhP-WmQYGRRhALNvpFPA) | 1227 |
-| Downstream outputs part 2b | Nc, Xc | [download](https://pan.baidu.com/s/1dq7zbf54NpM74CAKuCc2Aw) | 1227 |
-| Downstream outputs part 3 | OPV, PE-II | [download](https://pan.baidu.com/s/1zLA5xbm6xoEFMOyN679dxQ) | 1227 |
-| Downstream outputs part 4 | PE-I, summary | [download](https://pan.baidu.com/s/14_2lIVvU5v2HlYOJZx9M9w) | 1227 |
-
-Each downstream output archive keeps the `output/` prefix. Extract the required
-parts to the PaddleMaterials root directory to obtain:
-
-```text
-PaddleMaterials/
-`-- output/
-    |-- Eea/
-    |   |-- Eea_best_model.pdparams
-    |   |-- Eea_train.pdparams
-    |   |-- Eea.log
-    |   `-- config_finetune.Eea.yaml
-    |-- Egb/
-    |-- Egc/
-    |-- Ei/
-    |-- EPS/
-    |-- Nc/
-    |-- Xc/
-    |-- OPV/
-    |-- PE_I/
-    |-- PE_II/
-    `-- summary_all_9.tsv
-```
+The training configs may use relative `./data` and `./data/vocab` paths, but a
+manual extraction is not required. Missing files are resolved from the official
+caches described above.
 
 ## Model
 
@@ -304,8 +258,28 @@ python property_prediction/train.py \
   -c property_prediction/configs/transpolymer/transpolymer_pe_i_finetune.yaml
 ```
 
-Replace `transpolymer_pe_i_finetune.yaml` with any other
-`transpolymer_*_finetune.yaml` file to finetune a different downstream task.
+PE-I uses the provided fixed train/test split. The remaining tasks use the
+original five-fold protocol; the helper below creates deterministic fold CSVs
+and calls the existing `property_prediction/train.py` once per fold:
+
+```bash
+python property_prediction/run_transpolymer_cv.py \
+  -c property_prediction/configs/transpolymer/transpolymer_eea_finetune.yaml
+```
+
+For a one-fold smoke test, add `--fold 1`.
+
+Each `train.py` run creates a framework-standard artifact directory:
+
+```text
+output/transpolymer_<task>_t_<timestamp>_s_1/
+|-- <config>.yaml
+|-- run.log
+`-- checkpoints/
+    |-- best.pdparams
+    |-- best.pdopt
+    `-- best.pdstates
+```
 
 ### Validation
 
@@ -316,8 +290,8 @@ python property_prediction/train.py \
   -c property_prediction/configs/transpolymer/transpolymer_pe_i_finetune.yaml \
   Global.do_train=False \
   Global.do_eval=True \
-  Trainer.pretrained_model_path=./output/PE_I \
-  Trainer.pretrained_weight_name=PE_I_best_model.pdparams
+  Trainer.pretrained_model_path=./output/transpolymer_pe_i_t_<timestamp>_s_1/checkpoints \
+  Trainer.pretrained_weight_name=best.pdparams
 ```
 
 ### Testing
@@ -329,30 +303,46 @@ python property_prediction/train.py \
   -c property_prediction/configs/transpolymer/transpolymer_pe_i_finetune.yaml \
   Global.do_train=False \
   Global.do_test=True \
-  Trainer.pretrained_model_path=./output/PE_I \
-  Trainer.pretrained_weight_name=PE_I_best_model.pdparams
+  Trainer.pretrained_model_path=./output/transpolymer_pe_i_t_<timestamp>_s_1/checkpoints \
+  Trainer.pretrained_weight_name=best.pdparams
 ```
 
-For other tasks, replace the config path and checkpoint name with the
-corresponding dataset checkpoint, for example
-`Trainer.pretrained_model_path=./output/Eea` and
-`Trainer.pretrained_weight_name=Eea_best_model.pdparams`.
+For a cross-validation task, evaluate the desired fold with that fold's
+generated config and `checkpoints/best.pdparams`.
 
 ### Prediction
 
 Run from PaddleMaterials root:
 
 ```bash
-python property_prediction/predict.py \
+python -m property_prediction.predict_transpolymer \
+  --model_name transpolymer_eea \
+  --weights_name best.pdparams \
+  --csv_file_path ./property_prediction/example_data/transpolymer_predict.csv \
+  --save_path ./output/transpolymer_eea_prediction.csv
+```
+
+This downloads the registered Eea model package automatically on first use.
+For another dataset, replace `--model_name` with its `transpolymer_<task>` name.
+To use a local checkpoint instead:
+
+```bash
+python -m property_prediction.predict_transpolymer \
   --config_path property_prediction/configs/transpolymer/transpolymer_pe_i_finetune.yaml \
-  --checkpoint_path ./output/PE_I/PE_I_best_model.pdparams \
+  --checkpoint_path ./output/transpolymer_pe_i_t_<timestamp>_s_1/checkpoints/best.pdparams \
   --csv_file_path ./property_prediction/example_data/transpolymer_predict.csv \
   --save_path ./output/transpolymer_prediction.csv
 ```
 
-The input CSV should contain the SMILES column required by the selected config,
-for example `smiles`, `CSMILES`, or `SMILES descriptor 1`. The prediction result
-is saved to the path specified by `--save_path`.
+The input CSV should contain a SMILES column. For a different column name, such
+as `CSMILES` or `SMILES descriptor 1`, pass `--smiles_column` explicitly. The
+prediction result is saved to the path specified by `--save_path`.
+
+To prepare a standalone registry archive from a full-training output, run
+`python -m property_prediction.pack_transpolymer_registry --task eea`. The archive
+contains only `transpolymer_eea/transpolymer_eea.yaml` and
+`transpolymer_eea/checkpoints/best.pdparams`. Its inference config does not
+reload the pretraining checkpoint; the finetuned weights remain unchanged.
 
 ## Citation
 

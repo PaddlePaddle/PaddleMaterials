@@ -113,6 +113,16 @@ MODEL_REGISTRY = {
     "mattergen_ml2ddb": "https://paddle-org.bj.bcebos.com/paddlematerial/workflow/ml2ddb/mattergen_ml2ddb.zip",
     "mattergen_ml2ddb_chemical_system": "https://paddle-org.bj.bcebos.com/paddlematerial/workflow/ml2ddb/mattergen_ml2ddb_chemical_system.zip",
     "mattergen_ml2ddb_space_group": "https://paddle-org.bj.bcebos.com/paddlematerial/workflow/ml2ddb/mattergen_ml2ddb_space_group.zip",
+    "transpolymer_eea": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_eea.zip",
+    "transpolymer_egb": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_egb.zip",
+    "transpolymer_egc": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_egc.zip",
+    "transpolymer_ei": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_ei.zip",
+    "transpolymer_eps": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_eps.zip",
+    "transpolymer_nc": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_nc.zip",
+    "transpolymer_xc": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_xc.zip",
+    "transpolymer_opv": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_opv.zip",
+    "transpolymer_pe_i": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_pe_i.zip",
+    "transpolymer_pe_ii": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/transpolymer/transpolymer_pe_ii.zip",
 }
 
 
@@ -200,7 +210,6 @@ def build_model(
 
 def build_model_from_name(model_name: str, weights_name: Optional[str] = None):
     path = download.get_weights_path_from_url(MODEL_REGISTRY[model_name])
-    path = osp.join(path, model_name)
     logger.info(f"Save model and configuration files in path: {path}")
     config_path = osp.join(path, f"{model_name}.yaml")
     if not osp.exists(config_path):

@@ -55,8 +55,6 @@ def _load_pretrain_from_path(path: str, model: nn.Layer):
     param_state_dict = paddle.load(f"{path}.pdparams")
     if "state_dict" in param_state_dict:
         param_state_dict = param_state_dict["state_dict"]
-    elif "model" in param_state_dict:
-        param_state_dict = param_state_dict["model"]
 
     missing_keys_unexpected_keys = model.set_state_dict(param_state_dict)
     if (

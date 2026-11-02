@@ -101,7 +101,7 @@ class PropertyPredictor:
 
         self.model.eval()
 
-        predict_config = config.get("Predict", None) or {}
+        predict_config = config.get("Predict", None)
         self.predict_config = predict_config
         self.eval_with_no_grad = predict_config.get("eval_with_no_grad", True)
 
@@ -116,9 +116,6 @@ class PropertyPredictor:
             self.post_transforms = build_post_transforms(self.post_transforms_cfg)
         else:
             self.post_transforms = None
-
-        model_params = config.get("Model", {}).get("__init_params__", {})
-        self.smiles_key = model_params.get("smiles_key", "smiles")
 
     def graph_converter(self, structure):
         if self.graph_converter_fn is None:
@@ -185,35 +182,6 @@ class PropertyPredictor:
 
             return result
 
-    @staticmethod
-    def _flatten_prediction(value):
-        if isinstance(value, paddle.Tensor):
-            value = value.numpy()
-        if hasattr(value, "reshape"):
-            return value.reshape([-1]).tolist()
-        if isinstance(value, (list, tuple)):
-            return list(value)
-        return [value]
-
-    def from_csv_file(self, csv_file_path, smiles_column="smiles", save_path=None):
-        if save_path is not None:
-            assert save_path.endswith(".csv"), "save_path must end with .csv"
-
-        df = pd.read_csv(csv_file_path)
-        if smiles_column not in df.columns:
-            smiles_column = df.columns[0]
-
-        data = {self.smiles_key: df[smiles_column].astype(str).tolist()}
-        result = self.from_structures(data)
-
-        if save_path is not None:
-            for key, value in result.items():
-                df[key] = self._flatten_prediction(value)
-            df.to_csv(save_path, index=False)
-            logger.info(f"Saved the prediction result to {save_path}")
-
-        return result
-
 
 if __name__ == "__main__":
 
@@ -249,18 +217,6 @@ if __name__ == "__main__":
         help="Path to the CIF file whose material properties you want to predict.",
     )
     argparse.add_argument(
-        "--csv_file_path",
-        type=str,
-        default=None,
-        help="Path to the CSV file whose SMILES properties you want to predict.",
-    )
-    argparse.add_argument(
-        "--smiles_column",
-        type=str,
-        default="smiles",
-        help="SMILES column name in the input CSV file.",
-    )
-    argparse.add_argument(
         "--save_path",
         type=str,
         default="result.csv",
@@ -275,10 +231,5 @@ if __name__ == "__main__":
         checkpoint_path=args.checkpoint_path,
     )
 
-    if args.csv_file_path is not None:
-        results = predictor.from_csv_file(
-            args.csv_file_path, args.smiles_column, args.save_path
-        )
-    else:
-        results = predictor.from_cif_file(args.cif_file_path, args.save_path)
+    results = predictor.from_cif_file(args.cif_file_path, args.save_path)
     print(results)

@@ -51,6 +51,7 @@ from ppmat.datasets.split_mptrj_data import none_to_zero
 from ppmat.datasets.transform import build_transforms
 from ppmat.utils import logger
 from ppmat.datasets.transpolymer_dataset import TransPolymerCsvDataset
+from ppmat.datasets.transpolymer_dataset import TransPolymerDataset
 
 __all__ = [
     "MP20Dataset",
@@ -69,6 +70,7 @@ __all__ = [
     "SmallDensityDataset",
     "OMol25Dataset",
     "TransPolymerCsvDataset",
+    "TransPolymerDataset",
 ]
 
 INFO_CLASS_REGISTRY: Dict[str, type] = {

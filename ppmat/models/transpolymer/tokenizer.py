@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import urllib.request
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
@@ -15,8 +16,14 @@ VOCAB_FILES_NAMES = {
 
 PRETRAINED_VOCAB_FILES_MAP = {
     "roberta-base": {
-        "vocab_file": "https://huggingface.co/roberta-base/resolve/main/vocab.json",
-        "merges_file": "https://huggingface.co/roberta-base/resolve/main/merges.txt",
+        "vocab_file": [
+            "https://huggingface.co/roberta-base/resolve/main/vocab.json",
+            "https://hf-mirror.com/roberta-base/resolve/main/vocab.json",
+        ],
+        "merges_file": [
+            "https://huggingface.co/roberta-base/resolve/main/merges.txt",
+            "https://hf-mirror.com/roberta-base/resolve/main/merges.txt",
+        ],
     }
 }
 
@@ -115,8 +122,10 @@ class PolymerSmilesTokenizer:
             merges_file = os.path.join(cache_dir, VOCAB_FILES_NAMES["merges_file"])
             for key, path in (("vocab_file", vocab_file), ("merges_file", merges_file)):
                 if not os.path.exists(path):
-                    url = PRETRAINED_VOCAB_FILES_MAP[pretrained_model_name_or_path][key]
-                    urllib.request.urlretrieve(url, path)
+                    cls._download_with_fallback(
+                        PRETRAINED_VOCAB_FILES_MAP[pretrained_model_name_or_path][key],
+                        path,
+                    )
         else:
             raise ValueError(f"Cannot locate tokenizer files from {pretrained_model_name_or_path!r}")
 
@@ -126,6 +135,26 @@ class PolymerSmilesTokenizer:
             with open(added_tokens_file, "r", encoding="utf-8") as f:
                 tokenizer.add_tokens(json.load(f))
         return tokenizer
+
+    @staticmethod
+    def _download_with_fallback(urls, output_path):
+        """Download an artifact atomically, trying official and mirror endpoints."""
+        errors = []
+        temporary_path = output_path + ".tmp"
+        for url in urls:
+            try:
+                with urllib.request.urlopen(url, timeout=30) as response:
+                    with open(temporary_path, "wb") as output_file:
+                        shutil.copyfileobj(response, output_file)
+                os.replace(temporary_path, output_path)
+                return
+            except Exception as error:
+                errors.append(f"{url}: {error}")
+                if os.path.exists(temporary_path):
+                    os.remove(temporary_path)
+        raise OSError(
+            "Unable to download tokenizer file. Tried: " + "; ".join(errors)
+        )
 
     @property
     def vocab_size(self):

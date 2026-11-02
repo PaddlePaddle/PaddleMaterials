@@ -69,7 +69,7 @@ Dataset:
     __init_params__: {}
   train:
     dataset:
-      __class_name__: TransPolymerCsvDataset
+      __class_name__: TransPolymerDataset
       __init_params__:
         path: ./data/Eea.csv
         property_names: ${Global.label_names}
@@ -86,7 +86,7 @@ Dataset:
         batch_size: 32
   val:
     dataset:
-      __class_name__: TransPolymerCsvDataset
+      __class_name__: TransPolymerDataset
       __init_params__:
         path: ./data/Eea.csv
         property_names: ${Global.label_names}
@@ -103,7 +103,7 @@ Dataset:
         batch_size: 32
   test:
     dataset:
-      __class_name__: TransPolymerCsvDataset
+      __class_name__: TransPolymerDataset
       __init_params__:
         path: ./data/Eea.csv
         property_names: ${Global.label_names}
@@ -118,6 +118,11 @@ Dataset:
         shuffle: False
         drop_last: False
         batch_size: 32
+
+TransPolymerCV:
+  n_splits: 5
+  shuffle: true
+  random_state: 1
 
 Predict:
   eval_with_no_grad: True
