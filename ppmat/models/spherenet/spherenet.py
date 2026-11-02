@@ -26,6 +26,7 @@ from ppmat.models.common import initializer
 from ppmat.models.common.activation import swish
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
+from ppmat.models.common.runtime import runtime_options_with_defaults
 from ppmat.models.common.spherical_fourier_bessel import DistEmbedding
 from ppmat.models.common.spherical_fourier_bessel import SphericalFourierBesselEmbedding
 from ppmat.models.spherenet.geometry import compute_geometry
@@ -358,7 +359,6 @@ class SphereNet(RuntimeMixin, paddle.nn.Layer):
         runtime_options: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         super().__init__()
-        self._init_runtime(execution_backend, runtime_options)
 
         act_fn = swish if act in ("swish", "silu") else act
         derivative_properties = (
@@ -368,6 +368,14 @@ class SphereNet(RuntimeMixin, paddle.nn.Layer):
         )
         derivative_properties = frozenset(derivative_properties)
         compute_forces = "force" in derivative_properties
+
+        if compute_forces:
+            # Forces differentiate inside the boundary; SOT capture can split
+            # paddle.grad from its input, so ask for full-graph capture.
+            runtime_options = runtime_options_with_defaults(
+                runtime_options, {"cinn": {"full_graph": True}}
+            )
+        self._init_runtime(execution_backend, runtime_options)
 
         active_properties = {property_name}
         if compute_forces:

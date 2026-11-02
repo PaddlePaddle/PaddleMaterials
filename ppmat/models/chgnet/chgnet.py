@@ -31,6 +31,7 @@ from ppmat.models.chgnet.prefitted_weights import MPF_prefitted_data
 from ppmat.models.chgnet.prefitted_weights import MPTrj_prefitted_data
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
+from ppmat.models.common.runtime import runtime_options_with_defaults
 from ppmat.utils import logger
 from ppmat.utils.crystal import frac_to_cart_coords
 from ppmat.utils.scatter import scatter
@@ -1127,6 +1128,12 @@ class CHGNet(RuntimeMixin, paddle.nn.Layer):
         **kwargs,
     ) -> None:
         super().__init__()
+        if property_names is None or {"force", "stress"}.intersection(property_names):
+            # Forces and stress differentiate inside the boundary; SOT capture can split
+            # paddle.grad from its input, so ask for full-graph capture.
+            runtime_options = runtime_options_with_defaults(
+                runtime_options, {"cinn": {"full_graph": True}}
+            )
         self._init_runtime(execution_backend, runtime_options)
         self.atom_fea_dim = atom_fea_dim
         self.bond_fea_dim = bond_fea_dim

@@ -15,6 +15,7 @@ from sklearn.gaussian_process.kernels import Kernel
 
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
+from ppmat.models.common.runtime import runtime_options_with_defaults
 from ppmat.utils.paddle_aux import dim2perm
 from ppmat.utils.scatter import scatter
 from ppmat.utils.scatter import scatter_mean
@@ -1090,6 +1091,12 @@ class M3GNet(RuntimeMixin, paddle.nn.Layer):
         **kwargs,
     ):
         super().__init__()
+        if force_key is not None or stress_key is not None:
+            # Forces and stress differentiate inside the boundary; SOT capture can split
+            # paddle.grad from its input, so ask for full-graph capture.
+            runtime_options = runtime_options_with_defaults(
+                runtime_options, {"cinn": {"full_graph": True}}
+            )
         self._init_runtime(execution_backend, runtime_options)
         self.energy_key = energy_key
         self.force_key = force_key
