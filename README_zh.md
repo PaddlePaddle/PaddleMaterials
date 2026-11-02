@@ -19,7 +19,7 @@
 
 **PaddleMaterials** 是一款基于 **PaddlePaddle** 深度学习框架构建的端到端 AI4Materials 工具包。作为面向材料科学基础模型开发与部署的数据—机理双驱动平台，**PPMat** 帮助研究人员高效构建 AI 模型，并利用预训练模型加速材料发现。
 
-<p align="left"><img src="docs/overview_en.png" align="middle" width="1000"/></p>
+<p align="left"><img src="docs/overview_ch.png" align="middle" width="1000"/></p>
 
 ### 🧩 核心能力
 
