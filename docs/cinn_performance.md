@@ -9,8 +9,8 @@ completed in eager and CINN modes. The median warm speedup across all weights
 was 1.11x, ranging from 0.51x to 4.36x.
 
 - Families where every registered weight was faster, with median speedup:
-  SphereNet MD17 3.24x, MatterSim 2.85x, SFIN 2.23x, CHGNet 2.07x, DimeNet++
-  1.87x, SphereNet QM9 1.47x, DiffCSP 1.32x, and DiffNMR 1.11x.
+  SphereNet MD17 3.24x, MatterSim 2.85x, DimeNet++ 2.26x, SFIN 2.23x, CHGNet
+  2.07x, SphereNet QM9 1.47x, DiffCSP 1.32x, and DiffNMR 1.11x.
 - Families where every registered weight was slower, with median speedup:
   ComFormer 0.83x, MatterGen 0.71x, and MEGNet 0.63x.
 
@@ -26,6 +26,8 @@ was 1.11x, ranging from 0.51x to 4.36x.
   identically seeded calls; the first CINN call is reported separately.
 - Execution: each weight ran in a separate process, with tests running
   concurrently.
+- DimeNet++: the four weights were measured again after the DimeNet++ fix, in the
+  same environment and with the same settings.
 
 | Metric | Definition |
 | --- | --- |
@@ -49,7 +51,7 @@ weights in the family.
 | ComFormer | 8 | 0 | 54.159 | 8.832 | 10.408 | 0.83x [0.63x, 0.94x] |
 | DiffCSP | 1 | 1 | 22.063 | 42.967 | 32.509 | 1.32x [1.32x, 1.32x] |
 | DiffNMR | 1 | 1 | 132.210 | 19,624.969 | 17,736.939 | 1.11x [1.11x, 1.11x] |
-| DimeNet++ | 4 | 4 | 181.085 | 22.395 | 12.052 | 1.87x [1.59x, 2.01x] |
+| DimeNet++ | 4 | 4 | 186.711 | 27.770 | 11.799 | 2.26x [1.98x, 2.76x] |
 | MatterGen | 16 | 0 | 266.045 | 368.771 | 512.713 | 0.71x [0.65x, 0.89x] |
 | MatterSim | 2 | 2 | 163.861 | 39.482 | 14.154 | 2.85x [2.53x, 3.16x] |
 | MEGNet | 8 | 0 | 49.942 | 12.442 | 20.326 | 0.63x [0.51x, 0.75x] |
@@ -72,10 +74,10 @@ weights in the family.
 | `comformer_mp2024_train_130k_e_form` | 55.211 | 55.201 | 8.468 | 10.065 | 0.84x | never |
 | `diffcsp_mp20` | 22.063 | 22.031 | 42.967 | 32.509 | 1.32x | 2,107 |
 | `diffnmr_msdnmr_nless15` | 132.210 | 114.473 | 19,624.969 | 17,736.939 | 1.11x | 61 |
-| `dimenetpp_mp2018_train_60k_G` | 180.093 | 180.079 | 21.759 | 13.703 | 1.59x | 22,352 |
-| `dimenetpp_mp2018_train_60k_K` | 171.299 | 171.287 | 22.774 | 11.985 | 1.90x | 15,877 |
-| `dimenetpp_mp2018_train_60k_band_gap` | 182.077 | 182.065 | 22.285 | 12.119 | 1.84x | 17,909 |
-| `dimenetpp_mp2018_train_60k_e_form` | 182.780 | 182.768 | 22.505 | 11.172 | 2.01x | 16,126 |
+| `dimenetpp_mp2018_train_60k_G` | 176.812 | 176.801 | 30.941 | 11.205 | 2.76x | 8,959 |
+| `dimenetpp_mp2018_train_60k_K` | 186.517 | 186.506 | 21.926 | 11.071 | 1.98x | 17,182 |
+| `dimenetpp_mp2018_train_60k_band_gap` | 190.884 | 190.872 | 24.600 | 12.393 | 1.98x | 15,637 |
+| `dimenetpp_mp2018_train_60k_e_form` | 186.905 | 186.892 | 34.943 | 13.755 | 2.54x | 8,821 |
 | `mattergen_alex_mp20` | 270.002 | 269.720 | 185.655 | 282.416 | 0.66x | never |
 | `mattergen_alex_mp20_chemical_system` | 254.266 | 253.801 | 366.483 | 464.109 | 0.79x | never |
 | `mattergen_alex_mp20_chemical_system_energy_above_hull` | 280.498 | 280.009 | 347.134 | 488.762 | 0.71x | never |
