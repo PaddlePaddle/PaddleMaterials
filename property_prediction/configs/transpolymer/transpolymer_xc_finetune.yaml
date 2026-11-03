@@ -74,6 +74,11 @@ Dataset:
         path: ./data/Xc.csv
         property_names: ${Global.label_names}
         smiles_key: smiles
+        cv_fold: ${TransPolymerCV.fold}
+        cv_split: train
+        cv_n_splits: ${TransPolymerCV.n_splits}
+        cv_shuffle: ${TransPolymerCV.shuffle}
+        cv_random_state: ${TransPolymerCV.random_state}
     loader:
       num_workers: 8
       use_shared_memory: False
@@ -91,6 +96,11 @@ Dataset:
         path: ./data/Xc.csv
         property_names: ${Global.label_names}
         smiles_key: smiles
+        cv_fold: ${TransPolymerCV.fold}
+        cv_split: val
+        cv_n_splits: ${TransPolymerCV.n_splits}
+        cv_shuffle: ${TransPolymerCV.shuffle}
+        cv_random_state: ${TransPolymerCV.random_state}
     loader:
       num_workers: 8
       use_shared_memory: False
@@ -108,6 +118,11 @@ Dataset:
         path: ./data/Xc.csv
         property_names: ${Global.label_names}
         smiles_key: smiles
+        cv_fold: ${TransPolymerCV.fold}
+        cv_split: val
+        cv_n_splits: ${TransPolymerCV.n_splits}
+        cv_shuffle: ${TransPolymerCV.shuffle}
+        cv_random_state: ${TransPolymerCV.random_state}
     loader:
       num_workers: 8
       use_shared_memory: False
@@ -120,6 +135,7 @@ Dataset:
         batch_size: 32
 
 TransPolymerCV:
+  fold: 1
   n_splits: 5
   shuffle: true
   random_state: 1

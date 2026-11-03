@@ -63,6 +63,11 @@ class TransPolymerDataset(Dataset):
         return_molecule: bool = False,
         file_path: Optional[str] = None,
         label_name: Optional[str] = None,
+        cv_fold: Optional[int] = None,
+        cv_split: Optional[str] = None,
+        cv_n_splits: int = 5,
+        cv_shuffle: bool = True,
+        cv_random_state: int = 1,
         **kwargs,
     ):
         super().__init__()
@@ -86,6 +91,17 @@ class TransPolymerDataset(Dataset):
             )
 
         self.row_data, self.num_samples = self.read_data(self.path)
+        if (cv_fold is None) != (cv_split is None):
+            raise ValueError("cv_fold and cv_split must be specified together.")
+        if cv_fold is not None:
+            self.row_data, self.num_samples = self.select_fold(
+                self.row_data,
+                cv_fold,
+                cv_split,
+                cv_n_splits,
+                cv_shuffle,
+                cv_random_state,
+            )
         self.sequence_column = self.build_sequence_cfg.get("column", smiles_key)
         if self.sequence_column not in self.row_data:
             raise KeyError(
@@ -99,9 +115,14 @@ class TransPolymerDataset(Dataset):
         if filter_unvalid:
             self.filter_unvalid_by_property()
 
-        self.cache_path = cache_path or osp.join(
+        base_cache_path = cache_path or osp.join(
             osp.split(self.path)[0] + "_cache",
             osp.splitext(osp.basename(self.path))[0],
+        )
+        self.cache_path = (
+            osp.join(base_cache_path, f"fold_{cv_fold}_{cv_split}")
+            if cv_fold is not None
+            else base_cache_path
         )
         self.sequences = self._prepare_sequence_cache()
         self.molecules = self._prepare_molecule_cache()
@@ -194,6 +215,42 @@ class TransPolymerDataset(Dataset):
             if not column.startswith("Unnamed")
         }
         return data, len(data_frame)
+
+    @staticmethod
+    def select_fold(
+        row_data: Dict[str, list],
+        cv_fold: int,
+        cv_split: str,
+        cv_n_splits: int = 5,
+        cv_shuffle: bool = True,
+        cv_random_state: int = 1,
+    ) -> tuple[Dict[str, list], int]:
+        from sklearn.model_selection import KFold
+
+        if cv_split not in {"train", "val"}:
+            raise ValueError("cv_split must be 'train' or 'val'.")
+        if cv_n_splits < 2 or not 1 <= cv_fold <= cv_n_splits:
+            raise ValueError("cv_fold must be between 1 and cv_n_splits.")
+
+        num_samples = len(next(iter(row_data.values())))
+        splitter = KFold(
+            n_splits=cv_n_splits,
+            shuffle=cv_shuffle,
+            random_state=cv_random_state if cv_shuffle else None,
+        )
+        for fold, (train_indices, val_indices) in enumerate(
+            splitter.split(range(num_samples)), start=1
+        ):
+            if fold == cv_fold:
+                indices = train_indices if cv_split == "train" else val_indices
+                return (
+                    {
+                        key: [values[index] for index in indices]
+                        for key, values in row_data.items()
+                    },
+                    len(indices),
+                )
+        raise ValueError(f"cv_fold {cv_fold} is not available.")
 
     @staticmethod
     def read_property_data(

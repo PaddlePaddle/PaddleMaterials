@@ -28,6 +28,7 @@ from ppmat.datasets.transform import build_post_transforms
 from ppmat.models import build_graph_converter
 from ppmat.models import build_model
 from ppmat.models import build_model_from_name
+from ppmat.models.transpolymer.transpolymer import TransPolymerRegressor
 from ppmat.utils import logger
 from ppmat.utils import save_load
 
@@ -183,46 +184,87 @@ class PropertyPredictor:
             return result
 
 
-if __name__ == "__main__":
+def predict_csv(predictor, csv_file_path, smiles_column="smiles", save_path="result.csv"):
+    if not save_path.endswith(".csv"):
+        raise ValueError("save_path must end with .csv")
 
-    argparse = argparse.ArgumentParser()
-    argparse.add_argument(
+    data = pd.read_csv(csv_file_path)
+    if smiles_column not in data.columns:
+        raise ValueError(
+            f"SMILES column '{smiles_column}' is missing from {csv_file_path}"
+        )
+    if data.empty or data[smiles_column].isna().any():
+        raise ValueError("Input CSV must contain non-empty SMILES values")
+
+    predictions = predictor.from_structures(data[smiles_column].tolist())
+    for name, values in predictions.items():
+        if hasattr(values, "numpy"):
+            values = values.numpy()
+        if hasattr(values, "reshape"):
+            values = values.reshape([-1]).tolist()
+        if len(values) != len(data):
+            raise ValueError(f"Prediction count for '{name}' does not match input rows")
+        data[name] = values
+
+    data.to_csv(save_path, index=False)
+    logger.info(f"Saved the prediction result to {save_path}")
+    return predictions
+
+
+def main():
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
         "--model_name",
         type=str,
         default=None,
         help="Model name.",
     )
-    argparse.add_argument(
+    parser.add_argument(
         "--weights_name",
         type=str,
         default=None,
         help="Weights name, e.g., best.pdparams, latest.pdparams.",
     )
-    argparse.add_argument(
+    parser.add_argument(
         "--config_path",
         type=str,
         default=None,
         help="Path to the configuration file.",
     )
-    argparse.add_argument(
+    parser.add_argument(
         "--checkpoint_path",
         type=str,
         default=None,
         help="Path to the checkpoint file.",
     )
-    argparse.add_argument(
+    parser.add_argument(
         "--cif_file_path",
         type=str,
-        default="./property_prediction/example_data/cifs/",
+        default=None,
         help="Path to the CIF file whose material properties you want to predict.",
     )
-    argparse.add_argument(
+    parser.add_argument(
+        "--csv_file_path",
+        type=str,
+        default=None,
+        help="Path to a CSV file containing SMILES for TransPolymer prediction.",
+    )
+    parser.add_argument(
+        "--smiles_column",
+        type=str,
+        default="smiles",
+        help="Name of the SMILES column in the input CSV file.",
+    )
+    parser.add_argument(
         "--save_path",
         type=str,
         default="result.csv",
         help="Path to save the prediction result.",
     )
-    args = argparse.parse_args()
+    args = parser.parse_args()
+    if args.csv_file_path is not None and args.cif_file_path is not None:
+        parser.error("--csv_file_path and --cif_file_path cannot be used together")
 
     predictor = PropertyPredictor(
         model_name=args.model_name,
@@ -231,5 +273,17 @@ if __name__ == "__main__":
         checkpoint_path=args.checkpoint_path,
     )
 
-    results = predictor.from_cif_file(args.cif_file_path, args.save_path)
+    if args.csv_file_path is not None:
+        if not isinstance(predictor.model, TransPolymerRegressor):
+            raise ValueError("CSV prediction requires a TransPolymerRegressor model")
+        results = predict_csv(
+            predictor, args.csv_file_path, args.smiles_column, args.save_path
+        )
+    else:
+        cif_file_path = args.cif_file_path or "./property_prediction/example_data/cifs/"
+        results = predictor.from_cif_file(cif_file_path, args.save_path)
     print(results)
+
+
+if __name__ == "__main__":
+    main()

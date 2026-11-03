@@ -258,21 +258,29 @@ python property_prediction/train.py \
   -c property_prediction/configs/transpolymer/transpolymer_pe_i_finetune.yaml
 ```
 
-PE-I uses the provided fixed train/test split. The remaining tasks use the
-original five-fold protocol; the helper below creates deterministic fold CSVs
-and calls the existing `property_prediction/train.py` once per fold:
+PE-I uses the provided fixed train/test split. For the remaining tasks, set
+`TransPolymerCV.fold` to 1 through 5. The dataset uses the original
+`KFold(n_splits=5, shuffle=True, random_state=1)` split; each fold is trained
+by the existing `train.py`. This requires `scikit-learn`. For example, run all
+five Eea folds with:
 
 ```bash
-python property_prediction/run_transpolymer_cv.py \
-  -c property_prediction/configs/transpolymer/transpolymer_eea_finetune.yaml
+for fold in 1 2 3 4 5; do
+  python property_prediction/train.py \
+    -c property_prediction/configs/transpolymer/transpolymer_eea_finetune.yaml \
+    TransPolymerCV.fold="$fold" \
+    Trainer.output_dir="./output/transpolymer_eea_fold_${fold}"
+done
 ```
 
-For a one-fold smoke test, add `--fold 1`.
+Run the command for one fold only for a smoke test. Replace `eea` in the
+config and output paths for another task. Use a distinct output directory for
+each fold; the validation and test entries in a CV config select the same held-out fold.
 
 Each `train.py` run creates a framework-standard artifact directory:
 
 ```text
-output/transpolymer_<task>_t_<timestamp>_s_1/
+output/transpolymer_<task>[_fold_<n>]_t_<timestamp>_s_1/
 |-- <config>.yaml
 |-- run.log
 `-- checkpoints/
@@ -307,15 +315,16 @@ python property_prediction/train.py \
   Trainer.pretrained_weight_name=best.pdparams
 ```
 
-For a cross-validation task, evaluate the desired fold with that fold's
-generated config and `checkpoints/best.pdparams`.
+For a cross-validation task, use the task config with
+`TransPolymerCV.fold=<n>` and the corresponding fold's
+`checkpoints/best.pdparams`.
 
 ### Prediction
 
 Run from PaddleMaterials root:
 
 ```bash
-python -m property_prediction.predict_transpolymer \
+python -m property_prediction.predict \
   --model_name transpolymer_eea \
   --weights_name best.pdparams \
   --csv_file_path ./property_prediction/example_data/transpolymer_predict.csv \
@@ -327,7 +336,7 @@ For another dataset, replace `--model_name` with its `transpolymer_<task>` name.
 To use a local checkpoint instead:
 
 ```bash
-python -m property_prediction.predict_transpolymer \
+python -m property_prediction.predict \
   --config_path property_prediction/configs/transpolymer/transpolymer_pe_i_finetune.yaml \
   --checkpoint_path ./output/transpolymer_pe_i_t_<timestamp>_s_1/checkpoints/best.pdparams \
   --csv_file_path ./property_prediction/example_data/transpolymer_predict.csv \
