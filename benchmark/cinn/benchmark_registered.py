@@ -71,6 +71,15 @@ def build_graph(predictor, input_format: str, input_path: Path):
 
 def build_workflow(model_name: str, backend: str):
     overrides = [f"Execution.backend={backend}"]
+    if model_name.startswith(("spherenet_qm9_", "dimenetpp_qm9_")):
+        predictor = PropertyPredictor(
+            model_name=model_name,
+            device="gpu:0",
+            config_overrides=overrides,
+        )
+        graph = build_graph(predictor, "xyz", XYZ)
+        return predictor, lambda: predictor._run_model(graph), "model_predict"
+
     if model_name.startswith(("comformer_", "megnet_", "dimenetpp_")):
         predictor = PropertyPredictor(
             model_name=model_name,
@@ -78,15 +87,6 @@ def build_workflow(model_name: str, backend: str):
             config_overrides=overrides,
         )
         graph = build_graph(predictor, "cif", CIF)
-        return predictor, lambda: predictor._run_model(graph), "model_predict"
-
-    if model_name.startswith("spherenet_qm9_"):
-        predictor = PropertyPredictor(
-            model_name=model_name,
-            device="gpu:0",
-            config_overrides=overrides,
-        )
-        graph = build_graph(predictor, "xyz", XYZ)
         return predictor, lambda: predictor._run_model(graph), "model_predict"
 
     if model_name.startswith(("mattersim_", "chgnet_")):
@@ -157,7 +157,7 @@ def build_workflow(model_name: str, backend: str):
                     sample_params=sample_params,
                 )
 
-        elif model_name.startswith("mattergen_"):
+        elif getattr(sampler.model, "supports_num_atoms_sampling", True):
 
             def call():
                 return sampler.sample_by_num_atoms(
