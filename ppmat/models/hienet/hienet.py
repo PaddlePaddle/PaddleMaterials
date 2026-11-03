@@ -32,13 +32,19 @@ Contract:
     the loss.
 """
 
+import paddle
+
+from ppmat.models.common.runtime import RuntimeMixin
+from ppmat.models.common.runtime import runtime_boundary
+
 from . import _keys as KEY
 from . import model_build as _model_build  # late-bound import
-import paddle
-from ppmat.models.common.runtime import RuntimeMixin, runtime_boundary
 
 TO_KB = 1602.1766208  # eV/A^3 -> kbar
 _STRESS_VOIGT_3x3 = ((0, 0), (1, 1), (2, 2), (0, 1), (1, 2), (0, 2))
+# Label keys accepted as the total-energy term (e.g. the raw dataset field
+# name); any other key maps to itself.
+_ENERGY_LABEL_ALIASES = ("energy", "uncorrected_total_energy")
 
 
 class HIENet(RuntimeMixin, paddle.nn.Layer):
@@ -107,9 +113,7 @@ class HIENet(RuntimeMixin, paddle.nn.Layer):
             result = self.forward(
                 {"graph": sample}, return_loss=False, return_prediction=True
             )
-            results.append(
-                {k: v.numpy() for k, v in result["pred_dict"].items()}
-            )
+            results.append({k: v.numpy() for k, v in result["pred_dict"].items()})
         return results if is_list else results[0]
 
     def _forward(self, data):
@@ -181,16 +185,19 @@ class HIENet(RuntimeMixin, paddle.nn.Layer):
             label_raw = data.get(prop, None)
             if label_raw is None:
                 continue
-            pred = pred_dict[prop]
+            # Dataset-side key aliases (e.g. the raw MPtrj energy field)
+            # feed the standard model outputs below.
+            pred_key = "energy" if prop in _ENERGY_LABEL_ALIASES else prop
+            pred = pred_dict[pred_key]
             label = _tensor(label_raw)
-            if prop == "energy":
+            if pred_key == "energy":
                 # Per-atom energy: both sides divided by the atom count
                 # (cast to pred dtype).
                 label = label.reshape([num_graphs]).cast(pred.dtype)
                 per_atom = num_atoms.cast(pred.dtype)
                 pred = pred.reshape([num_graphs]) / per_atom
                 label = label / per_atom
-            elif prop == "stress":
+            elif pred_key == "stress":
                 # Raw 3x3 label -> model convention (negate + Voigt
                 # [xx,yy,zz,xy,yz,xz]); the single loss-side transform.
                 label = label.cast(pred.dtype)
@@ -208,8 +215,8 @@ class HIENet(RuntimeMixin, paddle.nn.Layer):
             valid_label = label[valid]
             if valid_label.numel() > 0:
                 loss_prop = self.loss_fn(valid_pred, valid_label)
-                loss_dict[prop] = loss_prop
-                total_loss = total_loss + loss_prop * self.loss_weights_dict[prop]
+                loss_dict[pred_key] = loss_prop
+                total_loss = total_loss + loss_prop * self.loss_weights_dict[pred_key]
         loss_dict["loss"] = total_loss
         return {"loss_dict": loss_dict, "pred_dict": pred_dict}
 
@@ -263,7 +270,9 @@ class HIENet(RuntimeMixin, paddle.nn.Layer):
             # HIENet stress convention: -dE/dstrain / volume, Voigt
             # [xx,yy,zz,xy,yz,xz].
             sgrad = paddle.grad(
-                e_sum, strain_leaf, create_graph=self.training,
+                e_sum,
+                strain_leaf,
+                create_graph=self.training,
                 retain_graph=True,
             )[0]
             stress = paddle.neg(sgrad / volume.reshape([-1, 1, 1]))

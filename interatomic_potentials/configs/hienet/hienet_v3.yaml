@@ -42,6 +42,9 @@ Trainer:
 Model:
   __class_name__: HIENet
   __init_params__:
+    # dataset label keys (the raw MPtrj field names); the model maps
+    # uncorrected_total_energy to its energy output
+    property_names: ['uncorrected_total_energy', 'force', 'stress']
     # _type_map / shift / scale are per-checkpoint constants carried by the
     # released weights; see "Configuration constants" in README.md before
     # retraining from scratch or swapping in other weights.
@@ -168,13 +171,24 @@ Metric:
 Dataset:
   train:
     dataset:
-      __class_name__: HIENetDataset
+      __class_name__: MPTrjDataset
       __init_params__:
-        path: ./data/your_dataset.extxyz
-        converter: ${Global.graph_converter}
-        # frame_offset/num_frames split a single extxyz file into train/val frames
-        frame_offset: 0
-        num_frames: 270
+        path: "./data/MPtrj_2022.9_full/train.json"
+        # label keys as stored in the split JSON
+        property_names: ['uncorrected_total_energy', 'force', 'stress']
+        build_structure_cfg:
+          format: dict
+          num_cpus: 10
+        build_graph_cfg: ${Global.graph_converter}
+        # kBar -> eV/A^3 (1 / 1602.1766208); sign preserved
+        filter_unvalid: False
+        transforms:
+          - __class_name__: Scale
+            __init_params__:
+              scale: 0.0006241509125883258
+              apply_keys: ['stress']
+        # keep the graph cache separate from configs using other converters
+        cache_path: "./data/MPtrj_2022.9_full_cache_hienet/train"
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -186,12 +200,21 @@ Dataset:
       use_shared_memory: False
   val:
     dataset:
-      __class_name__: HIENetDataset
+      __class_name__: MPTrjDataset
       __init_params__:
-        path: ./data/your_dataset.extxyz
-        converter: ${Global.graph_converter}
-        frame_offset: 270
-        num_frames: 30
+        path: "./data/MPtrj_2022.9_full/val.json"
+        property_names: ['uncorrected_total_energy', 'force', 'stress']
+        build_structure_cfg:
+          format: dict
+          num_cpus: 10
+        build_graph_cfg: ${Global.graph_converter}
+        filter_unvalid: False
+        transforms:
+          - __class_name__: Scale
+            __init_params__:
+              scale: 0.0006241509125883258
+              apply_keys: ['stress']
+        cache_path: "./data/MPtrj_2022.9_full_cache_hienet/val"
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -201,6 +224,7 @@ Dataset:
     loader:
       num_workers: 0
       use_shared_memory: False
+
 
 Predict:
   graph_converter: ${Global.graph_converter}

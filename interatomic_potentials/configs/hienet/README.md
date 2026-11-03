@@ -10,7 +10,9 @@ HIENet is a machine learning interatomic potential for crystalline materials tha
 
 ## Datasets
 
-HIENet was trained on the Materials Project Trajectory (MPtrj) dataset; see the original [paper](https://arxiv.org/abs/2503.05771). No dataset is shipped with this repository: point the `path` entries in the `Dataset` section of `hienet_v3.yaml` to your own extxyz file of energy/force/stress-labeled structures (`frame_offset`/`num_frames` split that one file into train/val frames).
+HIENet was trained on the Materials Project Trajectory (MPtrj) dataset; see the original [paper](https://arxiv.org/abs/2503.05771).
+
+Training uses `hienet_v3.yaml` with the suite's `MPTrjDataset`: the dataset class reads the split JSON files (the archive downloads automatically when the configured `path` does not exist yet) and builds graphs through the HIENet converter. The model-contract labels are assembled in the config: the raw `uncorrected_total_energy` field (eV) feeds the energy term, forces pass through unchanged (eV/Å), and stress is scaled from kBar to eV/Å³ by an in-config `Scale` transform (factor 1/1602.1766208, sign preserved).
 
 ## Models
 
@@ -53,33 +55,18 @@ Retraining from scratch on a new dataset requires recomputing them from that dat
 
 ## Results
 
-<table>
-    <head>
-        <tr>
-            <th nowrap="nowrap">Model Name</th>
-            <th nowrap="nowrap">Dataset</th>
-            <th nowrap="nowrap">Energy MAE(meV/atom) / Force MAE(meV/Å) / Stress MAE(kBar)</th>
-            <th nowrap="nowrap">Config</th>
-        </tr>
-    </head>
-    <body>
-        <tr>
-            <td nowrap="nowrap">hienet_v3</td>
-            <td nowrap="nowrap">MPtrj</td>
-            <td nowrap="nowrap">6.77 / 24.82 / 2.31</td>
-            <td nowrap="nowrap"><a href="hienet_v3.yaml">hienet_v3</a></td>
-        </tr>
-    </body>
-</table>
+| Model Name | Dataset | Energy MAE (meV/atom) / Force MAE (meV/Å) / Stress MAE (kBar) | Config                      |
+| :--------- | :------ | :----------------------------------------------------------- | :-------------------------- |
+| hienet_v3  | MPtrj   | 6.77 / 24.82 / 2.31                                          | [hienet_v3](hienet_v3.yaml) |
 
 **Note**: The model weights were converted from the [HIENet](https://github.com/divelab/AIRS) official torch implementation (the released checkpoint). We did not retrain the model on the full MPtrj dataset, so the MAE metrics in the table are cited from Table 2 of the original [paper](https://arxiv.org/abs/2503.05771) (validation split).
 
 ### Training
 
 ```bash
-# multi-gpu training
+# multi-gpu training on MPtrj (the dataset archive downloads automatically)
 python -m paddle.distributed.launch --gpus="0,1,2,3" interatomic_potentials/train.py -c interatomic_potentials/configs/hienet/hienet_v3.yaml
-# single-gpu training
+# single-gpu training on MPtrj
 python interatomic_potentials/train.py -c interatomic_potentials/configs/hienet/hienet_v3.yaml
 ```
 
@@ -118,7 +105,7 @@ Forward and training accuracy of the PaddlePaddle port were verified against the
 
 | Gate                 | Comparison                                                              | Result                                                       |
 | :------------------- | :---------------------------------------------------------------------- | :----------------------------------------------------------- |
-| forward, fp64        | Paddle vs torch, 21-structure set (20 evaluated under the ≤64-atom cap) | worst mean_abs: E 2.3e-13 / F 8.9e-15 / S 5.4e-16            |
+| forward, fp64        | Paddle vs torch, 21-structure set                       | worst mean_abs: E 9.1e-13 / F 8.9e-15 / S 5.4e-16            |
 | contract wrapper     | ppmat contract model vs the ported full-chain forward                   | max_abs: E 3.6e-15 / F 5.8e-15 / S 1.6e-16 (tolerance 1e-10) |
 | training loss parity | 36 training steps (2 epochs × 18 steps), fp32 GPU                       | mean_rel across E/F/S/total: 2.1e-5 ~ 5.5e-5                 |
 

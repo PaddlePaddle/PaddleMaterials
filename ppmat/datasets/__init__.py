@@ -36,7 +36,6 @@ from ppmat.datasets.density_dataset import MPCubicDensityDataset
 from ppmat.datasets.density_dataset import OMol25MC5kDensityDataset
 from ppmat.datasets.density_dataset import OMol25MC5kTrimmedDensityDataset
 from ppmat.datasets.density_dataset import QM9DensityDataset
-from ppmat.datasets.hienet_dataset import HIENetDataset
 from ppmat.datasets.high_level_water_dataset import HighLevelWaterDataset
 from ppmat.datasets.jarvis_dataset import JarvisDataset
 from ppmat.datasets.matbench_dataset import MatbenchDataset
@@ -80,7 +79,6 @@ __all__ = [
     "SFINDataset",
     "OMol25Dataset",
     "MD17Dataset",
-    "HIENetDataset",
 ]
 
 INFO_CLASS_REGISTRY: Dict[str, type] = {

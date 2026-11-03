@@ -59,18 +59,12 @@ ALL_PROPERTIES = ("energy", "force", "stress")
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 YAML = (
-    REPO_ROOT
-    / "interatomic_potentials"
-    / "configs"
-    / "hienet"
-    / "hienet_v3.yaml"
+    REPO_ROOT / "interatomic_potentials" / "configs" / "hienet" / "hienet_v3.yaml"
 )
 # The released checkpoint and the pseudo-labeled frames live outside this
 # repository (see interatomic_potentials/configs/hienet/README.md);
 # HIENET_TEST_WORKSPACE points at the workspace holding them.
-_WORKSPACE = Path(
-    os.environ.get("HIENET_TEST_WORKSPACE", "/home/lkyu/baidu/HIENet")
-)
+_WORKSPACE = Path(os.environ.get("HIENET_TEST_WORKSPACE", "/home/lkyu/baidu/HIENet"))
 WEIGHTS = _WORKSPACE / "HIENet_paddle" / "checkpoints" / "HIENet-V3.pdparams"
 DATA = _WORKSPACE / "data" / "pseudo_labeled.extxyz"
 
@@ -91,6 +85,7 @@ def float64_default_dtype():
     paddle.set_default_dtype("float64")
     yield
     paddle.set_default_dtype(original)
+
 
 # ---------------------------------------------------------------------------
 # float64 build hook (idempotent): the checkpoint stores float32 weights, so
@@ -143,9 +138,7 @@ def _patch_onehot_fp64(module):
 
     def forward(self, data):
         inp = data[self.key_x]
-        embd = paddle.nn.functional.one_hot(inp, self.num_classes).to(
-            paddle.float64
-        )
+        embd = paddle.nn.functional.one_hot(inp, self.num_classes).to(paddle.float64)
         data[self.key_x] = embd
         data[self.key_additional_output] = embd
         data[self.key_save] = inp
@@ -173,9 +166,7 @@ def _make_model(execution_backend="cinn"):
             # isinstance gate rejects.
             runtime_options={"cinn": {"full_graph": False}},
         )
-        missing, unexpected = model.backbone.load_state_dict(
-            _STATE64, strict=False
-        )
+        missing, unexpected = model.backbone.load_state_dict(_STATE64, strict=False)
         assert not missing and not unexpected, (missing, unexpected)
     for _, child in model.backbone.named_children():
         if isinstance(child, OnehotEmbedding):
@@ -376,12 +367,14 @@ def _predictor_config(checkpoint_path, execution_backend="cinn"):
 
     params = _model_init_params()
     params["execution_backend"] = execution_backend
-    predict_cfg = OmegaConf.to_container(
-        OmegaConf.load(str(YAML)), resolve=True
-    )["Predict"]
+    predict_cfg = OmegaConf.to_container(OmegaConf.load(str(YAML)), resolve=True)[
+        "Predict"
+    ]
     predict_cfg["checkpoint_path"] = str(checkpoint_path)
-    return {"Model": {"__class_name__": "HIENet", "__init_params__": params},
-            "Predict": predict_cfg}
+    return {
+        "Model": {"__class_name__": "HIENet", "__init_params__": params},
+        "Predict": predict_cfg,
+    }
 
 
 def _example_structure():

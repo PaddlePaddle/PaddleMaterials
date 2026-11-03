@@ -24,24 +24,45 @@ no Voigt reorder). Negation / Voigt reorder are model loss semantics and
 belong to the HIENet main class; exactly one side transforms.
 """
 
+import ase
 import numpy as np
 from ase.neighborlist import primitive_neighbor_list
+from p_tqdm import p_map
+from pymatgen.core.structure import Structure
+
 from ppmat.datasets.geometric_data_type import Data
 
 
 class HIENetGraphConverter:
-    """Convert an ase Atoms object into a ppmat Data (HIENet contract keys).
+    """Convert a structure into a ppmat Data (HIENet contract keys).
 
-    Attributes: atom_types [N] int64, cart_coords [N,3] float32,
-    lattice [1,3,3] float32, num_atoms [1] int64, edge_index [2,E] int64,
-    pbc_offset [E,3] int64; plus energy [1] float64, force [N,3] float64,
-    stress [3,3] float64 when calc results are available.
+    Accepts a single ase Atoms (the original HIENet entry type), a single
+    pymatgen Structure (converted to ase Atoms first, as in the m3gnet
+    converter), or a list of either. Attributes: atom_types [N] int64,
+    cart_coords [N,3] float32, lattice [1,3,3] float32, num_atoms [1]
+    int64, edge_index [2,E] int64, pbc_offset [E,3] int64; plus energy
+    [1] float64, force [N,3] float64, stress [3,3] float64 when calc
+    results are available.
     """
 
-    def __init__(self, cutoff: float = 5.0):
+    def __init__(self, cutoff: float = 5.0, num_cpus: int | None = None):
         self.cutoff = cutoff
+        self.num_cpus = num_cpus
 
-    def __call__(self, atoms) -> Data:
+    def __call__(self, atoms):
+        if isinstance(atoms, Structure):
+            atoms = atoms.to_ase_atoms()
+            # The pymatgen round-trip may restore a partial
+            # SinglePointCalculator from site properties; Structure inputs
+            # yield structure-only Data, labels attach dataset-side.
+            atoms.calc = None
+        elif isinstance(atoms, (list, tuple)):
+            return p_map(self.__call__, list(atoms), num_cpus=self.num_cpus)
+        if not isinstance(atoms, ase.Atoms):
+            raise TypeError(
+                "The input must be an ase.Atoms, a pymatgen.Structure, "
+                "or a list of them."
+            )
         pos = atoms.get_positions()
         cell = np.array(atoms.get_cell())
         edge_src, edge_dst, edge_vec, shifts = primitive_neighbor_list(
