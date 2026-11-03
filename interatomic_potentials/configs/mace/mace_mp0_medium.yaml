@@ -76,6 +76,9 @@ Metric:
   stress:
     __class_name__: IgnoreNanMetricWrapper
     __init_params__:
+      # The dataset collates stress as [1, 3, 3] per sample while the model
+      # emits [3, 3]; both hold 9 elements. Only this metric opts in.
+      flatten_if_same_numel: True
       __class_name__: paddle.nn.L1Loss
       __init_params__: {}
 

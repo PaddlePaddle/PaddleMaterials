@@ -58,10 +58,18 @@ def silu(x: paddle.Tensor) -> paddle.Tensor:
 
     ``paddle.nn.functional.silu`` produces ``nan`` gradients for the large
     pre-activations the MACE radial MLP reaches with real weights, so build it
-    from the (stable) sigmoid instead.  Mathematically identical to SiLU, and
-    named ``silu`` so that ``normalize2mom`` picks the e3nn constant.
+    from the (stable) sigmoid instead.  Mathematically identical to SiLU.
+
+    The ``e3nn_cst`` attribute pins ``normalize2mom`` to the exact constant
+    e3nn uses, so the converted MACE-MP-0 weights reproduce the PyTorch model.
+    Without the attribute the public e3nn package keeps its Monte-Carlo
+    estimate, which is what the other models (InfGCN, SphereNet) were trained
+    with.
     """
     return x * F.sigmoid(x)
+
+
+silu.e3nn_cst = 1.6791767923989418
 
 
 class EquivariantProductBasisBlock(nn.Layer):

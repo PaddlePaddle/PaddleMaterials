@@ -59,120 +59,100 @@ $$
 
 ## Results
 
-The numbers below come from three different sources and are reported separately.
-They must not be compared across blocks.
+Every number in this section was produced by this Paddle implementation on the
+fixed validation subset described below. The original paper's MPtrj accuracy is
+**not** reproduced or restated here, and no number in this section is taken
+from, or comparable to, the PyTorch implementation.
 
-### A. Original paper results (reference only)
+### Evaluation protocol
 
-As reported by the MACE authors for MACE-MP-0 medium trained on the full MPtrj
-training set. These numbers were **not** produced by this Paddle implementation;
-they are listed only as a reference point.
+- **validation set**: 754 frames / 60 materials randomly sampled from the MPtrj
+  validation split. This is a subset, not the official validation split, and no
+  test-split number is used for checkpoint selection.
+- **energy**: `uncorrected_total_energy / natoms` (MACE convention), MAE in
+  meV/atom.
+- **force**: forces as stored in MPtrj, MAE in meV/Å.
+- **stress**: `-0.1 * stress_kBar`, i.e. a single conversion in the dataset
+  pipeline. MAE is reported over the **6 independent components** of the
+  symmetric 3x3 tensor, in GPa. This is the only stress definition used below.
+- **hardware**: 1x Tesla V100-PCIE-16GB (16 GB), PaddlePaddle 3.1.0, float32.
 
-| Model | Dataset | Energy MAE (meV/atom) | Force MAE (meV/Å) | Stress MAE (GPa) | GPUs | Training time |
-| --- | --- | --- | --- | --- | --- | --- |
-| mace_mp0_medium | MPtrj_2022.9_full | 23 | 33 | 0.91 | as reported in the paper | as reported in the paper |
+### Paddle results
 
-### B. Paddle inference with weights converted from the official PyTorch checkpoint
+`mace_mp0_medium` starts from weights converted from the official PyTorch
+checkpoint. Both Stage 1 runs below are therefore short Paddle **fine-tuning**
+runs on top of an already trained model, not training from random
+initialisation, and they are not a reproduction of the paper's accuracy.
 
-The checkpoint shipped in `mace_mp0_medium.zip` is obtained by converting the
-official PyTorch MACE-MP-0 medium weights into Paddle format. No Paddle training
-was involved, so a training time does not apply to this block.
+Reference point — the converted weights before any Paddle update (0 steps):
+Energy 17.03 meV/atom, Force 61.43 meV/Å, Stress 0.4225 GPa (6 components).
 
-Evaluation protocol:
+| Run | Dataset | Train samples (frames / materials) | Steps | LR | Energy MAE (meV/atom) | Force MAE (meV/Å) | Stress MAE (GPa, 6 comp.) | GPU | Peak GPU memory | Training time | Config | Checkpoint / log |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | ---: | --- | --- | --- |
+| mace_mp0_medium, Stage 1-A | MPtrj train subset | 4,021 / 938 | 100 | 1e-6 | **17.01** | **61.42** | 0.4231 | 1x V100-PCIE-16GB | 8,230 MB | 259 s wall: 47.3 s fwd/bwd/opt (0.47 s/step) + 103.9 s cold data load, plus in-loop eval | [mace_mp0_medium.yaml](mace_mp0_medium.yaml) | not released (local only) |
+| mace_mp0_medium, Stage 1-B | MPtrj train subset | 4,021 / 938 | 100 | 3e-6 | 16.98 | 61.41 | 0.4244 | 1x V100-PCIE-16GB | 8,230 MB | 211 s wall: 64.4 s fwd/bwd/opt (0.64 s/step) + 0.2 s data load, plus in-loop eval | [mace_mp0_medium.yaml](mace_mp0_medium.yaml) | not released (local only) |
 
-- set: 754 frames / 60 materials sampled from the MPtrj validation split
-  (`uncorrected_total_energy / natoms` for energy, `-0.1 * kBar` for stress,
-  forces used as stored);
-- energy MAE is reported per atom; stress MAE uses the 6 independent components
-  of the symmetric 3x3 tensor.
+Both runs use Adam (no weight decay), the model's own SmoothL1 loss with
+weights E:F:S = 1:1:0.1, gradient clipping at 10, seed 42, and the same batch
+schedule. "fwd/bwd/opt" is the per-step compute sum over the 100 optimizer
+steps; "wall" also includes batch collation and the in-loop validation of the
+fixed 754 frames. Stage 1-A paid 103.9 s of first-epoch data loading because
+its cache was cold, which is why its wall time is longer. No Stage 1 checkpoint
+has been published to BOS; `mace_mp0_medium.zip` still ships the converted
+checkpoint.
 
-| Model | Dataset | Energy MAE (meV/atom) | Force MAE (meV/Å) | Stress MAE (GPa) | GPUs | Training time |
-| --- | --- | --- | --- | --- | --- | --- |
-| mace_mp0_medium (converted) | 754 frames / 60 materials (MPtrj val subset) | 17.0 (atom-weighted 12.9) | 61.4 (RMSE 115.2) | 0.42 (6 components, Pearson r = 0.957; 0.31 over all 9 entries) | 1x Tesla V100-PCIE-16GB | n/a (inference only, 0.071 s/frame, 7.8 GB peak) |
+The 60-material validation subset is long-tailed: per-frame force MAE is
+44.8 meV/Å at the median, 122.7 at P90, 322.2 at P99 and 598.3 at the maximum,
+and the worst 5% of the frames carry 20.6% of the total force error (36.9% of
+the stress error). Aggregate numbers above should be read with that in mind.
 
-This block only characterizes the converted checkpoint on the protocol above.
-The subset is a random 60-material sample rather than the official validation
-split, and the per-frame error is long-tailed: per-frame force MAE is 44.8 meV/Å
-at the median, 122.7 at P90, 322.2 at P99 and 598.3 at the maximum, and the
-worst 5% of the frames carry 20.6% of the total force error (36.9% of the stress
-error). These values are therefore not directly comparable with the paper
-numbers in block A.
+### Stage 0: 300 steps on the converted weights (negative result)
 
-The same 754 frames were also evaluated with the official PyTorch MACE
-implementation and its original checkpoint
-(`_final_check/logs/v19_torch_vs_paddle_all_fix.json`). The two implementations
-agree to 1.5e-05 eV/Å on forces, 1.6e-05 eV/atom on energies and 6.6e-05 GPa on
-stresses, and reproduce the metrics in the table to every printed digit, so the
-numbers above are a property of the converted weights, not of the Paddle port.
+A first attempt with 300 Adam steps at lr 3e-5 on a 368-frame subset updated all
+29 trainable tensors (max absolute change 3.1e-3), so Paddle training does run,
+but every validation metric degraded monotonically: energy 17.03 → 19.91
+meV/atom, force 61.43 → 62.74 meV/Å, stress 0.4225 → 0.4401 GPa. The best
+Stage 0 checkpoint is therefore step 0, i.e. the initial weights, and none is
+kept. The full per-checkpoint record is preserved in the project validation
+report rather than repeated here.
 
-### C. Weights trained with Paddle
+### Stage 1: short fine-tuning at two learning rates
 
-Results of two short Paddle runs: Stage 0 (300 steps, 368-frame train subset) and
-Stage 1 (100 steps, 4,021-frame train subset, two learning rates). Both start
-from the converted checkpoint of block B, so they are **fine-tuning from
-converted PyTorch weights**, not training from random initialisation. Every
-number below is measured, not estimated or carried over from blocks A or B.
-Evaluation protocol is identical to block B: the same fixed 754-frame /
-60-material MPtrj validation subset, with no test split used for selection.
+Stage 1 uses a 4,021-frame subset drawn from the official train split by
+`md5(mp_id)` stratified sampling (938 materials, 31.8 atoms/frame against 31.1
+for the full train split, so the atom-count histogram matches the full split to
+within 1 percentage point; material overlap with the validation and test
+subsets is 0). Both candidates use the same initial weights, seed and batch
+order; the only difference is the learning rate.
 
-| Model | Dataset (frames) | Steps | Energy MAE (meV/atom) | Force MAE (meV/Å) | Stress MAE (GPa) | GPUs | Peak memory | Training time |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| mace_mp0_medium (Paddle-trained, Stage 0) | 368 frames / 60 materials (MPtrj train subset) | 300 | 19.9 | 62.7 | 0.44 (6 components; 0.32 over all 9 entries) | 1x Tesla V100-PCIE-16GB | 11,624 MB | 138 s compute (0.46 s/step), 281 s wall including in-loop evaluation |
-| mace_mp0_medium (Paddle fine-tuned, Stage 1-A) | 4,021 frames / 938 materials (MPtrj train subset) | 100 (lr 1e-6) | **17.01** | **61.42** | 0.42 (6 components; 0.311 over all 9 entries) | 1x Tesla V100-PCIE-16GB | 8,230 MB | 46.4 s compute (0.46 s/step), 259 s wall including in-loop evaluation |
-| mace_mp0_medium (Paddle fine-tuned, Stage 1-B) | 4,021 frames / 938 materials (MPtrj train subset) | 100 (lr 3e-6) | 16.98 | 61.41 | 0.42 (6 components; 0.312 over all 9 entries) | 1x Tesla V100-PCIE-16GB | 8,230 MB | 63.7 s compute (0.64 s/step), 211 s wall including in-loop evaluation |
+| candidate | steps | Energy MAE (meV/atom) | Force MAE (meV/Å) | Stress MAE (GPa, 6 components) | relative change vs step 0 (E / F / S) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| initial weights | 0 | 17.026 | 61.427 | 0.4225 | — |
+| Stage 1-A, lr 1e-6 | 50 | 17.017 | 61.420 | 0.4228 | −0.05% / −0.01% / +0.09% |
+| Stage 1-A, lr 1e-6 | 100 | **17.006** | **61.420** | 0.4231 | −0.12% / −0.01% / +0.14% |
+| Stage 1-B, lr 3e-6 | 50 | 17.004 | 61.416 | 0.4237 | −0.13% / −0.02% / +0.28% |
+| Stage 1-B, lr 3e-6 | 100 | 16.978 | 61.409 | 0.4244 | −0.28% / −0.03% / +0.45% |
 
-**Stage 0 is a negative result and is reported as such.** Starting from the
-converted checkpoint (block B), 300 Adam steps at a constant learning rate of
-3e-5 with the model's own SmoothL1 loss (E:F:S = 1:1:0.1, gradient clip 10,
-seed 42) updated all 29 trainable tensors (max absolute change 3.1e-3) and
-produced checkpoints that differ from the initial weights, so Paddle training
-is genuinely running. However, all three validation metrics degraded
-monotonically on the fixed 754-frame subset:
+Checkpoints were selected by a pre-registered rule: the sum of the E/F/S MAE
+ratios against step 0 (lower is better). Stage 1-A step 100 is the only
+checkpoint below the baseline (2.99993 against 3.00000), and it reloads
+strictly (63/63 tensors, no missing or unexpected keys; predictions reproduce to
+1.9e-6 eV/Å on forces). Stage 1-B selects step 0 because its stress error grew
+faster than its energy/force error fell.
 
-| checkpoint | steps | Energy MAE (meV/atom) | Force MAE (meV/Å) | Stress MAE, 9 entries (GPa) |
-| --- | --- | --- | --- | --- |
-| converted (block B) | 0 | 17.03 | 61.43 | 0.3106 |
-| step 100 | 100 | 18.95 | 62.92 | 0.3182 |
-| step 200 | 200 | 19.00 | 62.40 | 0.3165 |
-| step 300 | 300 | 19.91 | 62.74 | 0.3228 |
+Both Stage 1 runs are small: energy improves by 0.12%, force by 0.01%, and
+stress is still 0.14% worse than the initial weights. This is **not** a
+reproduction of the paper accuracy, and no Stage 1 checkpoint is designated as
+the final model.
 
-The best validation checkpoint is therefore step 0, i.e. the converted weights
-themselves; no Stage 0 checkpoint beats block B, and none of them are shipped
-in `mace_mp0_medium.zip`.
+### Checkpoint status
 
-**Stage 1 fixes most of that degradation.** It uses a 4,021-frame subset drawn
-from the official train split by `md5(mp_id)` stratified sampling (938
-materials, 31.8 atoms/frame against 31.1 for the full train split, so the
-atom-count histogram now matches the full split to within 1 percentage point;
-material overlap with our val and test subsets is 0), the same converted
-initialisation, the same seed and the same batch order for both candidates.
-
-| candidate | steps | Energy MAE (meV/atom) | Force MAE (meV/Å) | Stress MAE, 9 entries (GPa) | Stress MAE, 6 components (GPa) | relative to block B (E / F / S) |
-| --- | --- | --- | --- | --- | --- | --- |
-| converted (block B) | 0 | 17.026 | 61.427 | 0.3106 | 0.4225 | — |
-| Stage 1-A, lr 1e-6 | 50 | 17.017 | 61.420 | 0.3108 | 0.4228 | −0.05% / −0.01% / +0.08% |
-| Stage 1-A, lr 1e-6 | 100 | **17.006** | **61.420** | 0.3110 | 0.4231 | −0.12% / −0.01% / +0.13% |
-| Stage 1-B, lr 3e-6 | 50 | 17.004 | 61.416 | 0.3114 | 0.4237 | −0.13% / −0.02% / +0.25% |
-| Stage 1-B, lr 3e-6 | 100 | 16.978 | 61.409 | 0.3119 | 0.4244 | −0.29% / −0.03% / +0.41% |
-
-Stage 1-A step 100 is the only checkpoint whose combined E/F/S ratio against
-block B is below 1.0 (2.99993, where block B is 3.00000). It is a genuinely
-optimised Paddle checkpoint: all 29 trainable tensors changed
-(`max |Δ| = 5.0e-5`, SHA256 differs from the initial weights), and it reloads
-strictly (63/63 tensors, no missing or unexpected keys, predictions reproduced
-to 1.9e-6 eV/Å on forces). Stage 1-B selected step 0 by the same pre-registered
-rule because its stress error grew faster than its energy/force error fell.
-
-Both Stage 1 runs are small: energy improves by 0.1%, force by 0.01%, and
-stress is still 0.13% worse than block B, so this is **not** a reproduction of
-the paper accuracy in block A. No Stage 1 checkpoint is designated as the final
-model, and it is not shipped in the zip.
-
-**Note**: the suite checkpoint zip (`mace_mp0_medium.zip`) currently contains the
-converted checkpoint of block B together with the config yaml and
-`checkpoints/best.pdparams`, so that `predict.py --model_name=mace_mp0_medium`
-works out of the box. It has **not** been replaced by any Stage 0 or Stage 1
-checkpoint: none of them is better than block B on all three metrics.
+`mace_mp0_medium.zip` contains the converted checkpoint (`checkpoints/best.pdparams`)
+together with `mace_mp0_medium.yaml`, so that
+`predict.py --model_name=mace_mp0_medium` works out of the box. It has **not**
+been replaced by any Stage 0 or Stage 1 checkpoint: none of them is better than
+the initial weights on all three metrics. Stage 0 and Stage 1 checkpoints are
+local artifacts and are not published.
 
 ### Training
 ```bash
