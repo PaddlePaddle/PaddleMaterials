@@ -1,0 +1,208 @@
+# MACE-MP-0 medium: Paddle fine-tuning of the converted MPtrj weights.
+#
+# This is NOT the from-scratch recipe in `mace_mp0_medium.yaml`, and the two
+# must not be confused:
+#
+#   mace_mp0_medium.yaml           lr 1e-3 cosine, pretrained_model_path null
+#   mace_mp0_medium_finetune.yaml  lr 1e-6 constant, official converted weights
+#
+# Differences from the from-scratch recipe (nothing else changes: same model,
+# same graph cut-off, same label protocol, same loss weights):
+#   * initial weights  ./weights/mace_mp0_medium_converted.pdparams
+#     official MACE-MP-0 medium converted from PyTorch; 63/63 state-dict
+#     entries load strictly, the 16 redundant PyTorch buffers are not stored
+#   * Adam, constant learning rate 1e-6, weight_decay 0.0 (no cosine schedule)
+#   * SmoothL1 on energy_per_atom : force : stress = 1 : 1 : 0.1, which is the
+#     MACE model default (`loss_weights_dict`); nothing overridden here
+#   * seed 42, AMP disabled
+#   * 40 000-frame MPtrj *train* subset (materials sampled by md5(mp_id) inside
+#     atom-count strata); the 754-frame validation split and the 340-frame test
+#     split are excluded from it by construction
+#
+# The reported reference run was driven step by step (500 optimizer steps,
+# checkpoints at 0/250/500, then continued with the same stream to 2000 steps).
+# Batches were packed to <= 112 atoms and <= 8 frames (mean 90 atoms / 3.1 frames
+# per step) so that a shared 16 GB V100 (only ~8.6 GB free at launch) never has
+# to drop a cell silently. The 605 frames above 128 atoms (1.51 % of the
+# 40 010-frame subset, 131 materials) do not fit a single-frame forward+backward
+# pass on that device; they are excluded explicitly and listed, with their atom
+# counts, in the training log.
+# `interatomic_potentials/train.py` iterates by epoch and uses the fixed 8-frame
+# sampler below; both paths consume the same model, loss, optimiser, data and
+# protocol.
+Global:
+  do_train: True
+  do_eval: True
+  do_test: False
+  label_names: ['energy_per_atom', 'force', 'stress']
+  graph_converter:
+    __class_name__: FindPointsInSpheres
+    __init_params__:
+      cutoff: 6.0
+  prim_eager_enabled: True
+
+Trainer:
+  max_epochs: 1
+  seed: 42
+  output_dir: ./output/mace_mp0_medium_finetune
+  save_freq: 1
+  log_freq: 50
+  start_eval_epoch: 1
+  eval_freq: 1
+  # Start from the converted MPtrj weights, not from random initialisation.
+  pretrained_model_path: ./weights/mace_mp0_medium_converted.pdparams
+  pretrained_weight_name: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: 'O1'
+  eval_with_no_grad: False
+  gradient_accumulation_steps: 1
+  best_metric_indicator: 'eval_metric'
+  name_for_best_metric: "energy_per_atom"
+  greater_is_better: False
+  compute_metric_during_train: True
+  metric_strategy_during_eval: 'epoch'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: MACE
+  __init_params__:
+    r_max: 6.0
+    num_bessel: 10
+    num_polynomial_cutoff: 5
+    max_ell: 3
+    num_interactions: 2
+    num_elements: 89
+    hidden_irreps: "128x0e+128x1o"
+    MLP_irreps: "16x0e"
+    correlation: 3
+    radial_MLP: [64, 64, 64]
+    avg_num_neighbors: 61.964672446250916
+    atomic_inter_scale: 0.8041538754478097
+    atomic_inter_shift: 0.16409696359187365
+    property_names: ['energy_per_atom', 'force', 'stress']
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    # constant 1e-6: a fine-tuning rate, five orders of magnitude below the
+    # from-scratch recipe, so the converted weights are not destroyed
+    lr: 1e-6
+    weight_decay: 0.0
+
+Metric:
+  energy_per_atom:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+  force:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+  stress:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      # The dataset collates stress as [1, 3, 3] per sample while the model
+      # emits [3, 3]; both hold 9 elements. Only this metric opts in.
+      flatten_if_same_numel: True
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MPTrjDataset
+      __init_params__:
+        path: "./data/MPtrj_2022.9_full/train_subset_40k.json"
+        property_names: ${Global.label_names}
+        build_structure_cfg:
+          format: dict
+          primitive: False
+          niggli: False
+          # Keep the original Cartesian frame from the JSON so that the
+          # force/stress labels stay consistent with the graph orientation.
+          canocial: False
+          num_cpus: 10
+        cache_path: "./data/MPtrj_2022.9_full_cache/train_subset_40k"
+        build_graph_cfg: ${Global.graph_converter}
+        filter_unvalid: False
+        energy_source: uncorrected_total_energy
+        transforms:
+          - __class_name__: Scale
+            __init_params__:
+              scale: -0.1
+              apply_keys: ['stress']
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 8
+  val:
+    dataset:
+      __class_name__: MPTrjDataset
+      __init_params__:
+        path: "./data/MPtrj_2022.9_full/val.json"
+        property_names: ${Global.label_names}
+        build_structure_cfg:
+          format: dict
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 10
+        cache_path: "./data/MPtrj_2022.9_full_cache/val"
+        build_graph_cfg: ${Global.graph_converter}
+        filter_unvalid: False
+        energy_source: uncorrected_total_energy
+        transforms:
+          - __class_name__: Scale
+            __init_params__:
+              scale: -0.1
+              apply_keys: ['stress']
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 8
+  test:
+    dataset:
+      __class_name__: MPTrjDataset
+      __init_params__:
+        path: "./data/MPtrj_2022.9_full/test.json"
+        property_names: ${Global.label_names}
+        build_structure_cfg:
+          format: dict
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 10
+        cache_path: "./data/MPtrj_2022.9_full_cache/test"
+        build_graph_cfg: ${Global.graph_converter}
+        filter_unvalid: False
+        energy_source: uncorrected_total_energy
+        transforms:
+          - __class_name__: Scale
+            __init_params__:
+              scale: -0.1
+              apply_keys: ['stress']
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 8
+
+Predict:
+  graph_converter: ${Global.graph_converter}
+  eval_with_no_grad: False
