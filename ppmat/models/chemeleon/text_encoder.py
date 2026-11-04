@@ -31,7 +31,24 @@ from typing import Optional
 
 import paddle
 
-from ppmat.models.chemeleon.diff_utils import prob_mask_like
+
+def prob_mask_like(shape: tuple, prob: float, device=None) -> paddle.Tensor:
+    """
+    For classifier free guidance. Creates a boolean mask for given input
+    shape and probability of `True`.
+
+    :param shape: Shape of mask.
+    :param prob: Probability of True. In interval [0., 1.].
+    :param device: Optional device string; when omitted the mask follows the
+        current device context.
+    :return: The mask.
+    """
+    if prob == 1:
+        return paddle.ones(shape, dtype=paddle.bool)
+    elif prob == 0:
+        return paddle.zeros(shape, dtype=paddle.bool)
+    else:
+        return paddle.zeros(shape).uniform_(0, 1) < prob
 
 
 class TextEncoder(paddle.nn.Layer):

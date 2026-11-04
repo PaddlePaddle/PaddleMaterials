@@ -30,6 +30,10 @@ Interface notes:
   - the text encoder is injected at construction time (any module exposing
     get_text_embeds(batch_text, cond_drop_prob), e.g. TextEncoder +
     MinimalBert); None builds an unguided model.
+  - the beta and sigma noise scheduler configs are required at construction
+    time and assembled through the ppmat.schedulers build_scheduler factory
+    (classes registered as ChemeleonBetaScheduler / ChemeleonSigmaScheduler);
+    the D3PM transition module reuses the beta scheduler instance.
   - execution_backend="eager" (default) passes the denoise_step boundary
     straight through to the decoder; compiled backends are selected via
     execution_backend / runtime_options at construction time.
@@ -48,10 +52,6 @@ from tqdm import tqdm
 from ppmat.models.chemeleon.cspnet import DECODER_OUTPUTS
 from ppmat.models.chemeleon.cspnet import CSPNet
 from ppmat.models.chemeleon.cspnet import SinusoidalTimeEmbeddings
-from ppmat.models.chemeleon.diff_utils import D3PM
-from ppmat.models.chemeleon.diff_utils import BetaScheduler
-from ppmat.models.chemeleon.diff_utils import SigmaScheduler
-from ppmat.models.chemeleon.diff_utils import d_log_p_wrapped_normal
 from ppmat.models.chemeleon.minimal_bert import VOCAB_PATH
 from ppmat.models.chemeleon.minimal_bert import BertWordPieceTokenizer
 from ppmat.models.chemeleon.minimal_bert import MinimalBert
@@ -60,6 +60,9 @@ from ppmat.models.chemeleon.schema import TrajectoryStep
 from ppmat.models.chemeleon.text_encoder import TextEncoder
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
+from ppmat.schedulers import build_scheduler
+from ppmat.schedulers.scheduling_chemeleon import ChemeleonD3PM
+from ppmat.schedulers.scheduling_chemeleon import d_log_p_wrapped_normal
 
 
 def _build_text_encoder_from_cfg(cfg: Dict[str, Any]):
@@ -99,6 +102,8 @@ class Chemeleon(RuntimeMixin, paddle.nn.Layer):
     def __init__(
         self,
         _config: Dict[str, Any],
+        beta_noise_scheduler_cfg: Dict[str, Any],
+        sigma_noise_scheduler_cfg: Dict[str, Any],
         text_encoder=None,
         execution_backend: str = "eager",
         runtime_options: Optional[dict] = None,
@@ -125,13 +130,12 @@ class Chemeleon(RuntimeMixin, paddle.nn.Layer):
             self.cond_drop_prob = _config["cond_drop_prob"]
         # set scheduler
         self.num_timesteps = _config["timesteps"]
-        self.beta_scheduler = BetaScheduler(
-            timesteps=self.num_timesteps, scheduler_mode=_config["beta_schedule"]
-        )
-        self.sigma_scheduler = SigmaScheduler(timesteps=self.num_timesteps)
-        # d3pm for atom types
+        self.beta_scheduler = build_scheduler(beta_noise_scheduler_cfg)
+        self.sigma_scheduler = build_scheduler(sigma_noise_scheduler_cfg)
+        # d3pm for atom types (built with the same beta scheduler instance so
+        # the d3pm.beta_scheduler.* checkpoint keys stay shared, not doubled)
         self.max_atoms = _config["max_atoms"]
-        self.d3pm = D3PM(
+        self.d3pm = ChemeleonD3PM(
             beta_scheduler=self.beta_scheduler,
             num_timesteps=_config["timesteps"],
             max_atoms=_config["max_atoms"],
