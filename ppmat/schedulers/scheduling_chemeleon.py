@@ -12,9 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Adapted from https://github.com/hspark1212/chemeleon
+# This file is adapted from https://github.com/hspark1212/chemeleon
 
-"""Diffusion schedulers and the D3PM transition machinery for atom types."""
+"""Schedulers and the D3PM transition machinery of Chemeleon.
+
+The three scheduler layers build the noise tables consumed by the
+Chemeleon diffusion processes: a beta schedule for the variance-preserving
+lattice channel, a sigma schedule for the variance-exploding fractional
+coordinate channel, and the discrete absorbing-state transition matrices
+over atom types. The wrapped-normal score helpers belong to the sigma
+scheduler: the sigmas_norm buffer is a Monte-Carlo estimate computed from
+d_log_p_wrapped_normal, and the model's coordinate training target uses
+the same function.
+"""
 
 import math
 
@@ -73,9 +83,9 @@ def sigma_norm(sigma, T=1.0, sn=10000):
     return (normal_**2).mean(axis=0)
 
 
-class BetaScheduler(paddle.nn.Layer):
+class ChemeleonBetaScheduler(paddle.nn.Layer):
     def __init__(self, timesteps, scheduler_mode, beta_start=0.0001, beta_end=0.02):
-        super(BetaScheduler, self).__init__()
+        super(ChemeleonBetaScheduler, self).__init__()
         self.timesteps = timesteps
         if scheduler_mode == "cosine":
             betas = cosine_beta_schedule(timesteps)
@@ -131,9 +141,9 @@ class BetaScheduler(paddle.nn.Layer):
         return t
 
 
-class SigmaScheduler(paddle.nn.Layer):
+class ChemeleonSigmaScheduler(paddle.nn.Layer):
     def __init__(self, timesteps, sigma_begin=0.01, sigma_end=1.0):
-        super(SigmaScheduler, self).__init__()
+        super(ChemeleonSigmaScheduler, self).__init__()
         self.timesteps = timesteps
         self.sigma_begin = sigma_begin
         self.sigma_end = sigma_end
@@ -169,27 +179,8 @@ class SigmaScheduler(paddle.nn.Layer):
         return t
 
 
-def prob_mask_like(shape: tuple, prob: float, device=None) -> paddle.Tensor:
-    """
-    For classifier free guidance. Creates a boolean mask for given input
-    shape and probability of `True`.
-
-    :param shape: Shape of mask.
-    :param prob: Probability of True. In interval [0., 1.].
-    :param device: Optional device string; when omitted the mask follows the
-        current device context.
-    :return: The mask.
-    """
-    if prob == 1:
-        return paddle.ones(shape, dtype=paddle.bool)
-    elif prob == 0:
-        return paddle.zeros(shape, dtype=paddle.bool)
-    else:
-        return paddle.zeros(shape).uniform_(0, 1) < prob
-
-
 # D3PM for atom types
-class D3PM(paddle.nn.Layer):
+class ChemeleonD3PM(paddle.nn.Layer):
     """Discrete absorbing-state diffusion over atom types.
 
     Buffers:

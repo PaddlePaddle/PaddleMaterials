@@ -77,13 +77,23 @@ Model:
       # diffusion
       text_guide: true
       cond_drop_prob: 0.2 # conditional drop probability
-      beta_schedule: cosine # "cosine", "linear", "quadratic", "sigmoid"
       timesteps: ${Global.num_train_timesteps}
       d3pm_hybrid_coeff: 1.0 # hybrid coefficient for D3PM
       # loss weights for the three diffusion channels
       cost_atom_types: 1.0
       cost_lattice: 1.0
       cost_coords: 1.0
+    # noise schedulers, assembled through the ppmat.schedulers factory;
+    # scheduler_mode accepts "cosine", "linear", "quadratic", "sigmoid"
+    beta_noise_scheduler_cfg:
+      __class_name__: ChemeleonBetaScheduler
+      __init_params__:
+        scheduler_mode: cosine
+        timesteps: ${Global.num_train_timesteps}
+    sigma_noise_scheduler_cfg:
+      __class_name__: ChemeleonSigmaScheduler
+      __init_params__:
+        timesteps: ${Global.num_train_timesteps}
     # bundled text front-end (WordPiece tokenizer + MinimalBert + wrapper)
     text_encoder_cfg:
       text_embed_dim: 768 # embedding dimension of the text encoder

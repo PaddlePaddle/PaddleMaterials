@@ -32,7 +32,7 @@ import numpy as np
 import paddle
 
 from ppmat.models.chemeleon.chemeleon import Chemeleon
-from ppmat.models.chemeleon.diff_utils import prob_mask_like
+from ppmat.models.chemeleon.text_encoder import prob_mask_like
 
 TEXT_EMBED_DIM = 16
 LOSS_KEYS = {"loss", "vb", "ce", "lattice", "coords"}
@@ -100,7 +100,6 @@ def _make_config():
         "pred_atom_types": True,
         "text_guide": True,
         "cond_drop_prob": 0.2,
-        "beta_schedule": "cosine",
         "timesteps": 16,
         "d3pm_hybrid_coeff": 1.0,
         "cost_atom_types": 1.0,
@@ -114,6 +113,14 @@ def _make_model(execution_backend="eager"):
         paddle.seed(2026)
         return Chemeleon(
             _make_config(),
+            beta_noise_scheduler_cfg={
+                "__class_name__": "ChemeleonBetaScheduler",
+                "__init_params__": {"scheduler_mode": "cosine", "timesteps": 16},
+            },
+            sigma_noise_scheduler_cfg={
+                "__class_name__": "ChemeleonSigmaScheduler",
+                "__init_params__": {"timesteps": 16},
+            },
             text_encoder=_StubTextEncoder(),
             execution_backend=execution_backend,
             runtime_options={"cinn": {"full_graph": True}},
