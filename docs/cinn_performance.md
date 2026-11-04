@@ -4,26 +4,23 @@
 
 ## Conclusion
 
-Under the tested workloads, all 67 registered weights with a CINN path
+Under the tested workloads, all 65 registered weights with a CINN path
 completed in eager and CINN modes. The median warm speedup across all weights
-was 1.11x, ranging from 0.51x to 5.04x.
+was 1.11x, ranging from 0.51x to 4.36x.
 
 - Families where every registered weight was faster, with median speedup:
-  LiFlow 4.11x, SphereNet MD17 3.24x, MatterSim 2.85x, SFIN 2.23x, CHGNet
-  2.07x, DimeNet++ 1.87x, SphereNet QM9 1.47x, DiffCSP 1.32x, and DiffNMR 1.11x.
+  SphereNet MD17 3.24x, MatterSim 2.85x, SFIN 2.23x, CHGNet 2.07x, DimeNet++
+  1.87x, SphereNet QM9 1.47x, DiffCSP 1.32x, and DiffNMR 1.11x.
 - Families where every registered weight was slower, with median speedup:
   ComFormer 0.83x, MatterGen 0.71x, and MEGNet 0.63x.
 
 ## Method
 
 - Environment: Paddle 3.3.1, NVIDIA A100-SXM4-40GB GPUs, and an Intel Xeon Gold
-  6148 host. The LiFlow rows were measured on NVIDIA V100-PCIE-16GB GPUs against
-  the same Paddle 3.3.1 build, so their timings are not directly comparable with
-  the A100 rows.
+  6148 host.
 - Workloads: repository prediction and sampling examples. Structure generators
   sampled eight atoms for two denoising steps; DiffNMR ran complete reverse
-  diffusion. LiFlow reported a single forward velocity-field prediction on an
-  eight-atom graph.
+  diffusion.
 - Timing: model loading, checkpoint loading, and input conversion were excluded.
   GPU synchronization bracketed each call. Warm results are the median of ten
   identically seeded calls; the first CINN call is reported separately.
@@ -57,7 +54,6 @@ weights in the family.
 | MatterSim | 2 | 2 | 163.861 | 39.482 | 14.154 | 2.85x [2.53x, 3.16x] |
 | MEGNet | 8 | 0 | 49.942 | 12.442 | 20.326 | 0.63x [0.51x, 0.75x] |
 | SFIN | 4 | 4 | 23.689 | 38.419 | 17.536 | 2.23x [1.76x, 2.66x] |
-| LiFlow | 2 | 2 | 64.228 | 7.605 | 1.852 | 4.11x [4.11x, 5.04x] |
 | SphereNet MD17 | 8 | 8 | 241.368 | 56.755 | 17.303 | 3.24x [2.24x, 4.36x] |
 | SphereNet QM9 | 12 | 12 | 135.946 | 21.272 | 14.755 | 1.47x [1.29x, 1.67x] |
 
@@ -130,5 +126,3 @@ weights in the family.
 | `spherenet_qm9_mu` | 138.283 | 138.268 | 24.879 | 14.929 | 1.67x | 13,896 |
 | `spherenet_qm9_r2` | 88.877 | 88.863 | 19.404 | 13.825 | 1.40x | 15,929 |
 | `spherenet_qm9_zpve` | 134.760 | 134.745 | 21.098 | 14.799 | 1.43x | 21,391 |
-| `liflow_universal_propagator` | 69.384 | 69.382 | 7.605 | 1.852 | 4.11x | 12,062 |
-| `liflow_universal_corrector` | 59.073 | 59.072 | 7.344 | 1.458 | 5.04x | 10,036 |

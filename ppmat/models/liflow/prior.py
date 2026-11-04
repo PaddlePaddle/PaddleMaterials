@@ -28,9 +28,19 @@ __all__ = [
 ]
 
 
+def _get_rng(default_rng, rng=None):
+    """Return the RNG used to draw a sample.
+
+    ``rng`` is optional so that callers (e.g. the LiFlow dataset) can pass a
+    per-access generator.  Without it the prior falls back to its own seeded
+    generator, which keeps standalone usage reproducible.
+    """
+    return default_rng if rng is None else rng
+
+
 class Prior(abc.ABC):
     @abc.abstractmethod
-    def sample(self, shape: tuple) -> np.ndarray:
+    def sample(self, shape: tuple, rng=None) -> np.ndarray:
         ...
 
 
@@ -39,8 +49,9 @@ class NormalPrior(Prior):
         self.scale = scale
         self.rng = np.random.default_rng(seed)
 
-    def sample(self, shape: tuple) -> np.ndarray:
-        return self.rng.normal(scale=self.scale, size=shape)
+    def sample(self, shape: tuple, rng=None) -> np.ndarray:
+        rng = _get_rng(self.rng, rng)
+        return rng.normal(scale=self.scale, size=shape)
 
 
 class UniformScaleNormalPrior(Prior):
@@ -48,9 +59,10 @@ class UniformScaleNormalPrior(Prior):
         self.scale = scale
         self.rng = np.random.default_rng(seed)
 
-    def sample(self, shape: tuple) -> np.ndarray:
-        scale = self.rng.uniform(0, self.scale, size=shape[0])
-        return self.rng.normal(scale=scale[:, None], size=shape)
+    def sample(self, shape: tuple, rng=None) -> np.ndarray:
+        rng = _get_rng(self.rng, rng)
+        scale = rng.uniform(0, self.scale, size=shape[0])
+        return rng.normal(scale=scale[:, None], size=shape)
 
 
 class MaxwellBoltzmannPrior(Prior):
@@ -59,10 +71,11 @@ class MaxwellBoltzmannPrior(Prior):
         self.rng = np.random.default_rng(seed)
 
     def sample(
-        self, temperature: float, masses: np.ndarray, shape: tuple
+        self, temperature: float, masses: np.ndarray, shape: tuple, rng=None
     ) -> np.ndarray:
+        rng = _get_rng(self.rng, rng)
         scale = self.scale * np.sqrt(units.kB * float(temperature) / masses)
-        return self.rng.normal(scale=scale[:, None], size=shape)
+        return rng.normal(scale=scale[:, None], size=shape)
 
 
 class AdaptiveMaxwellBoltzmannPrior(Prior):
@@ -83,9 +96,11 @@ class AdaptiveMaxwellBoltzmannPrior(Prior):
         scale_Li_index: int,
         scale_frame_index: int,
         shape: tuple,
+        rng=None,
     ) -> np.ndarray:
+        rng = _get_rng(self.rng, rng)
         li_scale = self.scale[0][scale_Li_index]
         frame_scale = self.scale[1][scale_frame_index]
         prefactor = np.where(atomic_numbers == 3, li_scale, frame_scale)
         scale = prefactor * np.sqrt(units.kB * float(temperature) / masses)
-        return self.rng.normal(scale=scale[:, None], size=shape)
+        return rng.normal(scale=scale[:, None], size=shape)

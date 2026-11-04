@@ -44,11 +44,15 @@ class _ZeroVelocityModel(paddle.nn.Layer):
 
 
 def make_predictor_with_deterministic_models(cutoff=5.0) -> IntegratorPredictor:
+    # ``element_index`` is the training-time ``Z -> embedding`` table.
+    element_index = np.zeros(100, dtype=np.int64)
+    element_index[[1, 3, 6, 8]] = [0, 1, 2, 3]
     return IntegratorPredictor(
         propagator_model=_ZeroVelocityModel(),
         corrector_model=_ZeroVelocityModel(),
         cutoff=cutoff,
         periodic=True,
+        element_index=element_index,
     )
 
 
@@ -95,10 +99,17 @@ def test_predictor_centroid_is_preserved(initial_sample):
     from ase import data as ase_data
 
     masses = ase_data.atomic_masses[initial_sample["atomic_numbers"]].astype(np.float64)
-    # the initial frame is the raw input; every generated frame is re-centered.
-    for frame in trajectory[1:]:
-        centroid = (frame.astype(np.float64) * masses[:, None]).sum(axis=0)
-        assert np.allclose(centroid, 0.0, atol=1e-3)
+    # ``fix_com`` removes the COM *displacement* of each step, so the absolute
+    # COM of the initial frame is preserved (the reference implementation does
+    # not re-centre structures at the origin).
+    reference = (initial_sample["positions"].astype(np.float64) * masses[:, None]).sum(
+        axis=0
+    ) / masses.sum()
+    for frame in trajectory:
+        centroid = (frame.astype(np.float64) * masses[:, None]).sum(
+            axis=0
+        ) / masses.sum()
+        assert np.allclose(centroid, reference, atol=1e-3)
 
 
 def test_predictor_requires_both_local_paths():

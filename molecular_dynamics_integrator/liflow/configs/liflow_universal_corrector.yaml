@@ -15,17 +15,14 @@
 # LiFlow universal corrector training configuration.
 #
 # The corrector refines each current frame toward its noise-free endpoint using
-# the same flow-matching velocity field but is trained on a noised-frame
-# construction (single current frame + UniformScaleNormalPrior(scale=0.25),
-# with a MaxwellBoltzmannPrior(scale=0.1) corrector prior) --- distinct from the
-# propagator's time-delayed pair + adaptive prior.
+# the same flow-matching velocity field but is trained on the original LiFlow
+# noised-frame construction (single current frame + UniformScaleNormalPrior
+# (scale=0.25), with a MaxwellBoltzmannPrior(scale=0.1) corrector prior) ---
+# distinct from the propagator's time-delayed pair + adaptive prior.
 #
-# NOTE: the shared ``LiFlowDataset`` currently builds time-delayed endpoint
-# pairs.  The dedicated noised-frame dataset construction is tracked with the
-# corrector data pipeline; until it exists the corrector config reuses the same
-# trainable dataset so the entrypoint and smoke test remain runnable.  Both the
-# propagator and the corrector keep the reference default
-# ``prediction_mode: velocity`` (never switched to ``data``).
+# ``NoisedFrameDataset`` is the dedicated corrector dataset
+# (``ppmat/datasets/liflow_noised_frame_dataset.py``); the propagator config
+# uses ``LiFlowDataset`` (``TimeDelayedPairDataset``).
 
 Global:
   do_train: true
@@ -82,7 +79,7 @@ Execution:
 Dataset:
   train:
     dataset:
-      __class_name__: LiFlowDataset
+      __class_name__: NoisedFrameDataset
       __init_params__:
         path: data/liflow
         split: train
@@ -90,11 +87,14 @@ Dataset:
         cutoff: 5.0
         periodic: true
         seed: 42
-        overwrite: false
+        # The full trajectory archive does not fit in RAM and would also be
+        # pickled into every DataLoader worker; keep the lazy ``npz`` reader.
+        in_memory: false
     loader:
       num_workers: 2
       use_shared_memory: false
-      collate_fn: LiFlowCollator
+      collate_fn: DefaultCollator
+      as_dict: true
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -103,7 +103,7 @@ Dataset:
         drop_last: false
   val:
     dataset:
-      __class_name__: LiFlowDataset
+      __class_name__: NoisedFrameDataset
       __init_params__:
         path: data/liflow
         split: val
@@ -111,11 +111,14 @@ Dataset:
         cutoff: 5.0
         periodic: true
         seed: 42
-        overwrite: false
+        # The full trajectory archive does not fit in RAM and would also be
+        # pickled into every DataLoader worker; keep the lazy ``npz`` reader.
+        in_memory: false
     loader:
       num_workers: 2
       use_shared_memory: false
-      collate_fn: LiFlowCollator
+      collate_fn: DefaultCollator
+      as_dict: true
     sampler:
       __class_name__: BatchSampler
       __init_params__:

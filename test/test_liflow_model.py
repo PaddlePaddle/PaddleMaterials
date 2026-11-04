@@ -51,7 +51,7 @@ def _make_training_batch():
         "elements": paddle.to_tensor([3, 8, 1, 6], dtype="int64"),
         "edge_index": paddle.to_tensor([[0, 1, 2, 3], [1, 2, 3, 0]], dtype="int64"),
         "shifts": paddle.zeros([4, 3], dtype="float32"),
-        "batch_index": paddle.zeros([N_ATOMS], dtype="int64"),
+        "batch": paddle.zeros([N_ATOMS], dtype="int64"),
     }
 
 

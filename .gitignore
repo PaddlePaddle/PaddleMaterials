@@ -135,10 +135,6 @@ ppsci/_version.py
 ppmat/_version.py
 
 __pycache__/
-
-# LiFlow on-disk dataset cache (rebuilt by LiFlowDataset, never tracked)
-.liflow_cache/
-
 stability_prediction/data_bak/*
 stability_prediction/log/*
 stability_prediction/checkpoints/*
@@ -154,10 +150,6 @@ log/*
 output/*
 !output/traffic/
 !output/traffic/*
-
-# LiFlow conversion artifacts (large local checkpoints, built by convert_weights)
-artifacts/
-artifacts/*
 experimental/output/*
 experimental/output
 experimental/data

@@ -16,8 +16,8 @@
 #
 # The propagator learns the flow-matching velocity field from time-delayed
 # endpoint pairs (start, end) with an adaptive Maxwell-Boltzmann prior.  The
-# Dataset precomputes ``velocity = end - (start + prior)`` so both the loss and
-# the LiFlowMSE metric consume the shared ``velocity`` key.
+# dataset computes ``velocity = end - (start + prior)`` on every access so the
+# loss and the LiFlowMSE metric consume the shared ``velocity`` key.
 #
 # PaddleMaterials ``BaseTrainer`` has no patience-based EarlyStopping, so we fix
 # ``max_epochs: 500`` and rely on the ``eval_loss`` indicator to keep the best
@@ -87,11 +87,14 @@ Dataset:
         cutoff: 5.0
         periodic: true
         seed: 42
-        overwrite: false
+        # The full trajectory archive does not fit in RAM and would also be
+        # pickled into every DataLoader worker; keep the lazy ``npz`` reader.
+        in_memory: false
     loader:
       num_workers: 2
       use_shared_memory: false
-      collate_fn: LiFlowCollator
+      collate_fn: DefaultCollator
+      as_dict: true
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -108,11 +111,14 @@ Dataset:
         cutoff: 5.0
         periodic: true
         seed: 42
-        overwrite: false
+        # The full trajectory archive does not fit in RAM and would also be
+        # pickled into every DataLoader worker; keep the lazy ``npz`` reader.
+        in_memory: false
     loader:
       num_workers: 2
       use_shared_memory: false
-      collate_fn: LiFlowCollator
+      collate_fn: DefaultCollator
+      as_dict: true
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -129,11 +135,14 @@ Dataset:
         cutoff: 5.0
         periodic: true
         seed: 42
-        overwrite: false
+        # The full trajectory archive does not fit in RAM and would also be
+        # pickled into every DataLoader worker; keep the lazy ``npz`` reader.
+        in_memory: false
     loader:
       num_workers: 2
       use_shared_memory: false
-      collate_fn: LiFlowCollator
+      collate_fn: DefaultCollator
+      as_dict: true
     sampler:
       __class_name__: BatchSampler
       __init_params__:

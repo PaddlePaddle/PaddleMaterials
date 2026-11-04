@@ -14,11 +14,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 import paddle
-from paddle import nn
 
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
@@ -33,11 +33,37 @@ def _as_tensor(value: Any) -> paddle.Tensor:
     return value
 
 
+def _get_field(batch_data: Any, key: str, default: Any = None) -> Any:
+    """Read ``key`` from a ``Data``/``Batch`` object or a plain mapping."""
+    if isinstance(batch_data, Mapping):
+        return batch_data.get(key, default)
+    value = batch_data[key]
+    return default if value is None else value
+
+
+def _expand_to_nodes(value: Any, batch_index: paddle.Tensor, num_nodes: int):
+    """Broadcast a per-graph (or already per-node) field to ``num_nodes``."""
+    value = _as_tensor(value).reshape([-1])
+    if value.numel() == num_nodes:
+        return value
+    if value.numel() == 1:
+        return value.expand([num_nodes])
+    return value[batch_index]
+
+
 def _velocity_loss(prediction: paddle.Tensor, label: paddle.Tensor) -> paddle.Tensor:
+    # Reference ``FlowModule.compute_loss``: sum over xyz, mean over nodes.
     return paddle.mean(paddle.sum((prediction - label) ** 2, axis=-1))
 
 
-class LiFlow(RuntimeMixin, nn.Layer):
+class LiFlow(RuntimeMixin, DualPaiNN):
+    """DualPaiNN flow-matching model.
+
+    The network parameters live directly on this layer (no ``network``
+    sub-module) so that the state dict matches the released checkpoints and the
+    output of ``molecular_dynamics_integrator/liflow/convert_weights.py``.
+    """
+
     def __init__(
         self,
         num_features: int = 64,
@@ -51,13 +77,7 @@ class LiFlow(RuntimeMixin, nn.Layer):
         execution_backend: str = "eager",
         runtime_options: dict | None = None,
     ):
-        super().__init__()
-        self._init_runtime(execution_backend, runtime_options)
-        if prediction_mode not in {"velocity", "data"}:
-            raise ValueError("prediction_mode must be 'velocity' or 'data'")
-        self.prediction_mode = prediction_mode
-        self.ref_temp = float(ref_temp)
-        self.network = DualPaiNN(
+        super().__init__(
             num_features=num_features,
             num_radial_basis=num_radial_basis,
             num_layers=num_layers,
@@ -66,6 +86,10 @@ class LiFlow(RuntimeMixin, nn.Layer):
             r_offset=r_offset,
             ref_temp=ref_temp,
         )
+        self._init_runtime(execution_backend, runtime_options)
+        if prediction_mode not in {"velocity", "data"}:
+            raise ValueError("prediction_mode must be 'velocity' or 'data'")
+        self.prediction_mode = prediction_mode
 
     @runtime_boundary("forward")
     def _runtime_forward(
@@ -78,7 +102,8 @@ class LiFlow(RuntimeMixin, nn.Layer):
         node_time: paddle.Tensor,
         node_temperature: paddle.Tensor,
     ) -> paddle.Tensor:
-        return self.network(
+        return DualPaiNN.forward(
+            self,
             condition_positions,
             flow_positions,
             edge_index,
@@ -90,7 +115,7 @@ class LiFlow(RuntimeMixin, nn.Layer):
 
     def forward(
         self,
-        batch_data: dict[str, Any],
+        batch_data: Any,
         return_loss: bool = True,
         return_prediction: bool = True,
     ) -> dict[str, dict[str, Any]]:
@@ -98,26 +123,33 @@ class LiFlow(RuntimeMixin, nn.Layer):
             return_loss or return_prediction
         ), "At least one of return_loss or return_prediction must be True."
 
-        start_positions = _as_tensor(batch_data["start_positions"])
-        end_positions = _as_tensor(batch_data["end_positions"])
-        prior = _as_tensor(batch_data["prior"])
+        start_positions = _as_tensor(_get_field(batch_data, "start_positions"))
+        end_positions = _as_tensor(_get_field(batch_data, "end_positions"))
+        prior = _as_tensor(_get_field(batch_data, "prior"))
+        num_nodes = int(start_positions.shape[0])
 
-        flow_time = _as_tensor(batch_data["flow_time"]).reshape([-1])
-        temperature = _as_tensor(batch_data["temperature"]).reshape([-1])
-        if "batch_index" in batch_data:
-            batch_index = _as_tensor(batch_data["batch_index"]).astype("int64")
+        # ``Batch.from_data_list`` exposes the node -> graph mapping as
+        # ``batch``; a plain ``Data`` (or dict without it) is a single graph.
+        batch_index = _get_field(batch_data, "batch")
+        if batch_index is None:
+            batch_index = paddle.zeros([num_nodes], dtype="int64")
         else:
-            batch_index = paddle.zeros([start_positions.shape[0]], dtype="int64")
+            batch_index = _as_tensor(batch_index).astype("int64")
 
+        flow_time = _get_field(batch_data, "flow_time")
+        temperature = _get_field(batch_data, "temperature")
+        node_time = _expand_to_nodes(flow_time, batch_index, num_nodes)
+        node_temperature = _expand_to_nodes(temperature, batch_index, num_nodes)
+
+        # ``x_0`` uses the shifted start frame; the network conditions on the
+        # unshifted frame, exactly as in the reference ``training_step``.
         source = start_positions + prior
-        t_node = flow_time[batch_index][:, None]
+        t_node = node_time[:, None]
         flow_positions = (1.0 - t_node) * source + t_node * end_positions
-        node_time = flow_time[batch_index]
-        node_temperature = temperature[batch_index]
 
-        edge_index = _as_tensor(batch_data["edge_index"]).astype("int64")
-        shifts = _as_tensor(batch_data["shifts"])
-        elements = _as_tensor(batch_data["elements"]).astype("int64")
+        edge_index = _as_tensor(_get_field(batch_data, "edge_index")).astype("int64")
+        shifts = _as_tensor(_get_field(batch_data, "shifts"))
+        elements = _as_tensor(_get_field(batch_data, "elements")).astype("int64")
 
         prediction = self._runtime_forward(
             start_positions,
@@ -130,25 +162,38 @@ class LiFlow(RuntimeMixin, nn.Layer):
         )
 
         result = {"loss_dict": {}, "pred_dict": {}}
+        if self.prediction_mode == "velocity":
+            pred_key = "velocity"
+            label = end_positions - source
+        else:
+            pred_key = "displacement"
+            label = end_positions - start_positions
+
         if return_prediction:
-            result["pred_dict"]["velocity"] = prediction
+            result["pred_dict"][pred_key] = prediction
         if return_loss:
-            label = _as_tensor(batch_data["velocity"])
-            loss_velocity = _velocity_loss(prediction, label)
-            result["loss_dict"]["velocity"] = loss_velocity
-            result["loss_dict"]["loss"] = loss_velocity
+            loss = _velocity_loss(prediction, label)
+            result["loss_dict"][pred_key] = loss
+            result["loss_dict"]["loss"] = loss
         return result
 
     @paddle.no_grad()
-    def predict(self, batch_data: dict[str, Any]) -> dict[str, paddle.Tensor]:
-        condition_positions = _as_tensor(batch_data["condition_positions"])
-        flow_positions = _as_tensor(batch_data["flow_positions"])
-        edge_index = _as_tensor(batch_data["edge_index"]).astype("int64")
-        shifts = _as_tensor(batch_data["shifts"])
-        elements = _as_tensor(batch_data["elements"]).astype("int64")
-        node_time = _as_tensor(batch_data["node_time"]).reshape([-1])
-        node_temperature = _as_tensor(batch_data["node_temperature"]).reshape([-1])
-        velocity = self._runtime_forward(
+    def predict(self, batch_data: Any) -> dict[str, paddle.Tensor]:
+        condition_positions = _as_tensor(_get_field(batch_data, "condition_positions"))
+        flow_positions = _as_tensor(_get_field(batch_data, "flow_positions"))
+        edge_index = _as_tensor(_get_field(batch_data, "edge_index")).astype("int64")
+        shifts = _as_tensor(_get_field(batch_data, "shifts"))
+        elements = _as_tensor(_get_field(batch_data, "elements")).astype("int64")
+        num_nodes = int(condition_positions.shape[0])
+        node_time = _as_tensor(_get_field(batch_data, "node_time")).reshape([-1])
+        node_temperature = _as_tensor(
+            _get_field(batch_data, "node_temperature")
+        ).reshape([-1])
+        if node_time.numel() == 1:
+            node_time = node_time.expand([num_nodes])
+        if node_temperature.numel() == 1:
+            node_temperature = node_temperature.expand([num_nodes])
+        prediction = self._runtime_forward(
             condition_positions,
             flow_positions,
             edge_index,
@@ -157,4 +202,5 @@ class LiFlow(RuntimeMixin, nn.Layer):
             node_time,
             node_temperature,
         )
-        return {"velocity": velocity}
+        pred_key = "velocity" if self.prediction_mode == "velocity" else "displacement"
+        return {pred_key: prediction}

@@ -80,7 +80,7 @@ class DualMessageBlock(nn.Layer):
 
         self.mlp_phi = nn.Sequential(
             nn.Linear(num_features, num_features),
-            nn.SiLU(),
+            nn.Silu(),
             nn.Linear(num_features, num_features * 4),
         )
         self.linear_W = nn.Linear(num_radial_basis, num_features * 4)
@@ -122,7 +122,7 @@ class UpdateBlock(nn.Layer):
         self.num_features = num_features
         self.mlp_a = nn.Sequential(
             nn.Linear(num_features * 2, num_features),
-            nn.SiLU(),
+            nn.Silu(),
             nn.Linear(num_features, num_features * 3),
         )
         self.linear_UV = nn.Linear(num_features, num_features * 2, bias_attr=False)
@@ -153,7 +153,7 @@ class GatedEquivariantBlock(nn.Layer):
         self.linear_v = nn.Linear(num_vector_inputs, 2, bias_attr=False)
         self.mlp_s = nn.Sequential(
             nn.Linear(num_scalar_inputs + 1, num_scalar_inputs + 1),
-            nn.SiLU(),
+            nn.Silu(),
             nn.Linear(num_scalar_inputs + 1, 1),
         )
 

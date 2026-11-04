@@ -14,32 +14,51 @@
 
 # LiFlow universal trajectory inference configuration.
 #
-# ``IntegratorPredictor`` loads the propagator and the corrector strictly
-# (``strict_weights=True``) from local config/checkpoint pairs and integrates a
+# ``IntegratorPredictor`` loads the propagator and the optional corrector
+# strictly (``strict=True``, all keys and shapes must match) and integrates a
 # future-free trajectory from an initial structure in ``initial_structure.npz``.
 #
-# The checkpoint paths below point to the standard per-instance training output
-# layout (``molecular_dynamics_integrator/train.py`` writes ``best.pdparams``
-# under a timestamp-suffixed ``output_dir``).  Replace them with the actual
-# trained/strictly converted checkpoints before running
-# ``molecular_dynamics_integrator/predict.py``.
+# A model side can be configured in exactly one of two ways:
+#   * ``*_model``      registered weight package name (auto-downloaded,
+#                      strict-loaded), or
+#   * ``*_config`` + ``*_checkpoint``
+#                      local pair produced by ``molecular_dynamics_integrator/
+#                      train.py`` or ``convert_weights.py``.
+# The corrector checkpoint is not published yet, so both corrector forms default
+# to ``null`` and the run integrates the propagator only.  Point
+# ``corrector_config``/``corrector_checkpoint`` (or ``corrector_model``) at a
+# real checkpoint to enable the correction step.
 
 Global:
   do_eval: true
   do_test: false
 
 Predict:
-  propagator_config: output/liflow_universal_propagator/config.yaml
-  propagator_checkpoint: output/liflow_universal_propagator/checkpoints/best.pdparams
-  corrector_config: output/liflow_universal_corrector/config.yaml
-  corrector_checkpoint: output/liflow_universal_corrector/checkpoints/best.pdparams
+  propagator_model: liflow_universal
+  propagator_config: null
+  propagator_checkpoint: null
+  corrector_model: null
+  corrector_config: null
+  corrector_checkpoint: null
   cutoff: 5.0
   periodic: true
+  # Atomic number -> element-embedding index table used during training.  When
+  # null it is read from ``element_index`` in the input .npz, falling back to
+  # ``element_index.npy`` next to the input file.
+  element_index: null
+  # Column indices into the adaptive prior scale table
+  # ``[[1.0, 10.0], [0.316, 3.16]]`` (``prior_Li``/``prior_frame`` in the split
+  # CSV).  They may also be stored in the input .npz.
+  prior_Li: 0
+  prior_frame: 0
   temperature: 800.0
   steps: 25
   flow_steps: 10
   solver: euler
   corrector_every: 1
+  # Remove the centre-of-mass displacement of each step (reference default).
+  fix_com: true
+  num_retries: 2
   seed: 42
   eval_with_no_grad: true
 

@@ -56,13 +56,6 @@ MD17_XYZ = {
 }
 
 
-class _ModelWorkflow:
-    """Adapter so a model built from a registered package exposes ``.model``."""
-
-    def __init__(self, model):
-        self.model = model
-
-
 def build_graph(predictor, input_format: str, input_path: Path):
     if input_format == "cif":
         sample = BuildStructure(
@@ -139,41 +132,6 @@ def build_workflow(model_name: str, backend: str):
         )
         batch = next(iter(sampler._sample_loader))
         return sampler, lambda: sampler.sample(batch), "full_reverse_diffusion"
-
-    if model_name.startswith("liflow_"):
-        from ppmat.models import build_model_from_name
-        from ppmat.models.liflow.geometry import get_neighbor_list_batch
-        from ppmat.utils.execution import configure_execution_backend
-
-        model, _ = build_model_from_name(model_name, strict_weights=True)
-        configure_execution_backend(
-            model,
-            backend,
-            init_params={} if backend == "cinn" else None,
-            owner="benchmark_registered",
-        )
-        model.eval()
-        lattice = np.eye(3, dtype=np.float32) * 10.0
-        positions = np.asarray(
-            [[0, 0, 0], [2.5, 0, 0], [0, 2.5, 0], [5.0, 5.0, 5.0]],
-            dtype=np.float32,
-        )
-        edge_index, shifts = get_neighbor_list_batch(
-            [positions], lattice, cutoff=5.0, periodic=True
-        )
-        batch = {
-            "condition_positions": paddle.to_tensor(positions),
-            "flow_positions": paddle.to_tensor(positions + 0.1),
-            "edge_index": paddle.to_tensor(edge_index.astype(np.int64)),
-            "shifts": paddle.to_tensor(shifts.astype(np.float32)),
-            "elements": paddle.to_tensor(np.array([2, 8, 8, 2], dtype=np.int64) - 1),
-            "node_time": paddle.full([positions.shape[0]], 0.5, dtype="float32"),
-            "node_temperature": paddle.full(
-                [positions.shape[0]], 1000.0, dtype="float32"
-            ),
-        }
-        workflow = _ModelWorkflow(model)
-        return workflow, lambda: workflow.model.predict(batch), "single_velocity_field"
 
     if model_name.startswith(("diffcsp_", "mattergen_")):
         sampler = StructureSampler(

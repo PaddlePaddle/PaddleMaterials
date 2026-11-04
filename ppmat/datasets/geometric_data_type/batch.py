@@ -157,7 +157,15 @@ class Batch(Data):
             if isinstance(item, paddle.Tensor):
                 if not all(isinstance(value, paddle.Tensor) for value in items):
                     raise TypeError(f"All values for {key!r} must be Paddle tensors.")
-                batch[key] = paddle.concat(x=items, axis=cat_dim)
+                if all(value.shape[cat_dim] == 0 for value in items):
+                    # paddle.concat() filters out empty tensors and therefore fails
+                    # when every tensor is empty along ``cat_dim`` (e.g. graphs
+                    # without any edge). Build the empty result explicitly.
+                    shape = list(items[0].shape)
+                    shape[cat_dim] = 0
+                    batch[key] = paddle.zeros(shape=shape, dtype=items[0].dtype)
+                else:
+                    batch[key] = paddle.concat(x=items, axis=cat_dim)
             elif isinstance(item, np.ndarray):
                 if not all(isinstance(value, np.ndarray) for value in items):
                     raise TypeError(f"All values for {key!r} must be NumPy arrays.")

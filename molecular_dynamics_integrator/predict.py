@@ -33,6 +33,36 @@ def _write_xyz(path: str, trajectory: np.ndarray, atomic_numbers: np.ndarray):
     ase_write(path, frames, format="xyz")
 
 
+def _build_registered(model_name: str):
+    from ppmat.models import build_model_from_name
+
+    model, _ = build_model_from_name(model_name, strict_weights=True)
+    return model
+
+
+def _build_side(predict_cfg: dict, prefix: str):
+    """Build one model side from the registry or return ``None``.
+
+    ``<prefix>_model`` names a registered weight package (auto-downloaded and
+    strict-loaded).  ``<prefix>_config`` + ``<prefix>_checkpoint`` point at a
+    local training output and are forwarded to ``IntegratorPredictor``.  Exactly
+    one form may be configured; ``None`` for both means the side is disabled
+    (used for the corrector, whose checkpoint is not published yet).
+    """
+    model_name = predict_cfg.get(f"{prefix}_model", None)
+    config_path = predict_cfg.get(f"{prefix}_config", None)
+    checkpoint_path = predict_cfg.get(f"{prefix}_checkpoint", None)
+    has_local = config_path is not None or checkpoint_path is not None
+    if model_name is not None and has_local:
+        raise ValueError(
+            f"Predict.{prefix}_model and Predict.{prefix}_config/"
+            f"{prefix}_checkpoint are mutually exclusive."
+        )
+    if model_name is not None:
+        return _build_registered(model_name)
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", "-c", type=str, required=True)
@@ -67,15 +97,63 @@ def main() -> None:
     atomic_numbers = np.asarray(data["atomic_numbers"], dtype=np.int64)
     lattice = np.asarray(data["lattice"], dtype=np.float32)
 
+    # ``element_index`` maps atomic numbers to the contiguous embedding indices
+    # used during training.  It may live in the input archive, in the configured
+    # dataset directory, or be passed next to the input file.
+    element_index = data["element_index"] if "element_index" in data else None
+    if element_index is None:
+        element_index = predict_cfg.get("element_index", None)
+        if element_index is None:
+            candidate = osp.join(
+                osp.dirname(osp.abspath(args.input)), "element_index.npy"
+            )
+            if osp.exists(candidate):
+                element_index = candidate
+    if element_index is None:
+        raise ValueError(
+            "An `element_index` array is required to map atomic numbers to "
+            "element embeddings.  Add it to the input .npz or set "
+            "`Predict.element_index` in the config."
+        )
+
+    prior_Li = (
+        int(data["prior_Li"])
+        if "prior_Li" in data
+        else int(predict_cfg.get("prior_Li", 0))
+    )
+    prior_frame = (
+        int(data["prior_frame"])
+        if "prior_frame" in data
+        else int(predict_cfg.get("prior_frame", 0))
+    )
+
     from ppmat.predictor import IntegratorPredictor
 
+    propagator_model = _build_side(predict_cfg, "propagator")
+    corrector_model = _build_side(predict_cfg, "corrector")
+    propagator_config = predict_cfg.get("propagator_config", None)
+    propagator_checkpoint = predict_cfg.get("propagator_checkpoint", None)
+    if propagator_model is None and (
+        propagator_config is None or propagator_checkpoint is None
+    ):
+        raise ValueError(
+            "Set either Predict.propagator_model (registered weights) or both "
+            "Predict.propagator_config and Predict.propagator_checkpoint."
+        )
+
     predictor = IntegratorPredictor(
-        propagator_config=predict_cfg["propagator_config"],
-        propagator_checkpoint=predict_cfg["propagator_checkpoint"],
-        corrector_config=predict_cfg["corrector_config"],
-        corrector_checkpoint=predict_cfg["corrector_checkpoint"],
+        propagator_model=propagator_model,
+        corrector_model=corrector_model,
+        propagator_config=propagator_config,
+        propagator_checkpoint=propagator_checkpoint,
+        corrector_config=predict_cfg.get("corrector_config", None),
+        corrector_checkpoint=predict_cfg.get("corrector_checkpoint", None),
         cutoff=predict_cfg.get("cutoff", 5.0),
         periodic=predict_cfg.get("periodic", True),
+        element_index=element_index,
+        scale_Li_index=prior_Li,
+        scale_frame_index=prior_frame,
+        execution_backend=config.get("Execution", {}).get("backend", None),
     )
 
     trajectory = predictor.run(
@@ -87,6 +165,8 @@ def main() -> None:
         flow_steps=int(overrides["flow_steps"]),
         solver=overrides["solver"],
         corrector_every=int(predict_cfg.get("corrector_every", 1)),
+        fix_com=bool(predict_cfg.get("fix_com", True)),
+        num_retries=int(predict_cfg.get("num_retries", 2)),
         seed=int(overrides["seed"]),
     )
 

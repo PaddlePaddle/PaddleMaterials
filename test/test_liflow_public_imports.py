@@ -60,8 +60,10 @@ def test_liflow_models_are_public():
 
 def test_liflow_dataset_is_public():
     from ppmat.datasets import LiFlowDataset
+    from ppmat.datasets import NoisedFrameDataset
 
     assert LiFlowDataset is not None
+    assert NoisedFrameDataset is not None
 
 
 def test_liflow_metric_is_public():
