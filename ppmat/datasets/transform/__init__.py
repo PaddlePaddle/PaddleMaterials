@@ -76,6 +76,9 @@ def build_transforms(cfg):
     for _item in cfg:
         transform_cls = _item.pop("__class_name__")
         init_params = _item.pop("__init_params__")
+        # Configs published before the rename still say AtomRef.
+        if transform_cls == "AtomRef":
+            transform_cls = "AtomRefShift"
         transform = eval(transform_cls)(**init_params)
         transform_list.append(transform)
 
@@ -90,6 +93,9 @@ def build_post_transforms(cfg):
     for _item in cfg:
         transform_cls = _item.pop("__class_name__")
         init_params = _item.pop("__init_params__")
+        # Configs published before the rename still say AtomRef.
+        if transform_cls == "AtomRef":
+            transform_cls = "AtomRefShift"
         transform = eval(transform_cls)(**init_params)
         transform_list.append(transform)
 
