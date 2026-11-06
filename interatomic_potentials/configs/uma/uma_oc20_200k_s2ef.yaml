@@ -79,6 +79,7 @@ Dataset:
     dataset:
       __class_name__: UMAOC20Dataset
       __init_params__:
+        path: ./data/oc20/uma_aselmdb/train
         build_graph_cfg: ${Global.graph_converter}
         split: train
         property_names: ["energy", "forces"]
@@ -97,6 +98,7 @@ Dataset:
     dataset:
       __class_name__: UMAOC20Dataset
       __init_params__:
+        path: ./data/oc20/uma_aselmdb/val
         build_graph_cfg: ${Global.graph_converter}
         split: val
         property_names: ["energy", "forces"]
@@ -116,6 +118,7 @@ Dataset:
     dataset:
       __class_name__: UMAOC20Dataset
       __init_params__:
+        path: ./data/oc20/uma_aselmdb/test
         build_graph_cfg: ${Global.graph_converter}
         split: test
         property_names: ["energy", "forces"]

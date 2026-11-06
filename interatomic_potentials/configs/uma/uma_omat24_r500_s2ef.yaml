@@ -79,6 +79,7 @@ Dataset:
     dataset:
       __class_name__: OMat24Dataset
       __init_params__:
+        path: ./data/OMat24/train/rattled-500
         build_graph_cfg: ${Global.graph_converter}
         split: train
         property_names: ["energy", "forces"]
@@ -97,6 +98,7 @@ Dataset:
     dataset:
       __class_name__: OMat24Dataset
       __init_params__:
+        path: ./data/OMat24/val/rattled-500
         build_graph_cfg: ${Global.graph_converter}
         split: val
         property_names: ["energy", "forces"]

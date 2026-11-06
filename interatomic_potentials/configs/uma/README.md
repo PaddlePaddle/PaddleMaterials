@@ -26,7 +26,8 @@ the corresponding `OMat24Dataset` and `UMAOC20Dataset`, converted to
 OMat24Dataset downloads the official OMat24 rattled-500 train or val archive
 independently, with separate cache directories for each split. The OMat24
 configuration evaluates on val; no separate test split is configured. A local
-path may point directly to an ASE-LMDB file or a directory of shards.
+path may point directly to an ASE-LMDB file or a directory of shards. Both
+datasets download automatically when the configured local path is missing.
 The 1M and sAlex packages are not configured here. OC20 currently retains the
 previous prepared package until its official replacement is provided.
 

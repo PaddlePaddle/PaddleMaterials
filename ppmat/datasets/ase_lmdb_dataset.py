@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import glob
 import json
+import os
 import os.path as osp
 import zlib
 from typing import Any
+from typing import Callable
 
 import lmdb
 import numpy as np
@@ -29,15 +31,38 @@ from ppmat.datasets.build_structure import BuildStructure
 from ppmat.datasets.custom_data_type import ConcatNumpyWarper
 from ppmat.models import build_graph_converter
 from ppmat.utils import download
+from ppmat.utils import logger
 
 
 class ASELMDBDataset(Dataset):
-    """Read structures and labels from compressed ASE-LMDB files."""
+    """Read structures and labels from compressed ASE-LMDB files.
+
+    Args:
+        build_graph_cfg: Configuration for the registered graph converter.
+        path: Local ASE-LMDB file or directory of shards. Registered datasets
+            are downloaded when this path is missing.
+        property_names: Labels to return, selected from energy and forces.
+        build_structure_cfg: Configuration for converting ASE atoms.
+        pattern: Glob pattern for shards within a local directory.
+        offset: Number of initial records to skip.
+        limit: Maximum number of records to load.
+        energy_key: Energy label key in the decoded record.
+        forces_key: Force label key in the decoded record.
+        transforms: Optional transform applied to each sample.
+        split: Dataset partition used to resolve the download URL and paths.
+    """
+
+    name: str | None = None
+    url: str | None = None
+    md5: str | None = None
+    splits: tuple[str, ...] | None = None
+    download_subdir: str = ""
+    dataset_subdir: str = ""
 
     def __init__(
         self,
         build_graph_cfg: dict[str, Any],
-        path: str,
+        path: str | os.PathLike[str] | None = None,
         property_names: str | list[str] | tuple[str, ...] = ("energy", "forces"),
         build_structure_cfg: dict[str, Any] | None = None,
         pattern: str = "*.aselmdb",
@@ -45,10 +70,34 @@ class ASELMDBDataset(Dataset):
         limit: int | None = None,
         energy_key: str = "energy",
         forces_key: str = "forces",
-        transforms=None,
+        transforms: Callable | None = None,
+        split: str = "train",
     ) -> None:
         super().__init__()
-        self.paths = self._get_database_paths(path, pattern)
+        if self.splits is not None and split not in self.splits:
+            supported = ", ".join(self.splits)
+            raise ValueError(
+                f"{type(self).__name__} supports only {supported} splits, "
+                f"got {split!r}."
+            )
+        self.split = split
+        if path is None or not osp.exists(path):
+            if self.url is None or self.name is None:
+                raise FileNotFoundError(
+                    f"No local ASE-LMDB data at {path!r} "
+                    "and no download URL configured."
+                )
+            logger.message("The dataset is not found. Will download it now.")
+            cache_dir = osp.join(
+                download.DATASETS_HOME,
+                self.download_subdir.format(name=self.name, split=split),
+            )
+            root_path = download.get_path_from_url(
+                self.url.format(split=split), cache_dir, self.md5
+            )
+            path = self._get_downloaded_split_path(root_path, split)
+        self.path = os.fspath(path)
+        self.paths = self._get_database_paths(self.path, pattern)
         self.databases = [
             lmdb.open(
                 database_path,
@@ -83,6 +132,14 @@ class ASELMDBDataset(Dataset):
         self.energy_key = energy_key
         self.forces_key = forces_key
         self.transforms = transforms
+
+    def _get_downloaded_split_path(self, root_path: str, split: str) -> str:
+        relative_path = self.dataset_subdir.format(split=split)
+        for root in (root_path, osp.join(root_path, self.name)):
+            path = osp.join(root, relative_path) if relative_path else os.fspath(root)
+            if osp.exists(path):
+                return path
+        raise FileNotFoundError(f"Cannot find {self.name} {split} under {root_path}.")
 
     @staticmethod
     def _get_database_paths(path: str, pattern: str) -> list[str]:
@@ -177,47 +234,23 @@ class ASELMDBDataset(Dataset):
 
 
 class OMat24Dataset(ASELMDBDataset):
-    """OMat24 rattled-500 structures in the original ASE-LMDB layout.
+    """OMat24 rattled-500 ASE-LMDB release with train and val partitions."""
 
-    Only train and val archives are provided for this subset. A local path
-    points directly to an ASE-LMDB file or a directory containing such files.
-    """
-
-    def __init__(self, build_graph_cfg, split, path=None, **kwargs):
-        if split not in {"train", "val"}:
-            raise ValueError("OMat24 rattled-500 supports only train and val splits.")
-        if path is not None and not osp.exists(path):
-            raise FileNotFoundError(path)
-        if path is None:
-            url = (
-                "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/OMat24/"
-                f"{split}/rattled-500.tar.gz"
-            )
-            cache_dir = osp.join(download.DATASETS_HOME, "OMat24", split)
-            path = download.get_path_from_url(url, cache_dir)
-        super().__init__(build_graph_cfg=build_graph_cfg, path=path, **kwargs)
+    name = "OMat24"
+    url = (
+        "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/OMat24/"
+        "{split}/rattled-500.tar.gz"
+    )
+    splits = ("train", "val")
+    download_subdir = osp.join("{name}", "{split}")
 
 
 class UMAOC20Dataset(ASELMDBDataset):
     """Prepared OC20 S2EF data used by the UMA configuration."""
 
+    name = "uma_datasets"
     url = (
         "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/UMA/uma_datasets.zip"
     )
-    dataset_subdir = osp.join("oc20", "uma_aselmdb")
-
-    def __init__(self, build_graph_cfg, split, path=None, **kwargs):
-        if split not in {"train", "val", "test"}:
-            raise ValueError(f"Unsupported split: {split}.")
-        if path is None or not osp.exists(path):
-            root = download.get_datasets_path_from_url(self.url)
-            path = self._get_downloaded_split_path(root, split)
-        super().__init__(build_graph_cfg=build_graph_cfg, path=path, **kwargs)
-
-    def _get_downloaded_split_path(self, root_path, split):
-        relative_path = osp.join(self.dataset_subdir, split)
-        for root in (root_path, osp.join(root_path, "uma_datasets")):
-            path = osp.join(root, relative_path)
-            if osp.exists(path):
-                return path
-        raise FileNotFoundError(f"Cannot find OC20 {split} under {root_path}.")
+    splits = ("train", "val", "test")
+    dataset_subdir = osp.join("oc20", "uma_aselmdb", "{split}")
