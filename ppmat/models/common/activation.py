@@ -82,7 +82,9 @@ class GateActivation(paddle.nn.Layer):
             [gates.shape[0], self.lmax, self.num_channels]
         )
         gates = paddle.index_select(gates, self.expand_index, axis=1)
-        scalar = paddle.nn.functional.silu(features[:, :1, :])
+        scalar = features[:, :1, :]
+        # Keep SiLU decomposed to avoid CPU backward overflow.
+        scalar = scalar * paddle.nn.functional.sigmoid(scalar)
         vectors = features[:, 1:, :] * gates
         return paddle.concat([scalar, vectors], axis=1)
 

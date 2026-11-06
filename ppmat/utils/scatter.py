@@ -105,6 +105,8 @@ def scatter_sum_first_order(
 
     dim_size = _resolve_dim_size(index, dim_size)
     out = _zeros(src, [dim_size, *src.shape[1:]])
+    if src.shape[0] == 0:
+        return out + src.sum() * 0
     return paddle.scatter_nd_add(out, index.reshape([-1, 1]), src)
 
 

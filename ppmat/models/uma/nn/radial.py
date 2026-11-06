@@ -17,6 +17,17 @@ from __future__ import annotations
 import paddle
 
 
+class _LayerNorm(paddle.nn.LayerNorm):
+    """Use composite operations for correct CPU input gradients."""
+
+    def forward(self, x: paddle.Tensor) -> paddle.Tensor:
+        axes = tuple(range(-len(self._normalized_shape), 0))
+        centered = x - x.mean(axis=axes, keepdim=True)
+        variance = centered.square().mean(axis=axes, keepdim=True)
+        normalized = centered * paddle.rsqrt(variance + self._epsilon)
+        return normalized * self.weight + self.bias
+
+
 class RadialMLP(paddle.nn.Layer):
     def __init__(self, channels: list[int]) -> None:
         super().__init__()
@@ -28,7 +39,7 @@ class RadialMLP(paddle.nn.Layer):
             if index < len(channels) - 2:
                 layers.extend(
                     [
-                        paddle.nn.LayerNorm(out_features),
+                        _LayerNorm(out_features),
                         paddle.nn.SiLU(),
                     ]
                 )
