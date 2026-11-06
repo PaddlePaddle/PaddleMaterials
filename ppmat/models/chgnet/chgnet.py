@@ -29,6 +29,7 @@ from pymatgen.core import Structure
 
 from ppmat.models.chgnet.prefitted_weights import MPF_prefitted_data
 from ppmat.models.chgnet.prefitted_weights import MPTrj_prefitted_data
+from ppmat.models.common.activation import swish
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
 from ppmat.utils import logger
@@ -37,6 +38,24 @@ from ppmat.utils.scatter import scatter
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+class _Silu(paddle.nn.Layer):
+    """Use unfused SiLU to avoid CPU backward overflow at negative inputs."""
+
+    def forward(self, x: paddle.Tensor) -> paddle.Tensor:
+        return swish(x)
+
+
+class _LayerNorm(paddle.nn.LayerNorm):
+    """Avoid incorrect CPU input gradients and support higher derivatives."""
+
+    def forward(self, x: paddle.Tensor) -> paddle.Tensor:
+        axes = tuple(range(-len(self._normalized_shape), 0))
+        centered = x - x.mean(axis=axes, keepdim=True)
+        variance = centered.square().mean(axis=axes, keepdim=True)
+        normalized = centered * paddle.rsqrt(variance + self._epsilon)
+        return normalized * self.weight + self.bias
 
 
 class MLP(paddle.nn.Layer):
@@ -75,7 +94,7 @@ class MLP(paddle.nn.Layer):
                 paddle.nn.Linear(
                     in_features=input_dim, out_features=hidden_dim, bias_attr=bias
                 ),
-                paddle.nn.Silu(),
+                _Silu(),
                 paddle.nn.Dropout(p=dropout),
                 paddle.nn.Linear(
                     in_features=hidden_dim, out_features=output_dim, bias_attr=bias
@@ -86,7 +105,7 @@ class MLP(paddle.nn.Layer):
                 paddle.nn.Linear(
                     in_features=input_dim, out_features=hidden_dim[0], bias_attr=bias
                 ),
-                paddle.nn.Silu(),
+                _Silu(),
             ]
             if len(hidden_dim) != 1:
                 for h_in, h_out in itertools.pairwise(hidden_dim):
@@ -95,7 +114,7 @@ class MLP(paddle.nn.Layer):
                             in_features=h_in, out_features=h_out, bias_attr=bias
                         )
                     )
-                    layers.append(paddle.nn.Silu())
+                    layers.append(_Silu())
             layers.append(paddle.nn.Dropout(p=dropout))
             layers.append(
                 paddle.nn.Linear(
@@ -160,11 +179,11 @@ class GatedMLP(paddle.nn.Layer):
             dropout=dropout,
             bias=bias,
         )
-        self.activation = paddle.nn.Silu()
+        self.activation = _Silu()
         self.sigmoid = paddle.nn.Sigmoid()
 
-        self.bn1 = paddle.nn.LayerNorm(output_dim)
-        self.bn2 = paddle.nn.LayerNorm(output_dim)
+        self.bn1 = _LayerNorm(output_dim)
+        self.bn2 = _LayerNorm(output_dim)
 
     def forward(self, x: paddle.Tensor) -> paddle.Tensor:
         """Performs a forward pass through the MLP.
@@ -1241,7 +1260,7 @@ class CHGNet(RuntimeMixin, paddle.nn.Layer):
         else:
             self.angle_layers = [None for _ in range(n_conv - 1)]
         self.site_wise = paddle.nn.Linear(in_features=atom_fea_dim, out_features=1)
-        self.readout_norm = paddle.nn.LayerNorm(atom_fea_dim)
+        self.readout_norm = _LayerNorm(atom_fea_dim)
         self.mlp_first = mlp_first
         if mlp_first:
             self.read_out_type = "sum"
