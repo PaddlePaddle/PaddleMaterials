@@ -233,18 +233,6 @@ The unified `FieldPredictor` also accepts `xyz`, `cif`, `cube`, `chgcar`, and
 `json` inputs. Use `--grid_batch_size` to limit the number of field points in
 each inference pass when needed.
 
-Registered packages can also be loaded directly through the Python API:
-
-```python
-from ppmat.predictor import FieldPredictor
-
-predictor = FieldPredictor(
-    model_name="gpwno_md17_ethane",
-    weights_name="best.pdparams",
-    device="cpu",
-)
-```
-
 ---
 
 ## Citation
