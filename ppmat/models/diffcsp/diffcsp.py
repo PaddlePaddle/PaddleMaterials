@@ -662,11 +662,6 @@ class DiffCSPWithType(DiffCSP):
             raise ValueError("DiffCSPWithType needs smooth=True and pred_type=True.")
         self.type_loss_weight = type_loss_weight
 
-    def _time_embedding(self, timesteps):
-        # The schedulers index diffusion steps from 0 to T - 1; the time embedding
-        # takes the step number 1..T.
-        return self.time_embedding(timesteps + 1)
-
     def forward(self, batch, **kwargs):
         structure_array = batch["structure_array"]
         num_atoms = structure_array["num_atoms"]
@@ -677,7 +672,7 @@ class DiffCSPWithType(DiffCSP):
 
         times = uniform_sample_t(batch_size, self.num_train_timesteps)
         times_per_atom = times.repeat_interleave(repeats=num_atoms)
-        time_emb = self._time_embedding(times)
+        time_emb = self.time_embedding(times)
 
         if "lattice" in structure_array.keys():
             lattices = structure_array["lattice"]
@@ -762,7 +757,7 @@ class DiffCSPWithType(DiffCSP):
             total=num_inference_steps,
             desc="Sampling...",
         ):
-            time_emb = self._time_embedding(
+            time_emb = self.time_embedding(
                 paddle.ones([batch_size], dtype="int64") * lattice_t
             )
             # Corrector: only the fractional coordinates move.

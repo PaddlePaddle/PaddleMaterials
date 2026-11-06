@@ -60,9 +60,7 @@ class normalize2mom(paddle.nn.Layer):
         if self._is_id:
             return self.f(x)
         else:
-            return self.f(x).multiply(
-                paddle.to_tensor(self.cst)
-            )  
+            return self.f(x).multiply(paddle.to_tensor(self.cst))
 
     @staticmethod
     def _make_tracing_inputs(n: int):

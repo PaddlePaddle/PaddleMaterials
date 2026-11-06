@@ -416,7 +416,7 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         else:
             raise ValueError(f"Unknown loss type {loss_type}.")
 
-    def triplets(self, edge_index, cell_offsets, num_nodes):
+    def triplets(self, edge_index, cell_offsets=None, num_nodes=None):
         row, col = edge_index
         value = paddle.arange(1, row.shape[0] + 1, dtype="int64")
         # build matrix of edge ids per target
@@ -436,9 +436,14 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         idx_k = paddle.index_select(row, idx_kj, axis=0)
         idx_j = paddle.index_select(row, idx_ji, axis=0)
         idx_i = paddle.index_select(col, idx_ji, axis=0)
-        # Remove i == k triplets with the same cell offset.
-        cell_offset_kji = cell_offsets[idx_kj] + cell_offsets[idx_ji]
-        mask2 = (idx_i != idx_k) | paddle.any(cell_offset_kji != 0, axis=-1)
+        if cell_offsets is None:
+            # Without cell offsets, only drop triplets whose two edges share an atom.
+            mask2 = idx_i != idx_k
+        else:
+            # A periodic image can bring i and k together, so keep i == k when the
+            # combined cell offset is non-zero.
+            cell_offset_kji = cell_offsets[idx_kj] + cell_offsets[idx_ji]
+            mask2 = (idx_i != idx_k) | paddle.any(cell_offset_kji != 0, axis=-1)
         return (
             col,
             row,

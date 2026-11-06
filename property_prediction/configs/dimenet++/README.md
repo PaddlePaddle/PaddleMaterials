@@ -319,7 +319,7 @@ Through its architectural improvements, DimeNet++ achieves up to an **8× speedu
     </body>
 </table>
 
-QM9 MAE is given for the best validation checkpoint on the 10,000 validation and 10,831 test molecules. U0, U, H and G are trained on atomization energies: the `AtomRef` transform subtracts the atomic reference energies.
+QM9 MAE is given for the best validation checkpoint on the 10,000 validation and 10,831 test molecules. U0, U, H and G are trained on atomization energies: the `AtomRefShift` transform subtracts the atomic reference energies.
 
 ### Training
 ```bash

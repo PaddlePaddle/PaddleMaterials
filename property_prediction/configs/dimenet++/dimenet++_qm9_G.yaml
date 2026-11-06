@@ -128,7 +128,7 @@ Dataset:
         # train on the atomization energy: subtract the B3LYP/6-31G(2df,p) atomic
         # reference energies (Hartree) of QM9
         transforms:
-          - __class_name__: AtomRef
+          - __class_name__: AtomRefShift
             __init_params__:
               apply_keys: ["G"]
               atomref: {1: -0.510927, 6: -37.861317, 7: -54.598897, 8: -75.079532, 9: -99.733544}
@@ -152,7 +152,7 @@ Dataset:
         # train on the atomization energy: subtract the B3LYP/6-31G(2df,p) atomic
         # reference energies (Hartree) of QM9
         transforms:
-          - __class_name__: AtomRef
+          - __class_name__: AtomRefShift
             __init_params__:
               apply_keys: ["G"]
               atomref: {1: -0.510927, 6: -37.861317, 7: -54.598897, 8: -75.079532, 9: -99.733544}
@@ -176,7 +176,7 @@ Dataset:
         # train on the atomization energy: subtract the B3LYP/6-31G(2df,p) atomic
         # reference energies (Hartree) of QM9
         transforms:
-          - __class_name__: AtomRef
+          - __class_name__: AtomRefShift
             __init_params__:
               apply_keys: ["G"]
               atomref: {1: -0.510927, 6: -37.861317, 7: -54.598897, 8: -75.079532, 9: -99.733544}

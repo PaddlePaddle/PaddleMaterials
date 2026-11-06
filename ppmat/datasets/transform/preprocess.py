@@ -31,7 +31,7 @@ __all__ = [
     "LatticePolarDecomposition",
     "Scale",
     "Abs",
-    "AtomRef",
+    "AtomRefShift",
 ]
 
 
@@ -143,7 +143,7 @@ class Abs:
         return data
 
 
-class AtomRef:
+class AtomRefShift:
     """Subtract the sum of per-element reference values from a property, e.g. to train
     on QM9 atomization energies instead of total energies.
 
@@ -158,6 +158,11 @@ class AtomRef:
 
     def __call__(self, data):
         atom_types = data["graph"].node_feat["atom_types"]
+        missing = sorted({int(z) for z in atom_types} - set(self.atomref))
+        if missing:
+            raise KeyError(
+                f"AtomRefShift has no reference value for atomic numbers {missing}."
+            )
         ref = sum(self.atomref[int(z)] for z in atom_types)
         for key in self.apply_keys:
             if key in data:
