@@ -140,6 +140,16 @@ Crystal structure prediction (atom types given), one sample for each of the 9,04
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | mattergen_mp20_csp | mp20 | 36.05 | 0.0597 | 4 | ~25.7 hours | [mattergen_mp20_csp.yaml](mattergen_mp20_csp.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/mattergen/mattergen_mp20_csp.zip) |
 
+> **Note on weight initialization.** Training a MatterGen config from scratch with the code before
+> PR #330 starts from a broken initialization: `_standardize` normalizes 2-D kernels over axis 1,
+> which makes the weight of a single-output layer all zero, and the hidden features then grow about
+> 25x per interaction block. The first optimizer step turns the zero heads into very large
+> predictions, so training does not converge. PR #330 fixes this. Fine-tuning from a released
+> checkpoint is not affected, because those weights are loaded from the checkpoint. The released
+> weights in the tables above were trained with the older code, before the fix. Retraining them with
+> the fixed initialization is not done yet, so their checkpoints and the numbers in this table are
+> unchanged.
+
 ---
 
 ## Command
