@@ -96,15 +96,180 @@
     "latest.pdparams": "221796eace8e41dfbad6fce16fd88db6a616efe277a272ee6b304f1df3951a03"
   },
   "limits": [
-    "Two epochs and one fold only; not the complete 100-epoch, five-fold benchmark.",
-    "CPU numerical alignment uses two real-mixture samples and two Adam steps, not a full cross-framework training run.",
-    "No compiler speedup or domestic-accelerator result is claimed.",
-    "The new reference checkpoint package requires BCE hosting before it can replace the old public package."
+    "Recovered historical weights were reevaluated, not retrained. Original per-fold logs/indices are not available, so historical 100-epoch completion and training/validation membership cannot be independently certified.",
+    "The earlier fresh training run was two epochs on fold 0; its evidence is retained above.",
+    "Cross-framework numerical alignment covers two real-mixture samples and two Adam steps, not a full cross-framework training run.",
+    "The tested full-model CINN call crashed with SIGSEGV. No compiler speedup or domestic-accelerator result is claimed.",
+    "Recovered weights require BCE hosting. The current public BCE ZIP is still the legacy three-edge-feature model."
   ],
   "tests": {
     "paddle": "3.2.2",
     "gegnn_and_splits_passed": 28,
     "existing_predictor_tests_passed": 12,
     "new_model_package_registered_loading": "passed"
+  },
+  "recovered_fold_reevaluation": {
+    "phase": "complete",
+    "paddle": "3.2.2",
+    "python": "3.10.12",
+    "device": "gpu:0",
+    "source_sha256": "ea8220a995179d281d67236cb39fc2ef9536c60230dfc81add063597bfe38f25",
+    "config_sha256": "bfade4783d3bff05ab09bafd7e43d938b892c1bd9e8a4391eb8ec275dd14d81c",
+    "training_performed": false,
+    "provenance_limit": "Historical README claims comp_inter/seed=2021. Original per-fold training logs and indices have not been recovered.",
+    "results": [
+      {
+        "fold": 0,
+        "samples": 56000,
+        "mae": 0.02407897453611258,
+        "rmse": 0.09406804689870789,
+        "r2_uniform_average": 0.9873618902165988,
+        "mae_per_component": [
+          0.02430708323194284,
+          0.023850865840282315
+        ],
+        "rmse_per_component": [
+          0.11398025856714719,
+          0.06860098797860895
+        ],
+        "r2_per_component": [
+          0.981917276317724,
+          0.9928065041154738
+        ],
+        "seconds": 12.810921555006644,
+        "checkpoint_sha256": "df086dd3325e9d120c673e8b0ca45c522e7d5b9c3fc8309c222cdc8d167f6254",
+        "split_manifest_sha256": "714f63247a1feb5881a099102a996715ade4f66987d453f7a0b84578c31b7c62",
+        "validation_csv_sha256": "a42c5ab0de34f6a1b7b60fe0da075d64e6541c57b0b478d51787f3b32048d260"
+      },
+      {
+        "fold": 1,
+        "samples": 56000,
+        "mae": 0.02480624609015141,
+        "rmse": 0.06114367403646424,
+        "r2_uniform_average": 0.9944213829985522,
+        "mae_per_component": [
+          0.024432844603292838,
+          0.025179647577009984
+        ],
+        "rmse_per_component": [
+          0.060782603742260584,
+          0.061502624591687115
+        ],
+        "r2_per_component": [
+          0.9944784749718589,
+          0.9943642910252456
+        ],
+        "seconds": 13.130962899012957,
+        "checkpoint_sha256": "4a387e3cc5bb31c4e09f25571fc768ab0a38d83135b06a275c6804448788b094",
+        "split_manifest_sha256": "8d17602c1e6abf41fb3fc8af67e2411eaa69b8c3d0495fb94cedb324ae5d1b53",
+        "validation_csv_sha256": "b71483fac8cee7cbc247be5d8366b68a4d9c50ac31b4e9140c96e7414c6757ca"
+      },
+      {
+        "fold": 2,
+        "samples": 56000,
+        "mae": 0.02467716232879628,
+        "rmse": 0.06773464045194583,
+        "r2_uniform_average": 0.9935647752593635,
+        "mae_per_component": [
+          0.02452616623632587,
+          0.024828158421266684
+        ],
+        "rmse_per_component": [
+          0.06703734982436953,
+          0.06842482563246867
+        ],
+        "r2_per_component": [
+          0.993829653953938,
+          0.9932998965647891
+        ],
+        "seconds": 12.918342613003915,
+        "checkpoint_sha256": "e7d4fc07496c2c30761da4dac660a8d7f2b01b42a115723161d3d648465a7efd",
+        "split_manifest_sha256": "d349d92cc2ff085c4f8e334b60bd9b04d3c0d1b2c84a639d2e2785b533d6899a",
+        "validation_csv_sha256": "016b4843ed0d0f505ff86b4430723669c7ba08171fdb6c3e5f0016a027ce600a"
+      },
+      {
+        "fold": 3,
+        "samples": 56000,
+        "mae": 0.023285910440279396,
+        "rmse": 0.06974560139894402,
+        "r2_uniform_average": 0.9928599866132612,
+        "mae_per_component": [
+          0.023622547746202965,
+          0.022949273134355828
+        ],
+        "rmse_per_component": [
+          0.07948185342258718,
+          0.05840832822047879
+        ],
+        "r2_per_component": [
+          0.9909843658726828,
+          0.9947356073538396
+        ],
+        "seconds": 13.374308485974325,
+        "checkpoint_sha256": "cdc8fbae4310da679866f99b083eb5a797336a62086e11f77f64a32ea7fb2b1c",
+        "split_manifest_sha256": "6fc821df431c985647aea159ed78762f540780776599109df21f4272d9d071c3",
+        "validation_csv_sha256": "2c40d7d549ca00c88bbe23bab492bf9301d1d059665be57463016ca652e0f0d7"
+      },
+      {
+        "fold": 4,
+        "samples": 56000,
+        "mae": 0.024388249673700253,
+        "rmse": 0.0636552522327081,
+        "r2_uniform_average": 0.9941556957020193,
+        "mae_per_component": [
+          0.024092055915892693,
+          0.024684443431507812
+        ],
+        "rmse_per_component": [
+          0.05925626941491206,
+          0.06776929104429641
+        ],
+        "r2_per_component": [
+          0.9951578687698873,
+          0.9931535226341514
+        ],
+        "seconds": 13.30578887599404,
+        "checkpoint_sha256": "18cce1be61292e719e5edcabeca94b4d5ea7b42b868030582fdb9c11c385b663",
+        "split_manifest_sha256": "85fba04f7014ab28b6e5ddeecdac4a0aa789e7b83e94a25ddd5d8ea5877e8304",
+        "validation_csv_sha256": "c133bf3145ba8fded1d26cdebaafbaa348168904c4e5e31687e6c5f4be4f852c"
+      }
+    ],
+    "current_fold": 4,
+    "summary": {
+      "mae": {
+        "mean": 0.024247308613807986,
+        "std_population": 0.0005421572670160609
+      },
+      "rmse": {
+        "mean": 0.07126944300375401,
+        "std_population": 0.011790677335527718
+      },
+      "r2_uniform_average": {
+        "mean": 0.9924727461579591,
+        "std_population": 0.002611238628936224
+      }
+    }
+  },
+  "compiler_probe": {
+    "paddle": "3.2.2",
+    "backend": "CINN",
+    "device": "RTX3090",
+    "scope": "Full GE-GNN prediction, with PGL graph inputs and composition differentiation",
+    "status": "subprocess_crashed",
+    "signal": "SIGSEGV",
+    "speedup_measured": false,
+    "speedup_claimed": false,
+    "limit": "This tested full-model to_static invocation crashed; no compiled throughput or 30% acceleration result is available. Root cause is not established."
+  },
+  "recovered_weight_provenance": {
+    "retrieved_on": "2026-11-07",
+    "model_repository": "https://git.aistudio.baidu.com/wangzi183/wangzi183.git",
+    "checkpoint_upload_commit": "b2e9ef6",
+    "historical_documentation_commit": "f44e158",
+    "retrieval_hashes": "All five SHA-256 hashes match their original Git LFS pointers.",
+    "structure": "All 23 parameter names and shapes exactly match the current 74-input / one-edge-feature model.",
+    "training_epochs_per_fold": "Not verified; original per-fold epoch logs were not recovered.",
+    "original_training_indices": "Not recovered; present evaluation uses reconstructed comp_inter/seed=2021 indices.",
+    "latest_checkpoints": "Not recovered; only historical best checkpoints are available."
   }
 }

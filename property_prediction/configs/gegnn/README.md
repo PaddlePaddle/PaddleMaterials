@@ -21,14 +21,24 @@ The two solvents share a molecular GCN encoder and exchange hydrogen-bond inform
 
 | Model | Edge features | Epochs | Fold | Validation MAE | Config | Checkpoint |
 | --- | --- | --- | --- | --- | --- | --- |
-| Reference GE-GNN | 1 | 2 | comp_inter / 0 | 0.319520 | [config](gegnn_binary_activity.yaml) | Awaiting BCE hosting |
+| Recovered reference GE-GNN | 1 | Not verified | comp_inter / 0-4 | 0.024247 +/- 0.000542 | [config](gegnn_binary_activity.yaml) | Awaiting BCE hosting |
 | Legacy checkpoint | 3 | 100 | Full-data training | Not evaluated | Same config with `Model.__init_params__.edge_in_feats=3` | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/ge-gnn/gegnn_binary_activity.zip) |
 
-The two-epoch run verifies the full-data pipeline; it is not a 100-epoch or five-fold reproduction result. The legacy checkpoint predates the corrected batching and must not be used to report held-out accuracy. Detailed versions, dataset hashes and numerical checks are recorded in [validation.json](validation.json).
+Five historical best checkpoints were recovered from Git LFS and reevaluated on reconstructed `comp_inter`, seed-2021 validation folds with official PaddlePaddle 3.2.2 on an RTX 3090. No new training was performed. The values below are means and population standard deviations across the five folds; each fold contains 56,000 validation records.
+
+| Metric | Fold mean | Fold standard deviation |
+| --- | ---: | ---: |
+| MAE | 0.024247 | 0.000542 |
+| RMSE | 0.071269 | 0.011791 |
+| R2 (uniform average over components) | 0.992473 | 0.002611 |
+
+Checkpoint hashes and all 23 parameter names/shapes were verified. The original per-fold epoch logs and training indices were not recovered, so these reevaluations do not independently certify 100 training epochs per fold or the original train/validation membership. The earlier two-epoch pipeline check is retained in [validation.json](validation.json). The public legacy checkpoint predates corrected batching and is not held-out evidence.
+
+The paper reports comp-inter MAE 0.020 and RMSE 0.068; this reevaluation is not a claim of a matched-protocol 1% reproduction result. The tested whole-model CINN conversion crashed with SIGSEGV, so no compiler acceleration is reported. Domestic-device verification remains outstanding.
 
 ## Data preparation
 
-Follow the repository [installation instructions](../../../Install.md). The model and tests have been checked with Python 3.10 and official PaddlePaddle 3.2.2; GPU training was checked with PaddlePaddle 3.0.0 and an RTX 3090.
+Follow the repository [installation instructions](../../../Install.md). The model and tests have been checked with Python 3.10 and official PaddlePaddle 3.2.2; GPU training was checked with PaddlePaddle 3.0.0 and an RTX 3090. The recovered fold evaluation was also run with official PaddlePaddle 3.2.2 GPU.
 
 The binaryGamma data originate from Qin et al. and are distributed with the [reference implementation](https://git.rwth-aachen.de/avt-svt/public/GDI-NN). The activity CSV contains `solv1`, `solv2`, `solv1_x`, `solv1_gamma`, `solv2_gamma` and `tpsa_binary_avg`; the gamma columns are **logarithmic** activity coefficients. `solvent_list.csv` maps `solvent_id` to `smiles_can`.
 
@@ -63,6 +73,14 @@ python property_prediction/train.py \
 
 Keep `Trainer.eval_with_no_grad=False` and `Predict.eval_with_no_grad=False`: activity coefficients require the composition derivative.
 
+For all five recovered checkpoints, first prepare fold directories 0-4 with the preprocessing command above, then reevaluate without training:
+
+```bash
+python tests/evaluate_gegnn_folds.py --checkpoint_dir=path/to/recovered_checkpoints --data_root=data/binary_activity --output_path=gegnn_fold_evaluation.json --device=gpu:0
+```
+
+The checkpoint directory must contain `gegnn_binary_gamma_fold0_best.pdparams` through `gegnn_binary_gamma_fold4_best.pdparams`. The tool verifies source hashes, validation rows, checkpoint structures and complete five-fold coverage before reporting MAE/RMSE/R2.
+
 ## Prediction
 
 The example CSV contains `smiles1`, `smiles2` and `x1` (the first solvent's mole fraction). The shared `PropertyPredictor` builds and caches solvents, batches the mixtures and saves `ln_gamma1` and `ln_gamma2` to `results/result.csv`. Set `--batch_size` to control prediction batching.
@@ -82,7 +100,7 @@ python property_prediction/predict.py --config_path=property_prediction/configs/
 ## Tests
 
 ```bash
-python -m pytest -q test/test_gegnn.py test/test_binary_activity_split.py
+python -m pytest -q test/test_gegnn.py test/test_binary_activity_split.py test/test_gegnn_evaluation.py
 ```
 
 For optional cross-framework verification, install PyTorch 2.2.2 and DGL 1.1.3 in a separate environment, download `model/model_GNN.py` from the reference repository, and run:
