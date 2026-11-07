@@ -67,7 +67,7 @@ class BuildBinaryMixture:
                 min(solvent1["hba"], solvent2["hbd"])
                 + min(solvent1["hbd"], solvent2["hba"])
             ),
-            "empty_solvsys": self.generate_solvsys(1),
+            "empty_solvsys": self.generate_solvsys(),
         }
         if gamma is not None:
             sample["gamma1"] = column(float(gamma[0]))
@@ -76,19 +76,8 @@ class BuildBinaryMixture:
         return sample
 
     @staticmethod
-    def generate_solvsys(batch_size=1):
-        nodes = 2 * batch_size
-        source = (
-            list(range(batch_size))
-            + list(range(batch_size, nodes))
-            + list(range(nodes))
-        )
-        target = (
-            list(range(batch_size, nodes))
-            + list(range(batch_size))
-            + list(range(nodes))
-        )
+    def generate_solvsys():
         return pgl.Graph(
-            num_nodes=nodes,
-            edges=np.asarray(list(zip(source, target)), dtype=np.int64),
+            num_nodes=2,
+            edges=np.asarray([[0, 1], [1, 0], [0, 0], [1, 1]], dtype=np.int64),
         )

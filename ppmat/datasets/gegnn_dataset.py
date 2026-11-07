@@ -78,6 +78,11 @@ class BinaryActivityDataset(Dataset):
         vocab = build_vocab(vocab)
 
         if not osp.exists(path):
+            if osp.basename(path) not in self.md5:
+                raise FileNotFoundError(
+                    f"Dataset file {path} does not exist. Prepare the train/validation "
+                    "CSV files with ppmat.datasets.split_binary_activity_data first."
+                )
             logger.message("The dataset is not found. Will download it now.")
             root_path = osp.join(DATASETS_HOME, self.name)
             os.makedirs(root_path, exist_ok=True)

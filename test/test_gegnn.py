@@ -66,6 +66,22 @@ class TestGEGNNBinary(unittest.TestCase):
     def _new_model():
         return GEGNNBinary(in_dim=74, hidden_dim=8, n_classes=1)
 
+    def test_reference_and_legacy_edge_dimensions(self):
+        batch = self._synthetic_batch()
+        for edge_features in (1, 3):
+            model = GEGNNBinary(in_dim=74, hidden_dim=8, edge_in_feats=edge_features)
+            self.assertEqual(model.predict(batch)["gamma"].shape, [2, 2])
+        with self.assertRaisesRegex(ValueError, "edge_in_feats"):
+            GEGNNBinary(edge_in_feats=2)
+        with self.assertRaisesRegex(ValueError, "dropout"):
+            GEGNNBinary(mlp_dropout_rate=0.1)
+
+    def test_checkpoint_edge_dimension_mismatch_is_not_silently_ignored(self):
+        reference = self._new_model()
+        legacy = GEGNNBinary(in_dim=74, hidden_dim=8, edge_in_feats=3)
+        with self.assertRaisesRegex(ValueError, "Checkpoint edge feature dimension"):
+            reference.set_state_dict(legacy.state_dict())
+
     def test_instantiation(self):
         self.assertIsNotNone(self._new_model())
 
@@ -115,7 +131,7 @@ class TestGEGNNBinary(unittest.TestCase):
         model = self._new_model()
         model.eval()
 
-        reference = model._predict_with_derivative(batch, create_graph=False)
+        reference = model._predict_with_derivative(batch, create_graph=True)
         optimized = model._predict_head_gradient(batch)
         for expected, actual in zip(reference, optimized):
             np.testing.assert_allclose(
@@ -174,28 +190,32 @@ class TestGEGNNBinary(unittest.TestCase):
                 )
 
     def test_predictions_are_independent_of_batch_companions(self):
-        paddle.seed(2021)
-        model = self._new_model()
-        model.eval()
-        builder = solvent_builder()
-        mixture = BuildBinaryMixture()
+        for hidden_dim in (8, 256):
+            paddle.seed(2021)
+            model = GEGNNBinary(hidden_dim=hidden_dim, mlp_activation="softplus")
+            model.eval()
+            builder = solvent_builder()
+            mixture = BuildBinaryMixture()
 
-        def predict(inputs):
-            samples = [mixture(builder(a), builder(b), x) for a, b, x in inputs]
-            return model.predict(DefaultCollator()(samples))["gamma"].numpy()
+            def predict(inputs):
+                samples = [mixture(builder(a), builder(b), x) for a, b, x in inputs]
+                return model.predict(DefaultCollator()(samples))["gamma"].numpy()
 
-        target = ("CCO", "O", 0.35)
-        companion = ("CC(=O)C", "c1ccncc1", 0.6)
-        replacement = ("CCN", "CC(=O)O", 0.2)
-        alone = predict([target])[0]
-        for inputs, index in [
-            ([target, companion], 0),
-            ([target, replacement], 0),
-            ([companion, target], 1),
-        ]:
-            np.testing.assert_allclose(
-                predict(inputs)[index], alone, rtol=0.0, atol=1e-6
-            )
+            target = ("CCO", "O", 0.35)
+            companion = ("CC(=O)C", "c1ccncc1", 0.6)
+            replacement = ("CCN", "CC(=O)O", 0.2)
+            alone = predict([target])[0]
+            for inputs, index in [
+                ([target, companion], 0),
+                ([target, replacement], 0),
+                ([companion, target], 1),
+            ]:
+                np.testing.assert_allclose(
+                    predict(inputs)[index],
+                    alone,
+                    rtol=0.0,
+                    atol=1e-6 if hidden_dim == 8 else 1e-4,
+                )
 
     def test_build_model_from_config(self):
         config_path = os.path.join(
@@ -235,17 +255,15 @@ class TestGEGNNBinary(unittest.TestCase):
         self.assertNotIn("finite_difference_step", init_params)
         self.assertFalse(config.Trainer["eval_with_no_grad"])
         self.assertEqual(
-            OmegaConf.to_container(config, resolve=False)["Dataset"]["dataset"][
-                "__init_params__"
-            ]["path"],
-            "./data/binary_activity/output_binary_with_inf_all.csv",
+            OmegaConf.to_container(config, resolve=False)["Dataset"]["train"][
+                "dataset"
+            ]["__init_params__"]["path"],
+            "./data/binary_activity/fold_0/train.csv",
         )
-        self.assertEqual(
-            dict(config.Dataset.split_dataset_ratio),
-            {"train": 0.8, "val": 0.1, "test": 0.1},
-        )
+        self.assertIn("val", config.Dataset)
+        self.assertEqual(config.Model["__init_params__"].edge_in_feats, 1)
         self.assertEqual(config.Trainer.best_metric_indicator, "eval_metric")
-        self.assertNotIn("collate_params", config.Dataset["loader"])
+        self.assertNotIn("collate_params", config.Dataset["train"]["loader"])
 
 
 class TestAtomFeaturization(unittest.TestCase):
@@ -355,6 +373,7 @@ class TestBinaryActivityPipeline(unittest.TestCase):
             return node_features
 
         model = SimpleNamespace(
+            edge_in_feats=3,
             conv1=lambda graph, features: features,
             conv2=lambda graph, features: features,
             _as_column=GEGNNBinary._as_column,
@@ -390,10 +409,11 @@ class TestBinaryActivityPipeline(unittest.TestCase):
             ),
             resolve=True,
         )
-        params = config["Dataset"]["dataset"]["__init_params__"]
+        params = config["Dataset"]["train"]["dataset"]["__init_params__"]
         with tempfile.TemporaryDirectory() as root:
             params["path"] = os.path.join(root, "train.csv")
             params["cache_path"] = os.path.join(root, "cache")
+            params["solvent_list_path"] = os.path.join(root, "solvent_list.csv")
             pd.DataFrame(
                 {
                     "solv1": [1],
@@ -452,7 +472,9 @@ class TestMixtureCSVPrediction(unittest.TestCase):
         )
         records.to_csv(self.csv_path, index=False)
         output_path = os.path.join(self.root.name, "result.csv")
-        results = self.predictor.from_mixture_csv(self.csv_path, output_path)
+        results = self.predictor.from_mixture_csv(
+            self.csv_path, output_path, batch_size=2
+        )
         self.assertEqual(
             list(results.columns), list(records.columns) + ["ln_gamma1", "ln_gamma2"]
         )
@@ -476,6 +498,25 @@ class TestMixtureCSVPrediction(unittest.TestCase):
             results[["ln_gamma1", "ln_gamma2"]],
             rtol=1e-6,
         )
+
+    def test_csv_prediction_is_invariant_to_batch_size(self):
+        pd.DataFrame(
+            {
+                "smiles1": ["CCO", "CCN", "O"],
+                "smiles2": ["O", "CC(=O)C", "c1ccncc1"],
+                "x1": [0.5, 0.2, 0.8],
+            }
+        ).to_csv(self.csv_path, index=False)
+        single = self.predictor.from_mixture_csv(self.csv_path, batch_size=1)
+        batch = self.predictor.from_mixture_csv(self.csv_path, batch_size=2)
+        np.testing.assert_allclose(
+            single[["ln_gamma1", "ln_gamma2"]],
+            batch[["ln_gamma1", "ln_gamma2"]],
+            rtol=0,
+            atol=1e-6,
+        )
+        with self.assertRaisesRegex(ValueError, "batch_size"):
+            self.predictor.from_mixture_csv(self.csv_path, batch_size=0)
 
     def test_csv_rejects_missing_columns_and_values(self):
         pd.DataFrame({"smiles1": ["O"]}).to_csv(self.csv_path, index=False)

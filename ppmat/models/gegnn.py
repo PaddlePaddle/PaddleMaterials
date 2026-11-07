@@ -37,8 +37,10 @@ _ACTIVATION_MAP = {
 
 
 def get_activation(activation, get_nn=False):
-    key = activation.lower() if isinstance(activation, str) else "relu"
-    nn_cls, func = _ACTIVATION_MAP.get(key, _ACTIVATION_MAP["relu"])
+    key = "relu" if activation is None else activation.lower()
+    if key not in _ACTIVATION_MAP:
+        raise ValueError(f"Unsupported activation: {activation}")
+    nn_cls, func = _ACTIVATION_MAP[key]
     return nn_cls if get_nn else func
 
 
@@ -97,7 +99,7 @@ class NNConv(paddle.nn.Layer):
         )
 
     def forward(self, graph, node_feats, edge_feats):
-        edges = paddle.to_tensor(graph.edges, dtype="int64")
+        edges = graph.edges
         src = edges[:, 0]
         dst = edges[:, 1]
 
@@ -189,7 +191,9 @@ class GEGNNBinary(paddle.nn.Layer):
 
     @staticmethod
     def _as_column(value):
-        return paddle.to_tensor(value, dtype="float32").reshape([-1, 1])
+        if not isinstance(value, paddle.Tensor):
+            value = paddle.to_tensor(value, dtype="float32")
+        return value.cast("float32").reshape([-1, 1])
 
     @staticmethod
     def activity_coefficients(excess_gibbs_energy, x1, derivative):
@@ -208,21 +212,22 @@ class GEGNNBinary(paddle.nn.Layer):
         mpnn_activation="relu",
         mlp_num_hid_layers=2,
         property_name="gamma",
-        edge_in_feats=3,
+        edge_in_feats=1,
     ):
         super().__init__()
         if n_classes != 1:
             raise ValueError("GEGNNBinary predicts one scalar excess Gibbs energy.")
-        if mlp_num_hid_layers < 1:
-            raise ValueError("mlp_num_hid_layers must be at least 1.")
-        if not 0.0 <= mlp_dropout_rate < 1.0:
-            raise ValueError("mlp_dropout_rate must be in [0, 1).")
 
         if mlp_num_hid_layers != 2:
             raise ValueError(
                 "The reference GE-GNN architecture uses exactly two hidden MLP layers."
             )
 
+        if edge_in_feats not in (1, 3):
+            raise ValueError("edge_in_feats must be 1 (reference) or 3 (legacy).")
+        if mlp_dropout_rate != 0.0:
+            raise ValueError("The reference GE-GNN does not apply MLP dropout.")
+        self.edge_in_feats = edge_in_feats
         self.conv1 = HigherOrderGraphConv(in_dim, hidden_dim)
         self.conv2 = HigherOrderGraphConv(hidden_dim, hidden_dim)
         self.global_conv1 = MPNNconv(
@@ -243,6 +248,17 @@ class GEGNNBinary(paddle.nn.Layer):
             property_name = property_name[0]
         self.property_name = property_name
 
+    def set_state_dict(self, state_dict, *args, **kwargs):
+        key = "global_conv1.gnn_layer.edge_network.0.weight"
+        if key in state_dict and state_dict[key].shape[0] != self.edge_in_feats:
+            raise ValueError(
+                f"Checkpoint edge feature dimension is {state_dict[key].shape[0]}, "
+                f"but the model expects {self.edge_in_feats}. Set edge_in_feats="
+                f"{state_dict[key].shape[0]} for these weights. Legacy checkpoints "
+                "require three features; reference-model weights require one."
+            )
+        return super().set_state_dict(state_dict, *args, **kwargs)
+
     def _component_features(self, data, batch_size):
         g1 = data["g1"].tensor()
         g2 = data["g2"].tensor()
@@ -258,24 +274,30 @@ class GEGNNBinary(paddle.nn.Layer):
         inter_hb = self._as_column(data["inter_hb"])
         intra_hb1 = self._as_column(data["intra_hb1"])
         intra_hb2 = self._as_column(data["intra_hb2"])
-        edge_features = paddle.stack(
-            [
-                paddle.concat([inter_hb, intra_hb1, intra_hb2], axis=1),
-                paddle.concat([inter_hb, intra_hb2, intra_hb1], axis=1),
-                paddle.concat([inter_hb, intra_hb1, intra_hb1], axis=1),
-                paddle.concat([inter_hb, intra_hb2, intra_hb2], axis=1),
-            ],
-            axis=1,
-        ).reshape([-1, 3])
+        if self.edge_in_feats == 1:
+            edge_features = paddle.stack(
+                [inter_hb, inter_hb, intra_hb1, intra_hb2], axis=1
+            ).reshape([-1, 1])
+        else:
+            edge_features = paddle.stack(
+                [
+                    paddle.concat([inter_hb, intra_hb1, intra_hb2], axis=1),
+                    paddle.concat([inter_hb, intra_hb2, intra_hb1], axis=1),
+                    paddle.concat([inter_hb, intra_hb1, intra_hb1], axis=1),
+                    paddle.concat([inter_hb, intra_hb2, intra_hb2], axis=1),
+                ],
+                axis=1,
+            ).reshape([-1, 3])
         interaction_graph = data["empty_solvsys"].tensor()
         node_features = paddle.stack([hg1, hg2], axis=1).reshape([2 * batch_size, -1])
         output = self.global_conv1(interaction_graph, node_features, edge_features)
         output = output.reshape([batch_size, 2, -1])
         return paddle.concat([output[:, 0], output[:, 1]], axis=0)
 
-    def _excess_gibbs_energy(self, data, x1):
+    def _excess_gibbs_energy(self, data, x1, component_features=None):
         batch_size = x1.shape[0]
-        component_features = self._component_features(data, batch_size)
+        if component_features is None:
+            component_features = self._component_features(data, batch_size)
         component1 = paddle.concat([component_features[:batch_size], x1], axis=1)
         component2 = paddle.concat([component_features[batch_size:], 1.0 - x1], axis=1)
         component1 = self.mlp_activation(self.mfp_trans(component1))
@@ -286,35 +308,18 @@ class GEGNNBinary(paddle.nn.Layer):
         return self.classify3(output)
 
     def _predict_head_gradient(self, data):
-        x1 = self._as_column(data["x1"])
-        x1.stop_gradient = False
-        batch_size = x1.shape[0]
-        with paddle.no_grad():
-            component_features = self._component_features(data, batch_size)
-
-        component1 = paddle.concat([component_features[:batch_size], x1], axis=1)
-        component2 = paddle.concat([component_features[batch_size:], 1.0 - x1], axis=1)
-        component1 = self.mlp_activation(self.mfp_trans(component1))
-        component2 = self.mlp_activation(self.mfp_trans(component2))
-        output = 0.5 * (component1 + component2)
-        output = self.mlp_activation(self.classify1(output))
-        output = self.mlp_activation(self.classify2(output))
-        excess_gibbs_energy = self.classify3(output)
-        derivative = paddle.grad(
-            outputs=excess_gibbs_energy,
-            inputs=x1,
-            create_graph=False,
-            retain_graph=False,
-        )[0]
-        prediction = self.activity_coefficients(excess_gibbs_energy, x1, derivative)
-        return excess_gibbs_energy, derivative, prediction
+        return self._predict_with_derivative(data, create_graph=False)
 
     def _predict_with_derivative(self, data, create_graph):
         x1 = self._as_column(data["x1"])
         # The collator tensors normally stop gradients. This input must remain
         # differentiable because ``ln(gamma)`` is defined by dG^E/dx1.
         x1.stop_gradient = False
-        excess_gibbs_energy = self._excess_gibbs_energy(data, x1)
+        component_features = None
+        if not create_graph:
+            with paddle.no_grad():
+                component_features = self._component_features(data, x1.shape[0])
+        excess_gibbs_energy = self._excess_gibbs_energy(data, x1, component_features)
         derivative = paddle.grad(
             outputs=excess_gibbs_energy,
             inputs=x1,

@@ -33,6 +33,12 @@ def parse_args(argv=None):
     parser.add_argument("--device", help="Paddle device, for example cpu or gpu:0.")
     parser.add_argument("--input_path", required=True, help="Input file or directory.")
     parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=32,
+        help="Batch size for mixture CSV prediction.",
+    )
+    parser.add_argument(
         "--input_format",
         required=True,
         choices=["cif", "xyz", "mixture_csv"],
@@ -44,6 +50,8 @@ def parse_args(argv=None):
         help="Directory used to save result.csv.",
     )
     args, config_overrides = parser.parse_known_args(argv)
+    if args.batch_size < 1:
+        parser.error("--batch_size must be positive")
     if args.model_name is not None and args.checkpoint_path is not None:
         parser.error("--checkpoint_path cannot be combined with --model_name")
     if args.config_path is not None and args.weights_name is not None:
@@ -66,7 +74,9 @@ def main():
     os.makedirs(args.output_path, exist_ok=True)
     save_path = osp.join(args.output_path, "result.csv")
     if args.input_format == "mixture_csv":
-        results = predictor.from_mixture_csv(args.input_path, save_path)
+        results = predictor.from_mixture_csv(
+            args.input_path, save_path, batch_size=args.batch_size
+        )
     elif args.input_format == "xyz":
         results = predictor.from_xyz_file(args.input_path, save_path)
     else:

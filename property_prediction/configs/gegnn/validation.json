@@ -1,0 +1,110 @@
+{
+  "architecture": {
+    "name": "GE-GNN",
+    "in_dim": 74,
+    "hidden_dim": 256,
+    "edge_in_feats": 1
+  },
+  "data": {
+    "source_file": "output_binary_with_inf_all.csv",
+    "source_sha256": "ea8220a995179d281d67236cb39fc2ef9536c60230dfc81add063597bfe38f25",
+    "mode": "comp_inter",
+    "fold": 0,
+    "num_splits": 5,
+    "seed": 2021,
+    "counts": {
+      "train": 224000,
+      "val": 56000
+    }
+  },
+  "full_data_training": {
+    "python": "3.10",
+    "paddle": "3.0.0",
+    "device": "RTX 3090",
+    "epochs": 2,
+    "batch_size": 256,
+    "validation_mae": 0.319527
+  },
+  "independent_evaluation": {
+    "paddle": "3.2.2",
+    "device": "CPU",
+    "samples": 56000,
+    "validation_mae": 0.31952
+  },
+  "cross_framework": {
+    "paddle": "3.2.2",
+    "torch": "2.2.2+cpu",
+    "dgl": "1.1.3",
+    "device": "CPU",
+    "source_url": "https://git.rwth-aachen.de/avt-svt/public/GDI-NN/-/raw/main/model/model_GNN.py",
+    "source_sha256": "e69204bf242646db0642985134142ae3fd08d50dc13e082fcbe85ea3dde7cf24",
+    "source_adaptation": "Device calls changed from CUDA to CPU only.",
+    "results": [
+      {
+        "hidden_dim": 8,
+        "batch_size": 2,
+        "adam_steps": [
+          {
+            "step": 1,
+            "prediction_max_abs_diff": 1.1920928955078125e-07,
+            "loss_abs_diff": 0.0,
+            "gradient_max_abs_diff": 1.1920928955078125e-07,
+            "paddle_loss": 1.2716017961502075,
+            "torch_loss": 1.2716017961502075
+          },
+          {
+            "step": 2,
+            "prediction_max_abs_diff": 1.1920928955078125e-07,
+            "loss_abs_diff": 2.384185791015625e-07,
+            "gradient_max_abs_diff": 7.152557373046875e-07,
+            "paddle_loss": 1.2136027812957764,
+            "torch_loss": 1.2136025428771973
+          }
+        ]
+      },
+      {
+        "hidden_dim": 256,
+        "batch_size": 2,
+        "adam_steps": [
+          {
+            "step": 1,
+            "prediction_max_abs_diff": 1.1920928955078125e-07,
+            "loss_abs_diff": 0.0,
+            "gradient_max_abs_diff": 1.430511474609375e-06,
+            "paddle_loss": 4.264429092407227,
+            "torch_loss": 4.264429092407227
+          },
+          {
+            "step": 2,
+            "prediction_max_abs_diff": 3.5762786865234375e-07,
+            "loss_abs_diff": 2.980232238769531e-07,
+            "gradient_max_abs_diff": 1.9073486328125e-06,
+            "paddle_loss": 0.9489293694496155,
+            "torch_loss": 0.9489290714263916
+          }
+        ]
+      }
+    ]
+  },
+  "legacy_compatibility": {
+    "legacy_output_max_abs_diff": 0.0,
+    "legacy_parameter_gradient_max_abs_diff": 0.0,
+    "optimized_prediction_max_abs_diff": 0.0
+  },
+  "checkpoint_sha256": {
+    "best.pdparams": "221796eace8e41dfbad6fce16fd88db6a616efe277a272ee6b304f1df3951a03",
+    "latest.pdparams": "221796eace8e41dfbad6fce16fd88db6a616efe277a272ee6b304f1df3951a03"
+  },
+  "limits": [
+    "Two epochs and one fold only; not the complete 100-epoch, five-fold benchmark.",
+    "CPU numerical alignment uses two real-mixture samples and two Adam steps, not a full cross-framework training run.",
+    "No compiler speedup or domestic-accelerator result is claimed.",
+    "The new reference checkpoint package requires BCE hosting before it can replace the old public package."
+  ],
+  "tests": {
+    "paddle": "3.2.2",
+    "gegnn_and_splits_passed": 28,
+    "existing_predictor_tests_passed": 12,
+    "new_model_package_registered_loading": "passed"
+  }
+}

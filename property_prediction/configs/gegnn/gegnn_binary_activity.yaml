@@ -82,7 +82,7 @@ Model:
   __class_name__: GEGNNBinary
   __init_params__:
     in_dim: 74
-    edge_in_feats: 3
+    edge_in_feats: 1
     hidden_dim: 256
     n_classes: 1
     mlp_dropout_rate: 0.0
@@ -115,36 +115,39 @@ Optimizer:
         indicator_name: "loss"
 
 Dataset:
-  split_dataset_ratio:
-    train: 0.8
-    val: 0.1
-    test: 0.1
-  dataset:
-    __class_name__: BinaryActivityDataset
-    __init_params__:
-      path: ./data/binary_activity/output_binary_with_inf_all.csv
-      vocab: ${Vocabulary}
-      build_molecule_cfg:
-        format: smiles
-      build_graph_cfg: *molecular_graph
-  loader:
-    num_workers: 0
-    use_shared_memory: False
-  train_sampler:
-    __class_name__: BatchSampler
-    __init_params__:
-      shuffle: True
-      drop_last: True
-      batch_size: 256
-  val_sampler:
-    __class_name__: BatchSampler
-    __init_params__:
-      shuffle: False
-      drop_last: False
-      batch_size: 256
-  test_sampler:
-    __class_name__: BatchSampler
-    __init_params__:
-      shuffle: False
-      drop_last: False
-      batch_size: 256
+  train:
+    dataset:
+      __class_name__: BinaryActivityDataset
+      __init_params__:
+        path: ./data/binary_activity/fold_0/train.csv
+        solvent_list_path: ./data/binary_activity/solvent_list.csv
+        vocab: ${Vocabulary}
+        build_molecule_cfg:
+          format: smiles
+        build_graph_cfg: *molecular_graph
+    loader: &activity_loader
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 256
+  val:
+    dataset:
+      __class_name__: BinaryActivityDataset
+      __init_params__:
+        path: ./data/binary_activity/fold_0/val.csv
+        solvent_list_path: ./data/binary_activity/solvent_list.csv
+        vocab: ${Vocabulary}
+        build_molecule_cfg:
+          format: smiles
+        build_graph_cfg: *molecular_graph
+    loader: *activity_loader
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 256

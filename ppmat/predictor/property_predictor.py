@@ -109,13 +109,15 @@ class PropertyPredictor(BasePredictor):
         data = DefaultCollator()([sample])
         return self._run_model(data)
 
-    def from_mixture_csv(self, csv_path, save_path=None):
+    def from_mixture_csv(self, csv_path, save_path=None, batch_size=32):
         """Predict log activity coefficients for SMILES pairs in a CSV.
 
         The required columns are ``smiles1``, ``smiles2`` and ``x1``. The
         returned table preserves input columns and adds ``ln_gamma1`` and
         ``ln_gamma2``. Mole fractions must be finite and in ``[0, 1]``.
         """
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive.")
         records = pd.read_csv(csv_path)
         required = {"smiles1", "smiles2", "x1"}
         missing = required.difference(records.columns)
@@ -131,16 +133,18 @@ class PropertyPredictor(BasePredictor):
         )
         solvents = {}
         predictions = []
-        for row in tqdm(
-            records.itertuples(index=False), total=len(records), desc="Predict"
-        ):
-            for smiles in (row.smiles1, row.smiles2):
-                if smiles not in solvents:
-                    solvents[smiles] = build_solvent(smiles)
-            result = self.from_mixture(
-                solvents[row.smiles1], solvents[row.smiles2], row.x1
-            )
-            predictions.append(result[self.model.property_name].numpy().reshape(2))
+        build_mixture = BuildBinaryMixture()
+        for start in tqdm(range(0, len(records), batch_size), desc="Predict"):
+            samples = []
+            for row in records.iloc[start : start + batch_size].itertuples(index=False):
+                for smiles in (row.smiles1, row.smiles2):
+                    if smiles not in solvents:
+                        solvents[smiles] = build_solvent(smiles)
+                samples.append(
+                    build_mixture(solvents[row.smiles1], solvents[row.smiles2], row.x1)
+                )
+            result = self._run_model(DefaultCollator()(samples))
+            predictions.extend(result[self.model.property_name].numpy().reshape(-1, 2))
         predictions = pd.DataFrame(predictions, columns=["ln_gamma1", "ln_gamma2"])
         results = records.copy()
         results[predictions.columns] = predictions

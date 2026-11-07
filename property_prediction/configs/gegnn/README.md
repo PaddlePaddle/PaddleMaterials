@@ -19,23 +19,38 @@ The two solvents share a molecular GCN encoder and exchange hydrogen-bond inform
 
 ## Results
 
-| Model Name | Dataset | Target | MAE (Val) | Config | Checkpoint |
-| --- | --- | --- | --- | --- | --- |
-| gegnn_binary_activity | binaryGamma | $\ln \gamma_1$, $\ln \gamma_2$ | Not evaluated | [gegnn_binary_activity.yaml](gegnn_binary_activity.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/ge-gnn/gegnn_binary_activity.zip) |
+| Model | Edge features | Epochs | Fold | Validation MAE | Config | Checkpoint |
+| --- | --- | --- | --- | --- | --- | --- |
+| Reference GE-GNN | 1 | 2 | comp_inter / 0 | 0.319520 | [config](gegnn_binary_activity.yaml) | Awaiting BCE hosting |
+| Legacy checkpoint | 3 | 100 | Full-data training | Not evaluated | Same config with `Model.__init_params__.edge_in_feats=3` | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/ge-gnn/gegnn_binary_activity.zip) |
 
-The linked checkpoint was trained on the full dataset before the batch correction; it is provided for inference compatibility, not held-out evaluation.
+The two-epoch run verifies the full-data pipeline; it is not a 100-epoch or five-fold reproduction result. The legacy checkpoint predates the corrected batching and must not be used to report held-out accuracy. Detailed versions, dataset hashes and numerical checks are recorded in [validation.json](validation.json).
+
+## Data preparation
+
+Follow the repository [installation instructions](../../../Install.md). The model and tests have been checked with Python 3.10 and official PaddlePaddle 3.2.2; GPU training was checked with PaddlePaddle 3.0.0 and an RTX 3090.
+
+The binaryGamma data originate from Qin et al. and are distributed with the [reference implementation](https://git.rwth-aachen.de/avt-svt/public/GDI-NN). The activity CSV contains `solv1`, `solv2`, `solv1_x`, `solv1_gamma`, `solv2_gamma` and `tpsa_binary_avg`; the gamma columns are **logarithmic** activity coefficients. `solvent_list.csv` maps `solvent_id` to `smiles_can`.
+
+Prepare fold 0 once before training. Missing source data and solvent metadata are downloaded with the shared download utilities and MD5 verification.
+
+```bash
+python -m ppmat.datasets.split_binary_activity_data --mode=comp_inter --fold=0 --seed=2021 --output_dir=data/binary_activity/fold_0
+```
+
+This follows the reference TPSA-stratified five-fold protocol: 224,000 training rows and 56,000 validation rows. `split.json` records the source SHA-256, seed and exact row indices. The preprocessing tool also supports `--mode=system_extra` to hold out complete solvent pairs. For another fold, choose a new output directory and update both dataset paths in the configuration.
 
 ## Training
 
-The configuration uses the shared loader's seeded 80/10/10 random row split (`Trainer.seed=2021`). This is an example split, not the paper's cross-validation protocol. Use the same seed and unchanged input CSV when evaluating checkpoints trained with this configuration.
+The reference model uses 74 atom features, one scalar hydrogen-bond feature per interaction edge, hidden dimension 256, Softplus readout, Adam at 0.001, batch size 256 and 100 epochs. `eval_metric` selects the best checkpoint. Splitting and feature encoding remain outside the dataset's record-reading logic.
 
 ```bash
 python property_prediction/train.py -c property_prediction/configs/gegnn/gegnn_binary_activity.yaml
 ```
 
-## Validation
+The trainer appends a timestamp and seed to its output directory. In the following commands, replace `YOUR_TRAINING_RUN` with that directory name.
 
-Use the checkpoint directory from the training run (including its timestamp and seed). GE-GNN requires `Trainer.eval_with_no_grad=False` for composition derivatives.
+## Validation
 
 ```bash
 python property_prediction/train.py \
@@ -46,21 +61,37 @@ python property_prediction/train.py \
     Trainer.pretrained_model_path=output/YOUR_TRAINING_RUN/checkpoints
 ```
 
+Keep `Trainer.eval_with_no_grad=False` and `Predict.eval_with_no_grad=False`: activity coefficients require the composition derivative.
+
 ## Prediction
 
-The input CSV contains `smiles1`, `smiles2`, and `x1` (the first solvent's mole fraction). Predictions are saved as `ln_gamma1` and `ln_gamma2` in `results/result.csv`, alongside the input columns.
+The example CSV contains `smiles1`, `smiles2` and `x1` (the first solvent's mole fraction). The shared `PropertyPredictor` builds and caches solvents, batches the mixtures and saves `ln_gamma1` and `ln_gamma2` to `results/result.csv`. Set `--batch_size` to control prediction batching.
 
-Use the current repository configuration with the published checkpoint ZIP. The shared loader automatically downloads the archive and selects `checkpoints/best.pdparams`; the archive's older YAML lacks the current vocabulary and graph settings.
-
-```bash
-python property_prediction/predict.py --config_path=property_prediction/configs/gegnn/gegnn_binary_activity.yaml --checkpoint_path=https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/ge-gnn/gegnn_binary_activity.zip --input_format=mixture_csv --input_path=property_prediction/example_data/binary_mixtures.csv
-```
-
-For a newly trained checkpoint:
+For weights trained with the reference configuration:
 
 ```bash
 python property_prediction/predict.py --config_path=property_prediction/configs/gegnn/gegnn_binary_activity.yaml --checkpoint_path=output/YOUR_TRAINING_RUN/checkpoints/best.pdparams --input_format=mixture_csv --input_path=property_prediction/example_data/binary_mixtures.csv
 ```
+
+For the existing public **legacy** ZIP, explicitly select three edge features. The repository YAML supplies the vocabulary and graph settings missing from the old package. A mismatched checkpoint dimension raises an error instead of silently leaving parameters uninitialized.
+
+```bash
+python property_prediction/predict.py --config_path=property_prediction/configs/gegnn/gegnn_binary_activity.yaml --checkpoint_path=https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/ge-gnn/gegnn_binary_activity.zip --input_format=mixture_csv --input_path=property_prediction/example_data/binary_mixtures.csv Model.__init_params__.edge_in_feats=3
+```
+
+## Tests
+
+```bash
+python -m pytest -q test/test_gegnn.py test/test_binary_activity_split.py
+```
+
+For optional cross-framework verification, install PyTorch 2.2.2 and DGL 1.1.3 in a separate environment, download `model/model_GNN.py` from the reference repository, and run:
+
+```bash
+python tests/compare_gegnn_reference.py --reference_model_path=reference_model_GNN.py --output_path=gegnn_alignment.json
+```
+
+The tool compares identical weights, predictions, losses and gradients over two Adam steps for hidden dimensions 8 and 256. Only the reference model's device calls are changed from CUDA to CPU. The measured maximum prediction difference is `3.58e-7`; this local check does not establish the full training accuracy or compiler speedup targets.
 
 ## Citation
 
