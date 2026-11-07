@@ -22,6 +22,7 @@ from tqdm import tqdm
 
 from ppmat.datasets.build_molecule import BuildMolecule
 from ppmat.datasets.build_solvent import BuildBinaryMixture
+from ppmat.datasets.build_solvent import BuildSolvent
 from ppmat.datasets.build_structure import BuildStructure
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.predictor.base import BasePredictor
@@ -107,6 +108,46 @@ class PropertyPredictor(BasePredictor):
         sample = BuildBinaryMixture()(data1, data2, x1)
         data = DefaultCollator()([sample])
         return self._run_model(data)
+
+    def from_mixture_csv(self, csv_path, save_path=None):
+        """Predict log activity coefficients for SMILES pairs in a CSV.
+
+        The required columns are ``smiles1``, ``smiles2`` and ``x1``. The
+        returned table preserves input columns and adds ``ln_gamma1`` and
+        ``ln_gamma2``. Mole fractions must be finite and in ``[0, 1]``.
+        """
+        records = pd.read_csv(csv_path)
+        required = {"smiles1", "smiles2", "x1"}
+        missing = required.difference(records.columns)
+        if missing:
+            raise ValueError(f"Mixture CSV is missing columns: {sorted(missing)}")
+        if records[list(required)].isna().any().any():
+            raise ValueError("Mixture CSV must not contain missing SMILES or x1.")
+        if self.graph_converter_fn is None:
+            raise ValueError("Mixture prediction requires Predict.graph_converter.")
+        build_solvent = BuildSolvent(
+            self.graph_converter_fn,
+            self.predict_config.get("build_molecule_cfg"),
+        )
+        solvents = {}
+        predictions = []
+        for row in tqdm(
+            records.itertuples(index=False), total=len(records), desc="Predict"
+        ):
+            for smiles in (row.smiles1, row.smiles2):
+                if smiles not in solvents:
+                    solvents[smiles] = build_solvent(smiles)
+            result = self.from_mixture(
+                solvents[row.smiles1], solvents[row.smiles2], row.x1
+            )
+            predictions.append(result[self.model.property_name].numpy().reshape(2))
+        predictions = pd.DataFrame(predictions, columns=["ln_gamma1", "ln_gamma2"])
+        results = records.copy()
+        results[predictions.columns] = predictions
+        if save_path is not None:
+            results.to_csv(save_path, index=False)
+            logger.info(f"Saved prediction results to {save_path}")
+        return results
 
     def from_cif_file(self, cif_file_path, save_path=None):
         """Predict crystal properties from CIF file(s).

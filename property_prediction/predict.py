@@ -35,7 +35,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--input_format",
         required=True,
-        choices=["cif", "xyz"],
+        choices=["cif", "xyz", "mixture_csv"],
         help="Input file format.",
     )
     parser.add_argument(
@@ -65,7 +65,9 @@ def main():
     )
     os.makedirs(args.output_path, exist_ok=True)
     save_path = osp.join(args.output_path, "result.csv")
-    if args.input_format == "xyz":
+    if args.input_format == "mixture_csv":
+        results = predictor.from_mixture_csv(args.input_path, save_path)
+    elif args.input_format == "xyz":
         results = predictor.from_xyz_file(args.input_path, save_path)
     else:
         results = predictor.from_cif_file(args.input_path, save_path)

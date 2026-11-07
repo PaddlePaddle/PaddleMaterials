@@ -41,7 +41,7 @@ Vocabulary:
 Global:
   label_names: ["gamma"]
   do_train: True
-  do_eval: False
+  do_eval: True
   do_test: False
 
 Trainer:
@@ -59,7 +59,7 @@ Trainer:
   amp_level: "O1"
   eval_with_no_grad: False
   gradient_accumulation_steps: 1
-  best_metric_indicator: "train_metric"
+  best_metric_indicator: "eval_metric"
   name_for_best_metric: "gamma"
   greater_is_better: False
   compute_metric_during_train: True
@@ -115,21 +115,36 @@ Optimizer:
         indicator_name: "loss"
 
 Dataset:
-  train:
-    dataset:
-      __class_name__: BinaryActivityDataset
-      __init_params__:
-        path: ./data/binary_activity/output_binary_with_inf_all.csv
-        vocab: ${Vocabulary}
-        build_molecule_cfg:
-          format: smiles
-        build_graph_cfg: *molecular_graph
-    loader:
-      num_workers: 0
-      use_shared_memory: False
-    sampler:
-      __class_name__: BatchSampler
-      __init_params__:
-        shuffle: True
-        drop_last: True
-        batch_size: 256
+  split_dataset_ratio:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+  dataset:
+    __class_name__: BinaryActivityDataset
+    __init_params__:
+      path: ./data/binary_activity/output_binary_with_inf_all.csv
+      vocab: ${Vocabulary}
+      build_molecule_cfg:
+        format: smiles
+      build_graph_cfg: *molecular_graph
+  loader:
+    num_workers: 0
+    use_shared_memory: False
+  train_sampler:
+    __class_name__: BatchSampler
+    __init_params__:
+      shuffle: True
+      drop_last: True
+      batch_size: 256
+  val_sampler:
+    __class_name__: BatchSampler
+    __init_params__:
+      shuffle: False
+      drop_last: False
+      batch_size: 256
+  test_sampler:
+    __class_name__: BatchSampler
+    __init_params__:
+      shuffle: False
+      drop_last: False
+      batch_size: 256

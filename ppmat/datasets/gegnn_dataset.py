@@ -58,20 +58,10 @@ class BinaryActivityDataset(Dataset):
     """
 
     name = "binary_activity"
+    url = "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/thermodynamic_data_of_binary_mixtures/"  # noqa
     md5 = {
         "output_binary_with_inf_all.csv": "67c7b4112cb248c7284004bab14398a4",
         "solvent_list.csv": "5fdb2e2295b327cd111cea5e19db9fcf",
-    }
-    url = (
-        "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/"
-        "thermodynamic_data_of_binary_mixtures/"
-    )
-    _REQUIRED_COLUMNS = {
-        "solv1",
-        "solv2",
-        "solv1_x",
-        "solv1_gamma",
-        "solv2_gamma",
     }
 
     def __init__(
@@ -216,13 +206,8 @@ class BinaryActivityDataset(Dataset):
         ]
 
     def read_data(self, path):
-        """Read and validate the binary-mixture records."""
+        """Read the binary-mixture records."""
         dataset = pd.read_csv(path, low_memory=False)
-        missing_columns = self._REQUIRED_COLUMNS.difference(dataset.columns)
-        if missing_columns:
-            raise ValueError(
-                "Binary activity CSV is missing columns: " f"{sorted(missing_columns)}"
-            )
         return dataset.reset_index(drop=True)
 
     def read_solvent_smiles(self, solvent_list_path):

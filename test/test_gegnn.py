@@ -1,4 +1,7 @@
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -170,6 +173,30 @@ class TestGEGNNBinary(unittest.TestCase):
                     atol=1e-6,
                 )
 
+    def test_predictions_are_independent_of_batch_companions(self):
+        paddle.seed(2021)
+        model = self._new_model()
+        model.eval()
+        builder = solvent_builder()
+        mixture = BuildBinaryMixture()
+
+        def predict(inputs):
+            samples = [mixture(builder(a), builder(b), x) for a, b, x in inputs]
+            return model.predict(DefaultCollator()(samples))["gamma"].numpy()
+
+        target = ("CCO", "O", 0.35)
+        companion = ("CC(=O)C", "c1ccncc1", 0.6)
+        replacement = ("CCN", "CC(=O)O", 0.2)
+        alone = predict([target])[0]
+        for inputs, index in [
+            ([target, companion], 0),
+            ([target, replacement], 0),
+            ([companion, target], 1),
+        ]:
+            np.testing.assert_allclose(
+                predict(inputs)[index], alone, rtol=0.0, atol=1e-6
+            )
+
     def test_build_model_from_config(self):
         config_path = os.path.join(
             BASE_DIR,
@@ -208,13 +235,17 @@ class TestGEGNNBinary(unittest.TestCase):
         self.assertNotIn("finite_difference_step", init_params)
         self.assertFalse(config.Trainer["eval_with_no_grad"])
         self.assertEqual(
-            OmegaConf.to_container(config, resolve=False)["Dataset"]["train"][
-                "dataset"
-            ]["__init_params__"]["path"],
+            OmegaConf.to_container(config, resolve=False)["Dataset"]["dataset"][
+                "__init_params__"
+            ]["path"],
             "./data/binary_activity/output_binary_with_inf_all.csv",
         )
-        self.assertNotIn("val", config.Dataset)
-        self.assertNotIn("collate_params", config.Dataset["train"]["loader"])
+        self.assertEqual(
+            dict(config.Dataset.split_dataset_ratio),
+            {"train": 0.8, "val": 0.1, "test": 0.1},
+        )
+        self.assertEqual(config.Trainer.best_metric_indicator, "eval_metric")
+        self.assertNotIn("collate_params", config.Dataset["loader"])
 
 
 class TestAtomFeaturization(unittest.TestCase):
@@ -359,7 +390,7 @@ class TestBinaryActivityPipeline(unittest.TestCase):
             ),
             resolve=True,
         )
-        params = config["Dataset"]["train"]["dataset"]["__init_params__"]
+        params = config["Dataset"]["dataset"]["__init_params__"]
         with tempfile.TemporaryDirectory() as root:
             params["path"] = os.path.join(root, "train.csv")
             params["cache_path"] = os.path.join(root, "cache")
@@ -391,6 +422,114 @@ class TestBinaryActivityPipeline(unittest.TestCase):
             os.remove(rebuilt.graphs[0])
             repaired = BinaryActivityDataset(**params)
             self.assertTrue(os.path.exists(repaired.graphs[0]))
+
+
+class TestMixtureCSVPrediction(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.TemporaryDirectory()
+        self.addCleanup(self.root.cleanup)
+        self.config_path = os.path.join(self.root.name, "gegnn.yaml")
+        self.checkpoint_path = os.path.join(self.root.name, "best.pdparams")
+        self.csv_path = os.path.join(self.root.name, "mixtures.csv")
+        config = OmegaConf.load(
+            os.path.join(
+                BASE_DIR, "property_prediction/configs/gegnn/gegnn_binary_activity.yaml"
+            )
+        )
+        config.Model["__init_params__"].hidden_dim = 8
+        OmegaConf.save(config, self.config_path)
+        model = build_model(OmegaConf.to_container(config, resolve=True)["Model"])
+        paddle.save(model.state_dict(), self.checkpoint_path)
+        self.predictor = PropertyPredictor(
+            config_path=self.config_path,
+            checkpoint_path=self.checkpoint_path,
+            device="cpu",
+        )
+
+    def test_csv_predictions_match_shared_pipeline(self):
+        records = pd.DataFrame(
+            {"smiles1": ["CCO", "CCO"], "smiles2": ["O", "CC(=O)C"], "x1": [0.5, 0.25]}
+        )
+        records.to_csv(self.csv_path, index=False)
+        output_path = os.path.join(self.root.name, "result.csv")
+        results = self.predictor.from_mixture_csv(self.csv_path, output_path)
+        self.assertEqual(
+            list(results.columns), list(records.columns) + ["ln_gamma1", "ln_gamma2"]
+        )
+        builder = solvent_builder()
+        for index, row in records.iterrows():
+            expected = (
+                self.predictor.from_mixture(
+                    builder(row.smiles1), builder(row.smiles2), row.x1
+                )["gamma"]
+                .numpy()
+                .reshape(2)
+            )
+            np.testing.assert_allclose(
+                results.loc[index, ["ln_gamma1", "ln_gamma2"]].to_numpy(dtype=float),
+                expected,
+                rtol=0.0,
+                atol=1e-6,
+            )
+        np.testing.assert_allclose(
+            pd.read_csv(output_path)[["ln_gamma1", "ln_gamma2"]],
+            results[["ln_gamma1", "ln_gamma2"]],
+            rtol=1e-6,
+        )
+
+    def test_csv_rejects_missing_columns_and_values(self):
+        pd.DataFrame({"smiles1": ["O"]}).to_csv(self.csv_path, index=False)
+        with self.assertRaisesRegex(ValueError, "missing columns"):
+            self.predictor.from_mixture_csv(self.csv_path)
+        pd.DataFrame({"smiles1": ["O"], "smiles2": [None], "x1": [0.5]}).to_csv(
+            self.csv_path, index=False
+        )
+        with self.assertRaisesRegex(ValueError, "missing SMILES"):
+            self.predictor.from_mixture_csv(self.csv_path)
+
+    def test_csv_rejects_invalid_composition(self):
+        pd.DataFrame({"smiles1": ["CCO"], "smiles2": ["O"], "x1": [1.5]}).to_csv(
+            self.csv_path, index=False
+        )
+        with self.assertRaisesRegex(ValueError, "Mole fraction"):
+            self.predictor.from_mixture_csv(self.csv_path)
+
+    def test_cli_loads_checkpoint_directory(self):
+        pd.DataFrame({"smiles1": ["CCO"], "smiles2": ["O"], "x1": [0.5]}).to_csv(
+            self.csv_path, index=False
+        )
+        output_path = os.path.join(self.root.name, "cli_results")
+        checkpoint_dir = os.path.join(self.root.name, "package", "checkpoints")
+        os.makedirs(checkpoint_dir)
+        shutil.copyfile(
+            self.checkpoint_path, os.path.join(checkpoint_dir, "best.pdparams")
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "property_prediction/predict.py",
+                "--config_path",
+                self.config_path,
+                "--checkpoint_path",
+                os.path.join(self.root.name, "package"),
+                "--input_format",
+                "mixture_csv",
+                "--input_path",
+                self.csv_path,
+                "--output_path",
+                output_path,
+                "--device",
+                "cpu",
+            ],
+            cwd=BASE_DIR,
+            env={**os.environ, "PYTHONPATH": BASE_DIR},
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        results = pd.read_csv(os.path.join(output_path, "result.csv"))
+        self.assertEqual(len(results), 1)
+        self.assertTrue(np.isfinite(results[["ln_gamma1", "ln_gamma2"]]).all().all())
 
 
 if __name__ == "__main__":
