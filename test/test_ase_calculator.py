@@ -42,8 +42,14 @@ class GeometryPredictor:
         return StructureGraph(structure)
 
     def predict(self, graph):
-        energy = np.sum(graph.positions**2) + np.sum(graph.cell**2)
-        return {"energy": np.array([energy]), "force": -2 * graph.positions}
+        if hasattr(graph, "node_feat"):
+            positions = graph.node_feat["cart_coords"].numpy()
+            cell = graph.node_feat["lattice"].numpy()[0]
+        else:
+            positions = graph.positions
+            cell = graph.cell
+        energy = np.sum(positions**2) + np.sum(cell**2)
+        return {"energy": np.array([energy]), "force": -2 * positions}
 
     def post_process(self, prediction):
         return prediction
@@ -75,3 +81,26 @@ def test_calculator_accepts_ase_atoms_without_a_stored_graph(model_name):
 
     assert atoms.get_potential_energy() == pytest.approx(76.0)
     np.testing.assert_allclose(atoms.get_forces()[1], [-2.0, 0.0, 0.0])
+
+
+@pytest.mark.parametrize("model_name", ["CHGNet", "M3GNet"])
+def test_calculator_refreshes_model_graph(model_name):
+    if model_name == "CHGNet":
+        from ppmat.models.chgnet.chgnet_graph_converter import CHGNetGraphConverter
+
+        converter = CHGNetGraphConverter(atom_graph_cutoff=3, bond_graph_cutoff=3)
+    else:
+        from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
+
+        converter = M3GNetGraphConvertor(cutoff=3, has_threebody=False)
+
+    predictor = GeometryPredictor(model_name)
+    predictor.graph_converter = converter
+    atoms = Atoms("Li2", positions=[[0, 0, 0], [1, 0, 0]], cell=[5, 5, 5], pbc=True)
+    atoms.info.update(charge=0, spin=0)
+    atoms.calc = ASECalculator(predictor)
+
+    assert atoms.get_potential_energy() == pytest.approx(76.0)
+    atoms.positions[1, 0] += 1.0
+    assert atoms.get_potential_energy() == pytest.approx(79.0)
+    np.testing.assert_allclose(atoms.get_forces()[1], [-4.0, 0.0, 0.0])
