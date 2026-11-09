@@ -20,6 +20,20 @@ from pymatgen.core.periodic_table import Element
 from ppmat.utils import paddle_aux  # noqa: F401
 from ppmat.utils.paddle_aux import dim2perm
 
+
+def pbc_vec(vec: paddle.Tensor, cell: paddle.Tensor):
+    """Wrap Cartesian vectors into the centered fractional unit cell.
+
+    ``vec`` has shape (..., K, 3) and ``cell`` has broadcast-compatible shape
+    (..., 3, 3), with lattice vectors stored as rows. Returns wrapped Cartesian
+    and fractional vectors, preserving gradients with respect to both inputs.
+    Fractional wrapping is not a general shortest-vector search for skew cells.
+    """
+    fractional = vec @ paddle.linalg.inv(cell)
+    fractional = fractional - paddle.round(fractional)
+    return fractional @ cell, fractional
+
+
 OFFSET_LIST = [
     [-1, -1, -1],
     [-1, -1, 0],

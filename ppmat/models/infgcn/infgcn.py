@@ -21,6 +21,7 @@ from ppmat.models.common.e3nn.math import soft_one_hot_linspace
 from ppmat.models.common.e3nn.nn import FullyConnectedNet
 from ppmat.models.common.orbital import GaussianOrbital
 from ppmat.models.infgcn.graph_converter import AtomGridRadiusGraphConverter
+from ppmat.utils.crystal import pbc_vec
 from ppmat.utils.scatter import scatter_sum_first_order
 
 
@@ -502,9 +503,7 @@ class InfGCN(paddle.nn.Layer):
         # shape [num_atoms, num_grid_points, 3].
         sample_vec = grid[batch] - atom_coord.unsqueeze(axis=-2)
         if cell is not None:
-            cell = cell[batch]
-            sample_vec = sample_vec @ paddle.linalg.inv(cell)
-            sample_vec = (sample_vec - paddle.round(sample_vec)) @ cell
+            sample_vec, _ = pbc_vec(sample_vec, cell[batch])
 
         # Expand displacement vectors in the Gaussian-type orbital basis:
         # [num_atoms, num_grid_points, (lmax + 1)^2 * num_gaussians].
