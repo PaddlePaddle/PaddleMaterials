@@ -370,8 +370,25 @@ Optimizer:
             <td>dict</td>
             <td>Scheduler parameters (e.g., initial/min learning rates).</td>
         </tr>
+        <tr>
+            <td>clip_norm</td>
+            <td>float</td>
+            <td>Clips the gradient of each parameter tensor to the given L2 norm; see `paddle.nn.ClipGradByNorm`.</td>
+        </tr>
+        <tr>
+            <td>clip_norm_global</td>
+            <td>float</td>
+            <td>Scales all gradients together when their global L2 norm exceeds the value, keeping the gradient direction; see `paddle.nn.ClipGradByGlobalNorm`.</td>
+        </tr>
+        <tr>
+            <td>clip_value</td>
+            <td>float</td>
+            <td>Clips every gradient element to the range [-value, value]; see `paddle.nn.ClipGradByValue`.</td>
+        </tr>
     </tbody>
 </table>
+
+At most one of the three keys is applied, checked in the order `clip_norm`, `clip_norm_global`, `clip_value`; when none is present, gradients are not clipped. `clip_norm` and `clip_norm_global` bound the overall step size and preserve the gradient direction, which suits models whose gradients are dominated by a few large components, such as the force and band-gap models trained with Adam. `clip_value` bounds each element independently and changes the gradient direction, so it suits the per-element noise-prediction objectives used by the generative models. Under gradient accumulation the trainer sums the gradients of the accumulated steps without averaging, so a `clip_value` threshold has to be scaled by `gradient_accumulation_steps` to keep the per-step constraint the same; `clip_norm` and `clip_norm_global` are applied to the summed gradient and need no such scaling.
 
 ## 6. Dataset Configuration
 

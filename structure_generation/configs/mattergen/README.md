@@ -134,6 +134,16 @@ Optional fields include `num_atoms`, `spacegroup`, and `property` / `condition`.
 | mattergen_alex_mp20_chemical_system_energy_above_hull | alex_mp20 | 0.2272 | [mattergen_alex_mp20_chemical_system_energy_above_hull.yaml](mattergen_alex_mp20_chemical_system_energy_above_hull.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_alex_mp20_chemical_system_energy_above_hull.zip) |
 | mattergen_alex_mp20_dft_mag_density_hhi_score | alex_mp20 | 0.2803 | [mattergen_alex_mp20_dft_mag_density_hhi_score.yaml](mattergen_alex_mp20_dft_mag_density_hhi_score.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_alex_mp20_dft_mag_density_hhi_score.zip) |
 
+Crystal structure prediction (atom types given):
+
+| Model Name | Dataset | Match Rate (%) | RMS Dist | GPUs | Training Time | Config | Checkpoint / Log |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| mattergen_mp20_csp | mp20 | 36.05 | 0.0597 | 4 | ~25.7 hours | [mattergen_mp20_csp.yaml](mattergen_mp20_csp.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/mattergen/mattergen_mp20_csp.zip) |
+
+> **Note:** `_standardize` now normalizes 2-D kernels over axis 0, so training from scratch with
+> the current code initializes weights differently from the released checkpoints. Fine-tuning from
+> these checkpoints is unaffected.
+
 ---
 
 ## Command
@@ -145,6 +155,12 @@ Optional fields include `num_atoms`, `spacegroup`, and `property` / `condition`.
 python -m paddle.distributed.launch --gpus="0,1,2,3,4,5,6,7" structure_generation/train.py -c structure_generation/configs/mattergen/mattergen_mp20.yaml
 # single-gpu training
 python structure_generation/train.py -c structure_generation/configs/mattergen/mattergen_mp20.yaml
+
+# mp20 dataset, crystal structure prediction (atom types given)
+# multi-gpu training (example with 4 GPUs, total batch size 512)
+python -m paddle.distributed.launch --gpus="0,1,2,3" structure_generation/train.py -c structure_generation/configs/mattergen/mattergen_mp20_csp.yaml Trainer.gradient_accumulation_steps=8 Optimizer.clip_value=4.0
+# single-gpu training
+python structure_generation/train.py -c structure_generation/configs/mattergen/mattergen_mp20_csp.yaml
 
 # mp20 dataset, with chemical system constraints (pre-trained model is mattergen_mp20; downloads automatically)
 # multi-gpu training (example with 8 GPUs)
@@ -298,6 +314,14 @@ python structure_generation/sample.py --model_name='mattergen_mp20' --weights_na
 python structure_generation/sample.py --model_name='mattergen_mp20' --weights_name='latest.pdparams' --output_path='result_mattergen_mp20/' --mode='by_dataloader'
 python structure_generation/sample.py --config_path='structure_generation/configs/mattergen/mattergen_mp20.yaml' --checkpoint_path='./output/mattergen_mp20/checkpoints/latest.pdparams' --output_path='result_mattergen_mp20/' --mode='by_num_atoms' --num_atoms=4
 python structure_generation/sample.py --config_path='structure_generation/configs/mattergen/mattergen_mp20.yaml' --checkpoint_path='./output/mattergen_mp20/checkpoints/latest.pdparams' --output_path='result_mattergen_mp20/' --mode='by_dataloader'
+
+# mp20 dataset, crystal structure prediction: one structure per test composition
+# Mode 1: pre-trained model, using the test set in the config
+python structure_generation/sample.py --model_name='mattergen_mp20_csp' --weights_name='best.pdparams' --output_path='result_mattergen_mp20_csp/' --mode='by_dataloader'
+# Mode 2: custom config + checkpoint, with your own composition CSV
+python structure_generation/sample.py --config_path='structure_generation/configs/mattergen/mattergen_mp20_csp.yaml' --checkpoint_path='./output/mattergen_mp20_csp/checkpoints/best.pdparams' --input_path='path/to/your.csv' --output_path='result_mattergen_mp20_csp/' --mode='by_dataloader'
+# Evaluation: generate for the test set and report match rate and RMS distance
+python structure_generation/sample.py --model_name='mattergen_mp20_csp' --weights_name='best.pdparams' --output_path='result_mattergen_mp20_csp/' --mode='compute_metric'
 
 # mp20 dataset, with chemical system constraints
 python structure_generation/sample.py --model_name='mattergen_mp20_chemical_system' --weights_name='latest.pdparams' --output_path='result_mattergen_mp20_chemical_system/' --mode='by_dataloader'
