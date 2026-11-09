@@ -23,6 +23,14 @@ The MP2018.6.1 dataset represents a foundational benchmark for the field, encomp
     | :--------------------------------------------------------------------------: | :---: | :---: | :---: | :---------: |
     | [mp2018_train_60k](https://paddle-org.bj.bcebos.com/paddlematerial/datasets/mp2018/mp2018_train_60k.zip) | 60000 | 5000  | 4239  | Formation Energy, Band Gap, Bulk Modulus(K), Shear Modulus(G) |
 
+- QM9:
+
+    QM9 is a benchmark of 130,831 small organic molecules with quantum-chemical properties computed at the B3LYP/6-31G(2df,p) level of theory. Following the split used for SphereNet, we partitioned the dataset into subsets, with the specific sample sizes for each subset detailed in the table below. Each config trains one of the 12 targets.
+
+    |                                   Dataset                                    | Train |  Val  | Test  | Properties |
+    | :--------------------------------------------------------------------------: | :---: | :---: | :---: | :---------: |
+    | [qm9](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/qm9/qm9.zip) | 110000 | 10000 | 10831 | mu, alpha, homo, lumo, gap, r2, zpve, U0, U, H, G, Cv |
+
 ## Model
 
 DimeNet++ is a directional message passing neural network designed for accurate and efficient prediction of molecular energies and forces, particularly for non-equilibrium molecular configurations. It builds upon the original DimeNet architecture by preserving its physically motivated directional message passing mechanism while substantially improving computational efficiency and predictive accuracy through architectural refinements.
@@ -156,41 +164,161 @@ Through its architectural improvements, DimeNet++ achieves up to an **8× speedu
             <td  nowrap="nowrap">dimenetpp_mp2018_train_60k_e_form</td>
             <td  nowrap="nowrap">mp2018_train_60k</td>
             <td  nowrap="nowrap">Form. Energy(eV/atom)</td>
-            <td  nowrap="nowrap">0.030738 / 0.032307</td>
+            <td  nowrap="nowrap">0.023471 / 0.023361</td>
             <td  nowrap="nowrap">4</td>
-            <td  nowrap="nowrap">19 hours 54 min</td>
+            <td  nowrap="nowrap">20 hours 0 min</td>
             <td  nowrap="nowrap"><a href="dimenet++_mp2018_train_60k_e_form.yaml">dimenet++_mp2018_train_60k_e_form</a></td>
-            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/dimenet%2B%2B/dimenetpp_mp2018_train_60k_e_form.zip">checkpoint | log</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_mp2018_train_60k_e_form.zip">checkpoint | log</a></td>
         </tr>  
         <tr>
             <td  nowrap="nowrap">dimenetpp_mp2018_train_60k_band_gap</td>
             <td  nowrap="nowrap">mp2018_train_60k</td>
             <td  nowrap="nowrap">Band Gap(eV)</td>
-            <td  nowrap="nowrap">0.270737 / 0.282961</td>
-            <td  nowrap="nowrap">4</td>
-            <td  nowrap="nowrap">23 hours</td>
+            <td  nowrap="nowrap">0.241686 / 0.245299</td>
+            <td  nowrap="nowrap">1 (batch 128 = 4 × 32)</td>
+            <td  nowrap="nowrap">29 hours 51 min</td>
             <td  nowrap="nowrap"><a href="dimenet++_mp2018_train_60k_band_gap.yaml">dimenet++_mp2018_train_60k_band_gap</a></td>
-            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/dimenet%2B%2B/dimenetpp_mp2018_train_60k_band_gap.zip">checkpoint | log</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_mp2018_train_60k_band_gap.zip">checkpoint | log</a></td>
         </tr>  
         <tr>
             <td  nowrap="nowrap">dimenetpp_mp2018_train_60k_K</td>
             <td  nowrap="nowrap">mp2018_train_60k</td>
             <td  nowrap="nowrap">Bulk modulus(GPa)</td>
-            <td  nowrap="nowrap">8.068773 / 7.031967</td>
+            <td  nowrap="nowrap">6.259347 / 5.580545</td>
             <td  nowrap="nowrap">4</td>
-            <td  nowrap="nowrap">~1 hour 38 min</td>
+            <td  nowrap="nowrap">1 hour 56 min</td>
             <td  nowrap="nowrap"><a href="dimenet++_mp2018_train_60k_K.yaml">dimenet++_mp2018_train_60k_k</a></td>
-            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/dimenet%2B%2B/dimenetpp_mp2018_train_60k_K.zip">checkpoint | log</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_mp2018_train_60k_K.zip">checkpoint | log</a></td>
         </tr>
         <tr>
             <td  nowrap="nowrap">dimenetpp_mp2018_train_60k_G</td>
             <td  nowrap="nowrap">mp2018_train_60k</td>
             <td  nowrap="nowrap">Shear modulus(GPa)</td>
-            <td  nowrap="nowrap">8.083622 / 7.122238</td>
+            <td  nowrap="nowrap">7.223798 / 5.725558</td>
             <td  nowrap="nowrap">4</td>
-            <td  nowrap="nowrap">~1 hour 38 min</td>
+            <td  nowrap="nowrap">1 hour 53 min</td>
             <td  nowrap="nowrap"><a href="dimenet++_mp2018_train_60k_G.yaml">dimenet++_mp2018_train_60k_G</a></td>
-            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/dimenet%2B%2B/dimenetpp_mp2018_train_60k_G.zip">checkpoint | log</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_mp2018_train_60k_G.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_mu</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">μ (D)</td>
+            <td  nowrap="nowrap">0.027625 / 0.027170</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">59 hours 34 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_mu.yaml">dimenet++_qm9_mu</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_mu.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_alpha</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">α (Bohr³)</td>
+            <td  nowrap="nowrap">0.041218 / 0.039659</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">68 hours 26 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_alpha.yaml">dimenet++_qm9_alpha</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_alpha.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_homo</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">HOMO (meV)</td>
+            <td  nowrap="nowrap">31.935 / 31.777</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">60 hours 19 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_homo.yaml">dimenet++_qm9_homo</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_homo.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_lumo</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">LUMO (meV)</td>
+            <td  nowrap="nowrap">22.805 / 22.304</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">58 hours 47 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_lumo.yaml">dimenet++_qm9_lumo</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_lumo.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_gap</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">Gap (meV)</td>
+            <td  nowrap="nowrap">50.527 / 49.751</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">59 hours 19 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_gap.yaml">dimenet++_qm9_gap</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_gap.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_r2</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">R² (Bohr²)</td>
+            <td  nowrap="nowrap">0.271653 / 0.256185</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">58 hours 47 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_r2.yaml">dimenet++_qm9_r2</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_r2.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_zpve</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">ZPVE (meV)</td>
+            <td  nowrap="nowrap">1.547 / 1.534</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">58 hours 45 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_zpve.yaml">dimenet++_qm9_zpve</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_zpve.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_U0</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">U0 (meV)</td>
+            <td  nowrap="nowrap">7.331 / 7.011</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">59 hours 33 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_U0.yaml">dimenet++_qm9_U0</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_U0.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_U</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">U (meV)</td>
+            <td  nowrap="nowrap">7.420 / 7.273</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">62 hours 2 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_U.yaml">dimenet++_qm9_U</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_U.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_H</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">H (meV)</td>
+            <td  nowrap="nowrap">7.275 / 7.126</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">60 hours 5 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_H.yaml">dimenet++_qm9_H</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_H.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_G</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">G (meV)</td>
+            <td  nowrap="nowrap">8.133 / 7.898</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">58 hours 35 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_G.yaml">dimenet++_qm9_G</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_G.zip">checkpoint | log</a></td>
+        </tr>
+        <tr>
+            <td  nowrap="nowrap">dimenetpp_qm9_Cv</td>
+            <td  nowrap="nowrap">QM9</td>
+            <td  nowrap="nowrap">Cv (cal/(mol·K))</td>
+            <td  nowrap="nowrap">0.023777 / 0.023507</td>
+            <td  nowrap="nowrap">1</td>
+            <td  nowrap="nowrap">58 hours 57 min</td>
+            <td  nowrap="nowrap"><a href="dimenet++_qm9_Cv.yaml">dimenet++_qm9_Cv</a></td>
+            <td  nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_Cv.zip">checkpoint | log</a></td>
         </tr>
     </body>
 </table>
@@ -220,6 +348,9 @@ python property_prediction/train.py -c property_prediction/configs/dimenet++/dim
 python -m paddle.distributed.launch --gpus="0,1,2,3" property_prediction/train.py -c property_prediction/configs/dimenet++/dimenet++_mp2018_train_60k_G.yaml
 # single-gpu training
 python property_prediction/train.py -c property_prediction/configs/dimenet++/dimenet++_mp2018_train_60k_G.yaml
+
+# QM9, one config per target, for example U0
+python property_prediction/train.py -c property_prediction/configs/dimenet++/dimenet++_qm9_U0.yaml
 ```
 
 ### Validation
@@ -255,6 +386,9 @@ python property_prediction/train.py -c property_prediction/configs/dimenet++/dim
 
 # shear modulus
 python property_prediction/train.py -c property_prediction/configs/dimenet++/dimenet++_mp2018_train_60k_G.yaml Global.do_test=True Global.do_train=False Global.do_eval=False Trainer.pretrained_model_path='your model path(*.pdparams)'
+
+# QM9, one config per target, for example U0
+python property_prediction/train.py -c property_prediction/configs/dimenet++/dimenet++_qm9_U0.yaml Global.do_test=True Global.do_train=False Global.do_eval=False Trainer.pretrained_model_path='your model path(*.pdparams)'
 ```
 
 ### Prediction

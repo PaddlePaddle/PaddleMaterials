@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
 from typing import Any
 from typing import List
-import warnings
+
 import numpy as np
 from ase import Atoms
 from ase import filters
@@ -54,7 +55,8 @@ OPTIMIZERS = {
     "BFGSLineSearch": BFGSLineSearch,
 }
 
-warnings.filterwarnings('ignore', message='Skipping "graph" info', category=UserWarning)
+warnings.filterwarnings("ignore", message='Skipping "graph" info', category=UserWarning)
+
 
 class OptimizationTask:
     def __init__(
@@ -264,7 +266,7 @@ class ASECalculator(Calculator):
                 elif calc_key == "stress":
                     stress = pred[pred_key]
                     stress_voigt = full_3x3_to_voigt_6_stress(stress)
-                    self.results["stress"] = stress_voigt
+                    self.results["stress"] = stress_voigt * units.GPa
 
     def _check_atoms_pbc(self, atoms) -> None:
         """

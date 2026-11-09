@@ -104,73 +104,73 @@ $$
         <tr>
             <td nowrap="nowrap">infgcn_md17_benzene</td>
             <td nowrap="nowrap">MD17_EC_Benzene</td>
-            <td nowrap="nowrap">21.2614%</td>
+            <td nowrap="nowrap">3.5418%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">59min</td>
+            <td nowrap="nowrap">35min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_benzene.yaml">infgcn_md17_benzene</a></td>
             <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_benzene.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_ethane</td>
             <td nowrap="nowrap">MD17_EC_Ethane</td>
-            <td nowrap="nowrap">6.9443%</td>
+            <td nowrap="nowrap">4.0910%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">1hour17min</td>
+            <td nowrap="nowrap">27min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_ethane.yaml">infgcn_md17_ethane</a></td>
             <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_ethane.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_ethanol</td>
             <td nowrap="nowrap">MD17_EC_Ethanol</td>
-            <td nowrap="nowrap">64.5951%</td>
+            <td nowrap="nowrap">4.4674%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">7min</td>
+            <td nowrap="nowrap">41min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_ethanol.yaml">infgcn_md17_ethanol</a></td>
             <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_ethanol.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_malonaldehyde</td>
             <td nowrap="nowrap">MD17_EC_Malonaldehyde</td>
-            <td nowrap="nowrap">17.7947%</td>
+            <td nowrap="nowrap">6.2800%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">1hour29min</td>
+            <td nowrap="nowrap">33min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_malonaldehyde.yaml">infgcn_md17_malonaldehyde</a></td>
             <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_malonaldehyde.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_phenol</td>
             <td nowrap="nowrap">MD17_EC_Phenol</td>
-            <td nowrap="nowrap">20.2144%</td>
+            <td nowrap="nowrap">3.5976%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">1hour17min</td>
+            <td nowrap="nowrap">54min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_phenol.yaml">infgcn_md17_phenol</a></td>
             <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_phenol.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_resorcinol</td>
             <td nowrap="nowrap">MD17_EC_Resorcinol</td>
-            <td nowrap="nowrap">15.8850%</td>
+            <td nowrap="nowrap">3.4942%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">1hour23min</td>
+            <td nowrap="nowrap">43min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_resorcinol.yaml">infgcn_md17_resorcinol</a></td>
             <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_resorcinol.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_qm9</td>
             <td nowrap="nowrap">QM9_EC</td>
-            <td nowrap="nowrap">1.7542%</td>
+            <td nowrap="nowrap">0.9315%</td>
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">75hour41min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_qm9.yaml">infgcn_qm9</a></td>
             <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_qm9.zip">checkpoint</td>
         </tr>
         <tr>
-            <td nowrap="nowrap">infgcn_cubic</td>
+            <td nowrap="nowrap">infgcn_mp</td>
             <td nowrap="nowrap">MP_EC (cubic)</td>
-            <td nowrap="nowrap">47.3829%</td>
+            <td nowrap="nowrap">7.7784%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">12hour6min</td>
-            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_mp.yaml">infgcn_cubic</a></td>
+            <td nowrap="nowrap">61hour26min</td>
+            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_mp.yaml">infgcn_mp</a></td>
             <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_mp.zip">checkpoint</td>
         </tr>
         <tr>
