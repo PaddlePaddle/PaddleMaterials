@@ -43,6 +43,7 @@ from ppmat.datasets.md17_dataset import MD17Dataset  # noqa
 from ppmat.datasets.mp20_dataset import AlexMP20MatterGenDataset
 from ppmat.datasets.mp20_dataset import MP20Dataset
 from ppmat.datasets.mp20_dataset import MP20MatterGenDataset
+from ppmat.datasets.mp40_dataset import MP40Dataset
 from ppmat.datasets.mp2018_dataset import MP2018Dataset
 from ppmat.datasets.mp2024_dataset import MP2024Dataset
 from ppmat.datasets.mptrj_dataset import MPTrjDataset
@@ -63,6 +64,7 @@ __all__ = [
     "MP2024Dataset",
     "MP20MatterGenDataset",
     "AlexMP20MatterGenDataset",
+    "MP40Dataset",
     "NumAtomsCrystalDataset",
     "set_signal_handlers",
     "MPTrjDataset",
