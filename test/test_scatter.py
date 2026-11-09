@@ -14,6 +14,7 @@
 
 import numpy as np
 import paddle
+import pytest
 
 from ppmat.utils.scatter import scatter
 from ppmat.utils.scatter import scatter_argmin
@@ -157,10 +158,28 @@ def test_scatter_dispatches_sum_alias():
     np.testing.assert_array_equal(actual.numpy(), expected.numpy())
 
 
-def test_scatter_sum_first_order_handles_empty_input():
-    values = paddle.empty([0, 2], dtype="float32")
+@pytest.mark.parametrize("dtype", ["float32", "float64", "int32", "int64"])
+@pytest.mark.parametrize("shape", [(0,), (0, 2), (0, 2, 3)])
+@pytest.mark.parametrize("dim_size", [None, 0, 3])
+def test_scatter_sum_first_order_handles_empty_input(dtype, shape, dim_size):
+    values = paddle.empty(shape, dtype=dtype)
     groups = paddle.empty([0], dtype="int64")
 
-    result = scatter_sum_first_order(values, groups, dim_size=3)
+    result = scatter_sum_first_order(values, groups, dim_size=dim_size)
 
-    np.testing.assert_array_equal(result.numpy(), np.zeros([3, 2]))
+    expected_shape = (dim_size or 0, *shape[1:])
+    assert tuple(result.shape) == expected_shape
+    assert result.dtype == values.dtype
+    assert result.place == values.place
+    np.testing.assert_array_equal(result.numpy(), np.zeros(expected_shape, dtype=dtype))
+
+
+def test_scatter_sum_first_order_empty_input_preserves_gradient():
+    values = paddle.empty([0, 2], dtype="float32")
+    values.stop_gradient = False
+    groups = paddle.empty([0], dtype="int64")
+
+    scatter_sum_first_order(values, groups, dim_size=3).sum().backward()
+
+    assert values.grad is not None
+    assert list(values.grad.shape) == [0, 2]

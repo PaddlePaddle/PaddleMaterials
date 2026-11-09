@@ -1,0 +1,138 @@
+Global:
+  do_train: True
+  do_eval: True
+  do_test: True
+  label_names: ["energy", "forces"]
+  graph_converter:
+    __class_name__: FindPointsInSpheres
+    __init_params__:
+      cutoff: 6.0
+      max_neighbors: 30
+  prim_eager_enabled: True
+  prim_backward_white_list: ["stack_grad", "assign_grad"]
+
+Trainer:
+  max_epochs: 3
+  seed: 42
+  output_dir: ./output/uma_oc20_200k_s2ef
+  save_freq: 1
+  log_freq: 10
+  start_eval_epoch: 1
+  eval_freq: 1
+  pretrained_model_path: null
+  pretrained_weight_name: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: "O1"
+  eval_with_no_grad: True
+  gradient_accumulation_steps: 1
+  best_metric_indicator: "eval_metric"
+  name_for_best_metric: "energy"
+  greater_is_better: False
+  compute_metric_during_train: True
+  metric_strategy_during_eval: "step"
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: UMA
+  __init_params__:
+    loss_weights_dict:
+      energy: 10.0
+      forces: 30.0
+    max_num_elements: 100
+    sphere_channels: 128
+    edge_channels: 128
+    hidden_channels: 128
+    num_distance_basis: 64
+    num_layers: 4
+    lmax: 2
+    mmax: 2
+    cutoff: 6.0
+
+Optimizer:
+  __class_name__: AdamW
+  __init_params__:
+    lr:
+      __class_name__: Cosine
+      __init_params__:
+        learning_rate: 8.0e-4
+        eta_min: 8.0e-6
+        by_epoch: False
+    weight_decay: 1.0e-3
+
+Metric:
+  energy:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+  forces:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: UMAOC20Dataset
+      __init_params__:
+        path: ./data/oc20/uma_aselmdb/train
+        build_graph_cfg: ${Global.graph_converter}
+        split: train
+        property_names: ["energy", "forces"]
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 4
+
+  val:
+    dataset:
+      __class_name__: UMAOC20Dataset
+      __init_params__:
+        path: ./data/oc20/uma_aselmdb/val
+        build_graph_cfg: ${Global.graph_converter}
+        split: val
+        property_names: ["energy", "forces"]
+        limit: 25000
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 4
+
+  test:
+    dataset:
+      __class_name__: UMAOC20Dataset
+      __init_params__:
+        path: ./data/oc20/uma_aselmdb/test
+        build_graph_cfg: ${Global.graph_converter}
+        split: test
+        property_names: ["energy", "forces"]
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 4
+
+Predict:
+  graph_converter: ${Global.graph_converter}
+  eval_with_no_grad: True

@@ -6,31 +6,32 @@ Machine-learning interatomic potentials (MLIP) bridge the gap between quantum-le
 
 ## 2.Models Matrix
 
-| **Supported Functions**             | **[CHGNet](./configs/chgnet/README.md)** | **[MatterSim](./configs/mattersim//README.md)** | **[SphereNet](./configs/spherenet/README.md)** |
-| ----------------------------------- | ---------------------------------------- | ----------------------------------------------- | ----------------------------------------------- |
-| **Forward Prediction**              |                                          |                                                 |                                                 |
-| &emsp;Energy                        | ✅                                       | ✅                                              | ✅                                              |
-| &emsp;Force                         | ✅                                       | ✅                                              | ✅                                              |
-| &emsp;Stress                        | ✅                                       | ✅                                              | -                                               |
-| &emsp;Magmom                        | ✅                                       | -                                               | -                                               |
-| **ML Capabilities · Training**      |                                          |                                                 |                                                 |
-| &emsp;Single-GPU                    | ✅                                       | 🧪                                              | ✅                                              |
-| &emsp;Distributed Train             | ✅                                       | ✅                                              | 🧪                                               |
-| &emsp;Mixed Precision               | -                                        | -                                               | -                                               |
-| &emsp;Fine-tuning                   | ✅                                       | ✅                                              | ✅                                              |
-| &emsp;Uncertainty / Active-Learning | -                                        | -                                               | -                                               |
-| &emsp;Dynamic→Static                | -                                        | -                                               | -                                               |
-| &emsp;Compiler CINN                 | -                                        | -                                               | -                                               |
-| **ML Capabilities · Predict**       |                                          |                                                 |                                                 |
-| &emsp;Distillation / Pruning        | -                                        | -                                               | -                                               |
-| &emsp;Standard inference            | ✅                                       | ✅                                              | ✅                                              |
-| &emsp;Distributed inference         | -                                        | -                                               | -                                               |
-| &emsp;Compiler CINN                 | -                                        | -                                               | -                                               |
-| **Molecular Dynamic Interface**     |                                          |                                                 |                                                 |
-| &emsp;ASE                           | ✅                                       | ✅                                              | 🧪                                               |
-| **Dataset**                         |                                          |                                                 |                                                 |
-| &emsp;MPtrj                         | ✅                                       | 🧪                                              | -                                               |
-| &emsp;MD17                          | -                                        | -                                               | ✅                                              |
-| &emsp;ML2DDB🌟                      | ✅                                       | -                                               | -                                               |
+| **Supported Functions**             | **[CHGNet](./configs/chgnet/README.md)** | **[MatterSim](./configs/mattersim/README.md)** | **[SphereNet](./configs/spherenet/README.md)** | **[UMA](./configs/uma/README.md)** |
+| ----------------------------------- | ---------------------------------------- | ---------------------------------------------- | ------------------------------------------------ | ---------------------------------- |
+| **Forward Prediction**              |                                          |                                                |                                                  |                                    |
+| &emsp;Energy                        | ✅                                       | ✅                                             | ✅                                               | ✅                                 |
+| &emsp;Force                         | ✅                                       | ✅                                             | ✅                                               | ✅                                 |
+| &emsp;Stress                        | ✅                                       | ✅                                             | -                                                | -                                  |
+| &emsp;Magmom                        | ✅                                       | -                                              | -                                                | -                                  |
+| **ML Capabilities · Training**      |                                          |                                                |                                                  |                                    |
+| &emsp;Single-GPU                    | ✅                                       | 🧪                                             | ✅                                               | ✅                                 |
+| &emsp;Distributed Train             | ✅                                       | ✅                                             | 🧪                                               | 🚧                                 |
+| &emsp;Mixed Precision               | -                                        | -                                              | -                                                | ✅                                 |
+| &emsp;Fine-tuning                   | ✅                                       | ✅                                             | ✅                                               | -                                  |
+| &emsp;Uncertainty / Active-Learning | -                                        | -                                              | -                                                | -                                  |
+| &emsp;Dynamic→Static                | -                                        | -                                              | -                                                | -                                  |
+| &emsp;Compiler CINN                 | -                                        | -                                              | -                                                | -                                  |
+| **ML Capabilities · Predict**       |                                          |                                                |                                                  |                                    |
+| &emsp;Distillation / Pruning        | -                                        | -                                              | -                                                | -                                  |
+| &emsp;Standard inference            | ✅                                       | ✅                                             | ✅                                               | ✅                                 |
+| &emsp;Distributed inference         | -                                        | -                                              | -                                                | -                                  |
+| &emsp;Compiler CINN                 | -                                        | -                                              | -                                                | -                                  |
+| **Molecular Dynamic Interface**     |                                          |                                                |                                                  |                                    |
+| &emsp;ASE                           | ✅                                       | ✅                                             | 🧪                                               | -                                  |
+| **Dataset**                         |                                          |                                                |                                                  |                                    |
+| &emsp;MPtrj                         | ✅                                       | 🧪                                             | -                                                | -                                  |
+| &emsp;MD17                          | -                                        | -                                              | ✅                                               | -                                  |
+| &emsp;OMat24 / OC20                 | -                                        | -                                              | -                                                | ✅                                 |
+| &emsp;ML2DDB🌟                      | ✅                                       | -                                              | -                                                | -                                  |
 
 **Legend:** ✅ Verified · 🧪 Implemented, pending validation · 🚧 In development · `-` Not supported · 🌟 Original Work

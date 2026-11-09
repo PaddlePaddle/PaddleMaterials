@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import paddle
+
 from ppmat.models.common.e3nn import o3
+from ppmat.models.common.e3nn.nn import Activation
+from ppmat.models.common.e3nn.nn import Extract
 
 
 def swish(x: paddle.Tensor) -> paddle.Tensor:
@@ -38,6 +41,59 @@ class SiQU(paddle.nn.Layer):
 
     def forward(self, x: paddle.Tensor):
         return x * self._activation(x)
+
+
+class GateActivation(paddle.nn.Layer):
+    """Apply scalar SiLU and sigmoid gates to spherical features."""
+
+    def __init__(
+        self,
+        lmax: int,
+        mmax: int,
+        num_channels: int,
+        m_prime: bool = False,
+    ) -> None:
+        super().__init__()
+        self.lmax = lmax
+        self.num_channels = num_channels
+
+        num_components = sum(
+            min(2 * degree + 1, 2 * mmax + 1) for degree in range(1, lmax + 1)
+        )
+        expand_index = paddle.zeros([num_components], dtype="int64")
+        start = 0
+        if m_prime:
+            expand_index[:lmax] = paddle.arange(lmax)
+            start = lmax
+            for order in range(1, mmax + 1):
+                length = 2 * (lmax + 1 - order)
+                degree_index = paddle.arange(order - 1, lmax)
+                expand_index[start : start + length] = paddle.concat(
+                    [degree_index, degree_index]
+                )
+                start += length
+        else:
+            for degree in range(1, lmax + 1):
+                length = min(2 * degree + 1, 2 * mmax + 1)
+                expand_index[start : start + length] = degree - 1
+                start += length
+        self.register_buffer("expand_index", expand_index, persistable=False)
+
+    def forward(
+        self,
+        gates: paddle.Tensor,
+        features: paddle.Tensor,
+    ) -> paddle.Tensor:
+        gates = paddle.nn.functional.sigmoid(gates).reshape(
+            [gates.shape[0], self.lmax, self.num_channels]
+        )
+        gates = paddle.index_select(gates, self.expand_index, axis=1)
+        scalar = features[:, :1, :]
+        # Keep SiLU decomposed to avoid CPU backward overflow.
+        scalar = scalar * paddle.nn.functional.sigmoid(scalar)
+        vectors = features[:, 1:, :] * gates
+        return paddle.concat([scalar, vectors], axis=1)
+
 
 class ScalarActivation(paddle.nn.Layer):
     """
@@ -97,7 +153,8 @@ class NormActivation(paddle.nn.Layer):
         """
         :param irreps_in: input representations
         :param act_scalars: scalar activation function
-        :param act_vectors: vector activation function (for the norm of higher order features)
+        :param act_vectors: vector activation function (for the norm of higher order
+            features)
         """
         super(NormActivation, self).__init__()
         self.irreps_in = o3.Irreps(irreps_in)

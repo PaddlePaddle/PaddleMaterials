@@ -30,6 +30,8 @@ from paddle.io import DataLoader
 from paddle.io import DistributedBatchSampler  # noqa
 
 from ppmat.datasets import collate_fn
+from ppmat.datasets.ase_lmdb_dataset import OMat24Dataset
+from ppmat.datasets.ase_lmdb_dataset import UMAOC20Dataset
 from ppmat.datasets.density_dataset import DensityDataset
 from ppmat.datasets.density_dataset import MD17DensityDataset
 from ppmat.datasets.density_dataset import MPCubicDensityDataset
@@ -79,6 +81,8 @@ __all__ = [
     "SFINDataset",
     "OMol25Dataset",
     "MD17Dataset",
+    "UMAOC20Dataset",
+    "OMat24Dataset",
 ]
 
 INFO_CLASS_REGISTRY: Dict[str, type] = {
@@ -187,9 +191,6 @@ def build_dataloader(cfg: Dict, vocab=None):
     num_workers = loader_config.pop("num_workers", 0)
     use_shared_memory = loader_config.pop("use_shared_memory", True)
 
-    # collate_obj = getattr(
-    #     collate_fn, loader_config.pop("collate_fn", "DefaultCollator")
-    # )()
     collate_fn_name = loader_config.pop("collate_fn", "DefaultCollator")
     collate_params = loader_config.pop("collate_params", {})
     collate_cls = getattr(collate_fn, collate_fn_name)

@@ -107,6 +107,8 @@ class FindPointsInSpheres:
             Defaults to 5.0.
         pbc (tuple[int, int, int], optional):Periodic boundary conditions along x/y/z
             axes. Each element 0 (disabled) or 1 (enabled). Defaults to (1, 1, 1).
+        max_neighbors (Optional[int], optional): Maximum number of nearest neighbors
+            retained for each center atom. Defaults to None.
         num_cpus (Optional[int], optional): Number of CPU cores for parallel processing:
             - None: Auto-detect all available cores (recommended)
             - Positive integer: Explicit core count.
@@ -120,12 +122,14 @@ class FindPointsInSpheres:
         self,
         cutoff: float = 5.0,
         pbc: tuple[int, int, int] = (1, 1, 1),
+        max_neighbors: Optional[int] = None,
         num_cpus: Optional[int] = None,
         eps: float = 1e-8,
         **kwargs,
     ) -> None:
         self.cutoff = cutoff
         self.pbc = np.array(pbc, dtype=int)
+        self.max_neighbors = max_neighbors
         self.num_cpus = num_cpus
         self.eps = eps
 
@@ -170,6 +174,21 @@ class FindPointsInSpheres:
                 images[exclude_self],
                 bond_dist[exclude_self],
             )
+            if self.max_neighbors is not None and self.max_neighbors > 0:
+                keep = []
+                for center in np.unique(src_id):
+                    center_edges = np.flatnonzero(src_id == center)
+                    order = np.argsort(bond_dist[center_edges], kind="stable")[
+                        : self.max_neighbors
+                    ]
+                    keep.extend(center_edges[order])
+                keep = np.asarray(sorted(keep), dtype=np.int64)
+                src_id, dst_id, images, bond_dist = (
+                    src_id[keep],
+                    dst_id[keep],
+                    images[keep],
+                    bond_dist[keep],
+                )
 
             edge_indices = [(u, v) for u, v in zip(src_id, dst_id)]
             to_jimages = np.array(images, dtype="float32")

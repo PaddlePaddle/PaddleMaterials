@@ -43,6 +43,7 @@ from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
 from ppmat.models.megnet.megnet import MEGNetPlus
 from ppmat.models.sfin.sfin import SFIN
 from ppmat.models.spherenet.spherenet import SphereNet
+from ppmat.models.uma.escn_md import UMA
 from ppmat.utils import download
 from ppmat.utils import logger
 from ppmat.utils import save_load
@@ -73,6 +74,7 @@ __all__ = [
     "InfGCN",
     "SFIN",
     "SphereNet",
+    "UMA",
 ]
 
 # Warning:
@@ -124,6 +126,8 @@ MODEL_REGISTRY = {
     "dimenetpp_mp2018_train_60k_K": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_mp2018_train_60k_K.zip",
     "mattersim_1M": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/interatomic_potentials/mattersim/mattersim_1M.zip",
     "mattersim_5M": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/interatomic_potentials/mattersim/mattersim_5M.zip",
+    "uma_oc20_200k_s2ef": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/interatomic_potentials/uma/uma_checkpoints.zip",
+    "uma_omat24_r500_s2ef": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/interatomic_potentials/uma/uma_checkpoints.zip",
     "mattergen_ml2ddb": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/MatterGen/mattergen_ml2ddb.zip",
     "mattergen_ml2ddb_chemical_system": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/MatterGen/mattergen_ml2ddb_chemical_system.zip",
     "mattergen_ml2ddb_space_group": "https://paddle-org.bj.bcebos.com/paddlematerial/workflow/ml2ddb/mattergen_ml2ddb_space_group.zip",
