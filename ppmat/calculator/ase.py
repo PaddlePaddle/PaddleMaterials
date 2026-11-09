@@ -162,11 +162,8 @@ class ASECalculator(Calculator):
         ase_structures = []
 
         for structure in tqdm(structures):
-            graph = self.predictor.graph_converter(structure)
             # covert pymatgen Structure to ASE Atom
             atom = AseAtomsAdaptor().get_atoms(structure)
-            # attach graph information to ASE Atom
-            atom.info["graph"] = graph
             ase_structures.append(atom)
 
         logger.info("Successfully covert all structures to ASE Atoms.")
@@ -232,8 +229,8 @@ class ASECalculator(Calculator):
             self._get_single_atom_energies(atoms)
         else:
             # Predict
-            graph = atoms.info["graph"]
-            graph = graph.tensor()
+            structure = AseAtomsAdaptor().get_structure(atoms)
+            graph = self.predictor.graph_converter(structure).tensor()
             pred = self.predictor.model.predict(graph)
             pred = self.predictor.post_process(pred)
 
