@@ -59,6 +59,7 @@ CINN 要求 CUDA 设备以及启用 CINN 的 Paddle。当前运行时不支持 A
 | `NMRNetCLIP` | `graph_encoder`、`spectrum_encoder` | SOT | 无独立注册流程 |
 | `DiffPrior` | `denoise_step` | SOT | 无独立注册流程 |
 | `DiffNMR` | `spectrum_encoder`、`denoise_step` | SOT | 反向扩散 |
+| `SGEQuiDiff` | `denoise_step` | SOT | 结构采样与训练 |
 | `InfGCN` | 无 | 仅 eager | CINN 不可用 |
 
 ## 接入 CINN

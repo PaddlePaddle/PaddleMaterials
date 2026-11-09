@@ -383,6 +383,20 @@ class AdamW:
             parameters split by white space. Defaults to None.
         one_dim_param_no_weight_decay (bool, optional): Apply no weight decay on
             1-D parameter(s). Defaults to False.
+        named_lr_groups (Optional[List[Dict[str, Union[str, float]]]], optional):
+            Per-layer learning-rate (and optionally weight-decay) multipliers.
+            Each entry is a dict like ``{"name": "layer_segment",
+            "lr_multiplier": 0.1, "weight_decay_multiplier": 0.0}``. The
+            ``name`` field matches any dot-separated segment of a parameter's
+            full path (avoiding substring false positives such as
+            ``"time_embedder"`` accidentally matching
+            ``"time_embedder_aux.weight"``); the first matching entry wins.
+            The effective learning rate of a matched parameter is
+            ``learning_rate * lr_multiplier``; if ``weight_decay_multiplier``
+            is given, the effective weight decay is also scaled
+            (``weight_decay * weight_decay_multiplier``). Unmatched parameters
+            fall back to ``lr_multiplier=1.0`` and no weight-decay multiplier.
+            Defaults to None.
     """
 
     def __init__(
@@ -399,6 +413,7 @@ class AdamW:
         one_dim_param_no_weight_decay: bool = False,
         amsgrad: bool = False,
         multi_precision: bool = False,
+        named_lr_groups: Optional[List[Dict[str, Union[str, float]]]] = None,
     ):
         super().__init__()
         self.learning_rate = learning_rate
@@ -413,14 +428,18 @@ class AdamW:
         self.one_dim_param_no_weight_decay = one_dim_param_no_weight_decay
         self.amsgrad = amsgrad
         self.multi_precision = multi_precision
+        self.named_lr_groups = named_lr_groups
 
     def __call__(self, model_list: Union[nn.Layer, Tuple[nn.Layer, ...]]):
         # model_list is None in static graph
         if not isinstance(model_list, (tuple, list)):
             model_list = (model_list,)
-        parameters = (
-            sum([m.parameters() for m in model_list], []) if model_list else None
-        )
+        if self.named_lr_groups:
+            parameters = self._build_named_lr_groups(model_list)
+        else:
+            parameters = (
+                sum([m.parameters() for m in model_list], []) if model_list else None
+            )
 
         # TODO(gaotingquan): Model_list is None when in static graph, "no_weight_decay"
         # not work.
@@ -470,6 +489,70 @@ class AdamW:
             multi_precision=self.multi_precision,
         )
         return opt
+
+    def _build_named_lr_groups(self, model_list):
+        """Group parameters by matched layer-name segment with lr/wd multipliers.
+
+        Match semantics: the ``name`` field matches when it equals any
+        dot-separated segment of the parameter's full path. Example: a
+        parameter named
+        ``"atom_coord_diffusion_model.wyckoff_and_element_sampler.time_embedder.weight"``
+        matches pattern ``"wyckoff_and_element_sampler"``. This avoids the
+        false-positive risks of substring matching (e.g. ``"time_embedder"``
+        accidentally matching ``"time_embedder_aux.weight"``).
+
+        Paddle parameter-group semantics (verified experimentally against
+        ``paddle.optimizer``): a float ``learning_rate`` entry in a group is
+        a **multiplier** of the optimizer's global learning rate (the global
+        rate may itself be a float or an ``LRScheduler``); a ``weight_decay``
+        entry in a group is an **absolute** value that overrides the
+        optimizer-level weight decay for that group. Group entries whose
+        ``weight_decay_multiplier`` is set therefore carry
+        ``weight_decay * weight_decay_multiplier``. Note that a parameter
+        matched by ``no_weight_decay_name`` never decays, regardless of any
+        group ``weight_decay_multiplier`` (``apply_decay_param_fun`` wins).
+
+        Parameters that match no entry fall back to ``lr_multiplier=1.0``
+        and no weight-decay multiplier (i.e. they inherit the optimizer's
+        full weight decay).
+
+        Args:
+            model_list (Tuple[nn.Layer, ...]): Tuple of model(s).
+
+        Returns:
+            List[Dict]: Paddle parameter-group spec (list of dicts, each with
+            ``params``, ``learning_rate``, and ``weight_decay`` when
+            ``weight_decay_multiplier`` is configured for that group).
+        """
+        grouped = {}
+        for model in model_list:
+            for name, param in model.named_parameters():
+                lr_multiplier = 1.0
+                wd_multiplier = None
+                for group in self.named_lr_groups:
+                    if "name" not in group:
+                        raise ValueError(
+                            "named_lr_groups entry missing 'name': "
+                            f"{group}"
+                        )
+                    if group["name"] in name.split("."):
+                        lr_multiplier = group.get("lr_multiplier", 1.0)
+                        wd_multiplier = group.get("weight_decay_multiplier")
+                        break
+                key = (lr_multiplier, wd_multiplier)
+                grouped.setdefault(key, []).append(param)
+
+        base_wd = self.weight_decay
+        result = []
+        for (lr_multiplier, wd_multiplier), params in grouped.items():
+            group_dict = {
+                "params": params,
+                "learning_rate": lr_multiplier,
+            }
+            if wd_multiplier is not None:
+                group_dict["weight_decay"] = base_wd * wd_multiplier
+            result.append(group_dict)
+        return result
 
     def _apply_decay_param_fun(self, name):
         return name not in self.no_weight_decay_param_name_list

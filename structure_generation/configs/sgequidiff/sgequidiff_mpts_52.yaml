@@ -1,0 +1,176 @@
+Global:
+  do_train: True
+  do_eval: False
+  do_test: False
+  num_train_timesteps: 1000
+
+Trainer:
+  max_epochs: 2000
+  seed: 42
+  output_dir: ./output/sgequidiff_mpts_52
+  save_freq: 100
+  log_freq: 10
+  start_eval_epoch: 1
+  eval_freq: 10
+  pretrained_model_path: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: 'O1'
+  eval_with_no_grad: True
+  gradient_accumulation_steps: 1
+  zero_nan_grad: True
+  best_metric_indicator: 'train_loss'
+  name_for_best_metric: "loss"
+  greater_is_better: False
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'epoch'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: True
+
+Model:
+  __class_name__: SGEQuiDiff
+  __init_params__:
+    dataset_name: mpts_52
+    diffusion_snr: 0.4
+    temperature: 1.0
+    num_timesteps: ${Global.num_train_timesteps}
+    noise_scheduler_num_monte_carlo_samples: 2500
+    num_lattice_translations: 3
+    cspnet_config: null
+    lattice_length_noise: 0.0
+    lattice_angle_noise: 0.0
+    space_group_grad_weight: 1.0
+    lattice_grad_weight: 1.0
+    wyckoff_element_grad_weight: 1.0
+    frac_coord_grad_weight: 1.0
+    noise_scheduler_cfg:
+      __class_name__: ASUVESDEScheduler
+      __init_params__:
+        num_timesteps: ${Global.num_train_timesteps}
+        sigma_min: 0.002
+        sigma_max: 0.5
+    time_emb_dim: 128
+    model_type: gnn
+    num_plane_wave_freqs: 96
+    gnn_config:
+      num_plane_wave_freqs: 96
+      num_cartesian_distance_gaussians: 96
+      edge_hidden_dim: 128
+      atom_hidden_dim: 256
+      use_vpa: True
+      use_graph_norm: True
+      num_msg_pass_steps: 5
+      cutoff: 10.0
+      use_frac_coords_in_node_emb: True
+      dataset_name: mpts_52
+    lattice_sampler_config:
+      input_dimension: 128
+      hidden_dimension: 256
+      lattice_param_dim: 32
+      n_emb_layers: 2
+      lattice_length_bin_embedder_fourier_scale: 2.0
+      lattice_angle_bin_embedder_fourier_scale: 1.0
+      lattice_length_embedder_fourier_scale: 5.0
+      lattice_angle_embedder_fourier_scale: 1.0
+      num_fourier_frequencies: 128
+      length_fourier_output_dim: 512
+      angle_fourier_output_dim: 256
+      bin_fourier_output_dim: 256
+    wyckoff_element_transformer_config:
+      hidden_dim: 256
+      num_heads: 2
+      num_hidden_layers: 4
+      dropout_rate: 0.1
+      lattice_fourier_num_frequencies: 64
+
+Optimizer:
+  __class_name__: AdamW
+  clip_value: 0.5
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    epsilon: 1.0e-8
+    weight_decay: 0.0
+    named_lr_groups:
+      - name: wyckoff_and_element_sampler
+        lr_multiplier: 0.1
+      - name: lattice_sampler
+        lr_multiplier: 0.1
+    lr:
+      __class_name__: ReduceOnPlateau
+      __init_params__:
+        learning_rate: 1.0e-3
+        indicator: train_loss
+        indicator_name: loss
+        factor: 0.6
+        patience: 30
+        min_lr: 1.0e-5
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MPTS52ASUDataset
+      __init_params__:
+        path: data/data/mpts_52/train.npz
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 32
+  val:
+    dataset:
+      __class_name__: MPTS52ASUDataset
+      __init_params__:
+        path: data/data/mpts_52/val.npz
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 64
+  test:
+    dataset:
+      __class_name__: MPTS52ASUDataset
+      __init_params__:
+        path: data/data/mpts_52/test.npz
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 64
+
+Sample:
+  data:
+    dataset:
+      __class_name__: MPTS52ASUDataset
+      __init_params__:
+        path: data/data/mpts_52/test.npz
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 64
+  build_structure_cfg:
+    format: array
+    primitive: False
+    niggli: False
+    canocial: True
+  metrics:
+    __class_name__: SGEQuiDiffMetric
+    __init_params__:
+      # Reference CIF pool for novelty / coverage; switch to the train split
+      # csv to measure novelty against the training distribution.
+      gt_file_path: data/data/mpts_52/test.csv

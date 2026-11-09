@@ -1,3 +1,17 @@
+# Copyright (c) 2026 PaddlePaddle Authors. All Rights Reserved.
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+
+#     http://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
 import itertools
 import warnings
 from collections import Counter
@@ -12,6 +26,7 @@ from pymatgen.core.composition import Composition
 from pymatgen.core.lattice import Lattice
 from pymatgen.core.structure import Structure
 from scipy.linalg import polar
+from scipy.spatial.distance import cdist
 from smact.screening import pauling_test
 
 from ppmat.utils.crystal import lattices_to_params_shape_numpy
@@ -203,3 +218,170 @@ def get_crys_from_cif(cif, polar_decompose=False):
             "angles": np.array(lattice.angles),
         }
     return Crystal(crys_array_dict)
+
+
+class FingerprintScaler:
+    """Z-score scaler for fingerprint features used by metric computation.
+
+    Pure numpy implementation, separate from the training-side paddle.nn.Layer
+    scalers: metric computation runs under ``paddle.no_grad()``-free numpy
+    post-processing and must not create paddle graph nodes. Handles NaN
+    means/stds and zero-std columns: missing values fall back to 0 / 1 after
+    standardization, and constant columns keep the raw value.
+    """
+
+    def __init__(self, means=None, stds=None, nan_replacement=None):
+        self.means = means
+        self.stds = stds
+        self.nan_replacement = nan_replacement
+
+    def fit(self, X):
+        X = np.array(X).astype(float)
+        self.means = np.nanmean(X, axis=0)
+        self.stds = np.nanstd(X, axis=0)
+        self.means = np.where(np.isnan(self.means), np.zeros(self.means.shape), self.means)
+        self.stds = np.where(np.isnan(self.stds), np.ones(self.stds.shape), self.stds)
+        self.stds = np.where(self.stds == 0, np.ones(self.stds.shape), self.stds)
+        return self
+
+    def transform(self, X):
+        X = np.array(X).astype(float)
+        transformed = (X - self.means) / self.stds
+        if self.nan_replacement is not None:
+            transformed = np.where(
+                np.isnan(transformed), self.nan_replacement, transformed
+            )
+        return transformed
+
+    def inverse_transform(self, X):
+        X = np.array(X).astype(float)
+        transformed = X * self.stds + self.means
+        if self.nan_replacement is not None:
+            transformed = np.where(
+                np.isnan(transformed), self.nan_replacement, transformed
+            )
+        return transformed
+
+
+def get_matches(structure, alternatives, matcher):
+    """Indices and RMS distances of alternative structures matching ``structure``."""
+    matches, rms_dists = [], []
+    for idx, alt in enumerate(alternatives):
+        rms_dist = matcher.get_rms_dist(structure, alt)
+        if rms_dist is not None:
+            rms_dists.append(rms_dist[0])
+            matches.append(idx)
+    return matches, rms_dists
+
+
+def get_unique_structures(structures, matcher):
+    """Return structurally unique structures (and their first-match indices)."""
+    unique_structures = []
+    unique_structure_idxs = []
+    for i, structure in enumerate(structures):
+        matches, _ = get_matches(structure, structures, matcher)
+        first_match = sorted(matches)[0] if matches else i
+        if first_match not in unique_structure_idxs:
+            unique_structure_idxs.append(first_match)
+            unique_structures.append(structures[first_match])
+    return unique_structures, unique_structure_idxs
+
+
+def get_chemsys(structure):
+    return str(sorted(set(e.name for e in structure.composition.elements)))
+
+
+def get_novel_structures(structures, reference_structures, matcher):
+    """Return structures not present (within tolerance) in the reference set."""
+    generated_chemsys = np.array(list(map(get_chemsys, structures)))
+    reference_chemsys = np.array(list(map(get_chemsys, reference_structures)))
+
+    intersection = np.intersect1d(generated_chemsys, reference_chemsys)
+    gen_to_compare = np.isin(generated_chemsys, intersection)
+    ref_to_compare = np.isin(reference_chemsys, intersection)
+    filtered_reference = [
+        s for compare, s in zip(ref_to_compare, reference_structures) if compare
+    ]
+
+    novel_structures = []
+    novel_structure_idxs = []
+    for i, (compare, structure) in enumerate(zip(gen_to_compare, structures)):
+        if not compare:
+            novel_structures.append(structure)
+            novel_structure_idxs.append(i)
+
+    for gen_idx, (compare, structure) in enumerate(zip(gen_to_compare, structures)):
+        if not compare:
+            continue
+        matches, _ = get_matches(structure, filtered_reference, matcher)
+        if len(matches) == 0:
+            novel_structures.append(structure)
+            novel_structure_idxs.append(gen_idx)
+
+    return novel_structures, novel_structure_idxs
+
+
+def compute_cov(crys, gt_crys, struc_cutoff, comp_cutoff, num_gen_crystals=None):
+    """Coverage / matching metrics between generated and ground-truth crystals.
+
+    Crystals lacking a valid structural OR composition fingerprint are
+    dropped as a pair so the structural and composition fingerprints stay
+    row-aligned. The composition fingerprints are standardized on the
+    ground-truth set only (reference distribution), avoiding leakage from
+    generated structures.
+    """
+    valid_crys = [
+        c for c in crys if c.struct_fp is not None and c.comp_fp is not None
+    ]
+    valid_gt_crys = [
+        c for c in gt_crys if c.struct_fp is not None and c.comp_fp is not None
+    ]
+    struc_fps = [c.struct_fp for c in valid_crys]
+    comp_fps = [c.comp_fp for c in valid_crys]
+    gt_struc_fps = [c.struct_fp for c in valid_gt_crys]
+    gt_comp_fps = [c.comp_fp for c in valid_gt_crys]
+
+    if len(struc_fps) == 0 or len(gt_struc_fps) == 0:
+        raise ValueError(
+            "compute_cov requires at least one valid fingerprint on each "
+            f"side, got {len(struc_fps)} generated and "
+            f"{len(gt_struc_fps)} ground-truth crystals with valid "
+            "structural/composition fingerprints"
+        )
+
+    if num_gen_crystals is None:
+        num_gen_crystals = len(struc_fps)
+
+    scaler = FingerprintScaler(nan_replacement=0.0).fit(gt_comp_fps)
+    comp_fps = scaler.transform(comp_fps)
+    gt_comp_fps = scaler.transform(gt_comp_fps)
+
+    struc_pdist = cdist(np.array(struc_fps), np.array(gt_struc_fps))
+    comp_pdist = cdist(np.array(comp_fps), np.array(gt_comp_fps))
+
+    struc_recall_dist = struc_pdist.min(axis=0)
+    struc_precision_dist = struc_pdist.min(axis=1)
+    comp_recall_dist = comp_pdist.min(axis=0)
+    comp_precision_dist = comp_pdist.min(axis=1)
+
+    cov_recall = np.mean(
+        np.logical_and(struc_recall_dist <= struc_cutoff, comp_recall_dist <= comp_cutoff)
+    )
+    cov_precision = (
+        np.sum(
+            np.logical_and(
+                struc_precision_dist <= struc_cutoff,
+                comp_precision_dist <= comp_cutoff,
+            )
+        )
+        / num_gen_crystals
+    )
+
+    return {
+        "cov_recall": cov_recall,
+        "cov_precision": cov_precision,
+        "amsd_recall": np.mean(struc_recall_dist),
+        "amsd_precision": np.mean(struc_precision_dist),
+        "amcd_recall": np.mean(comp_recall_dist),
+        "amcd_precision": np.mean(comp_precision_dist),
+    }
