@@ -140,9 +140,9 @@ Crystal structure prediction (atom types given), one sample for each of the 9,04
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | mattergen_mp20_csp | mp20 | 36.05 | 0.0597 | 4 | ~25.7 hours | [mattergen_mp20_csp.yaml](mattergen_mp20_csp.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/mattergen/mattergen_mp20_csp.zip) |
 
-> **Note:** the released weights above were trained before the weight-initialization fix, so
-> training from scratch with the current code gives different results. Fine-tuning from these
-> checkpoints is unaffected.
+> **Note:** `_standardize` now normalizes 2-D kernels over axis 0, so training from scratch with
+> the current code initializes weights differently from the released checkpoints. Fine-tuning from
+> these checkpoints is unaffected.
 
 ---
 
