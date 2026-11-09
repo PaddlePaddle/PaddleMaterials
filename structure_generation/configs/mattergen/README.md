@@ -369,6 +369,20 @@ python structure_generation/sample.py --config_path='structure_generation/config
 
 ---
 
+## CINN execution
+
+MatterGen runs under CINN with the default SOT capture. Structure relaxation with
+MatterSim^{paddle} differentiates forces and stress inside the compiled boundary, where SOT capture
+can split `paddle.grad` from its input; for that workflow set
+`Execution.__init_params__.full_graph=true`:
+
+```yaml
+Execution:
+  backend: cinn
+  __init_params__:
+    full_graph: true
+```
+
 ## Citation
 ```
 @article{zeni2025generative,

@@ -69,8 +69,15 @@ def build_graph(predictor, input_format: str, input_path: Path):
     return predictor.graph_converter(sample)
 
 
+# Force and stress models differentiate inside the compiled boundary, where SOT
+# capture can split paddle.grad from its input; they need full-graph capture.
+FULL_GRAPH_PREFIXES = ("mattersim_", "chgnet_", "spherenet_md17_")
+
+
 def build_workflow(model_name: str, backend: str):
     overrides = [f"Execution.backend={backend}"]
+    if backend == "cinn" and model_name.startswith(FULL_GRAPH_PREFIXES):
+        overrides.append("Execution.__init_params__.full_graph=true")
     if model_name.startswith(("spherenet_qm9_", "dimenetpp_qm9_")):
         predictor = PropertyPredictor(
             model_name=model_name,

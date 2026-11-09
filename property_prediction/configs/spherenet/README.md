@@ -251,6 +251,22 @@ python property_prediction/predict.py \
   --output_path ./output/spherenet_qm9_mu_prediction
 ```
 
+## CINN execution
+
+Forces and stress are differentiated inside the compiled boundary, and SOT capture can split
+`paddle.grad` from its input. When running this model with `Execution.backend=cinn`, set
+`Execution.__init_params__.full_graph=true` so that the whole boundary is captured as one graph:
+
+```yaml
+Execution:
+  backend: cinn
+  __init_params__:
+    full_graph: true
+```
+
+Without `full_graph`, CINN fails for force or stress predictions with an error about an input that
+does not appear in the backward graph. Energy-only predictions can use the default SOT capture.
+
 ## Citation
 
 ```bibtex
