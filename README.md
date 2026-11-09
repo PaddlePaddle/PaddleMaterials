@@ -232,13 +232,6 @@ PaddleMaterials is licensed under the [Apache License 2.0](LICENSE).
   primaryClass={cs.LG},
   url={https://arxiv.org/abs/2611.03154},
 }
-
-@misc{paddlematerials2025,
-  title={PaddleMaterials, a deep learning toolkit based on PaddlePaddle for material science.},
-  author={PaddleMaterials Contributors},
-  howpublished = {\url{https://github.com/PaddlePaddle/PaddleMaterials}},
-  year={2025}
-}
 ```
 
 ---
