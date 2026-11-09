@@ -25,7 +25,7 @@ The MP2018.6.1 dataset represents a foundational benchmark for the field, encomp
 
 - QM9:
 
-    The 130,831 molecules of QM9 are split into 110,000 / 10,000 / 10,831 molecules for train / val / test, as for SphereNet. Missing files are downloaded from the [PaddleMaterials QM9 archive](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/qm9/qm9.zip). Each config trains one of the 12 targets.
+    QM9 contains 130,831 molecules, split into 110,000 / 10,000 / 10,831 for train / val / test as for SphereNet, and each config trains one of the 12 targets. Missing files are downloaded from the [PaddleMaterials QM9 archive](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/qm9/qm9.zip).
 
 ## Model
 
@@ -319,8 +319,6 @@ Through its architectural improvements, DimeNet++ achieves up to an **8× speedu
     </body>
 </table>
 
-QM9 MAE is given for the best validation checkpoint on the 10,000 validation and 10,831 test molecules. U0, U, H and G are trained on atomization energies: the `AtomRefShift` transform subtracts the atomic reference energies.
-
 ### Training
 ```bash
 # formation energy per atom
@@ -385,7 +383,7 @@ python property_prediction/train.py -c property_prediction/configs/dimenet++/dim
 # shear modulus
 python property_prediction/train.py -c property_prediction/configs/dimenet++/dimenet++_mp2018_train_60k_G.yaml Global.do_test=True Global.do_train=False Global.do_eval=False Trainer.pretrained_model_path='your model path(*.pdparams)'
 
-# QM9, for example U0
+# QM9, one config per target, for example U0
 python property_prediction/train.py -c property_prediction/configs/dimenet++/dimenet++_qm9_U0.yaml Global.do_test=True Global.do_train=False Global.do_eval=False Trainer.pretrained_model_path='your model path(*.pdparams)'
 ```
 
