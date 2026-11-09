@@ -134,7 +134,7 @@ Optional fields include `num_atoms`, `spacegroup`, and `property` / `condition`.
 | mattergen_alex_mp20_chemical_system_energy_above_hull | alex_mp20 | 0.2272 | [mattergen_alex_mp20_chemical_system_energy_above_hull.yaml](mattergen_alex_mp20_chemical_system_energy_above_hull.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_alex_mp20_chemical_system_energy_above_hull.zip) |
 | mattergen_alex_mp20_dft_mag_density_hhi_score | alex_mp20 | 0.2803 | [mattergen_alex_mp20_dft_mag_density_hhi_score.yaml](mattergen_alex_mp20_dft_mag_density_hhi_score.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_alex_mp20_dft_mag_density_hhi_score.zip) |
 
-Crystal structure prediction (atom types given), one sample for each of the 9,046 MP-20 test structures:
+Crystal structure prediction (atom types given):
 
 | Model Name | Dataset | Match Rate (%) | RMS Dist | GPUs | Training Time | Config | Checkpoint / Log |
 | --- | --- | --- | --- | --- | --- | --- | --- |
