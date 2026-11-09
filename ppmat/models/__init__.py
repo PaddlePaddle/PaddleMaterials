@@ -29,6 +29,8 @@ from ppmat.models.common.graph_converter import CrystalNN
 from ppmat.models.common.graph_converter import FindPointsInSpheres
 from ppmat.models.common.graph_converter import MolecularGraphConverter
 from ppmat.models.common.graph_converter import RadiusGraphConverter
+from ppmat.models.deeph.deeph import DeepHHamiltonian
+from ppmat.models.deeph.deeph_graph_converter import DeepHGraphConverter
 from ppmat.models.diffcsp.diffcsp import DiffCSP
 from ppmat.models.diffnmr.diffnmr import DiffNMR
 from ppmat.models.diffnmr.diffnmr import DiffPrior
@@ -70,6 +72,8 @@ __all__ = [
     "NMRNetCLIP",
     "DiffPrior",
     "DiffNMR",
+    "DeepHHamiltonian",
+    "DeepHGraphConverter",
     "InfGCN",
     "SFIN",
     "SphereNet",

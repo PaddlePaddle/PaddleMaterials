@@ -1,0 +1,9 @@
+_target_: ppmat.calculator.deeph.DeepHDFTInferenceTask
+orbital: null
+orbital_config_path: null
+species: [6]
+num_l: 5
+output_dir: deeph_dft_results
+dtype: float32
+run_dft: true
+processed_dirs: null

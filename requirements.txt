@@ -2,6 +2,7 @@ ase==3.23.0
 colorlog==6.8.2
 cvve==0.1.0
 Cython==3.0.12
+h5py==3.12.1
 einops==0.8.0
 hydra-core==1.3.2
 imageio==2.37.3

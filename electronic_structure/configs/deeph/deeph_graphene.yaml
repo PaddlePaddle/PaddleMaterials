@@ -1,0 +1,386 @@
+Global:
+  do_train: true
+  do_eval: true
+  do_test: true
+Predict:
+  eval_with_no_grad: true
+Trainer:
+  max_epochs: 5
+  seed: 42
+  output_dir: ./output/deeph_graphene
+  save_freq: 1
+  log_freq: 1
+  start_eval_epoch: 0
+  eval_freq: 1
+  pretrained_model_path: null
+  pretrained_weight_name: null
+  resume_from_checkpoint: null
+  use_amp: false
+  amp_level: O1
+  eval_with_no_grad: true
+  gradient_accumulation_steps: 1
+  best_metric_indicator: eval_loss
+  name_for_best_metric: loss
+  greater_is_better: false
+  compute_metric_during_train: false
+  metric_strategy_during_eval: epoch
+  use_visualdl: false
+  use_wandb: false
+  use_tensorboard: false
+Model:
+  __class_name__: DeepHHamiltonian
+  __init_params__:
+    num_species: 1
+    in_atom_fea_len: 64
+    in_edge_fea_len: 128
+    num_orbital: 169
+    num_l: 5
+    gauss_stop: 6.0
+    if_exp: true
+    normalization: LayerNorm
+    target_name: label
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    lr: 0.001
+    weight_decay: 0.0
+    beta1: 0.9
+    beta2: 0.999
+    epsilon: 1.0e-08
+  clip_norm_global: 4.2
+DeepH:
+  basic:
+    graph_dir: ./data/deeph/graphene/graph_data
+    save_dir: ./output/deeph_graphene
+    raw_dir: ./data/deeph/graphene/processed
+    dataset_name: graphene_local_gpu
+    only_get_graph: false
+    interface: npz
+    target: hamiltonian
+    disable_cuda: false
+    device: cpu
+    num_threads: 8
+    save_to_time_folder: false
+    save_csv: false
+    tb_writer: false
+    seed: 42
+    multiprocessing: 0
+    orbital:
+    - 6 6: [0, 0]
+    - 6 6: [0, 1]
+    - 6 6: [0, 2]
+    - 6 6: [0, 3]
+    - 6 6: [0, 4]
+    - 6 6: [0, 5]
+    - 6 6: [0, 6]
+    - 6 6: [0, 7]
+    - 6 6: [0, 8]
+    - 6 6: [0, 9]
+    - 6 6: [0, 10]
+    - 6 6: [0, 11]
+    - 6 6: [0, 12]
+    - 6 6: [1, 0]
+    - 6 6: [1, 1]
+    - 6 6: [1, 2]
+    - 6 6: [1, 3]
+    - 6 6: [1, 4]
+    - 6 6: [1, 5]
+    - 6 6: [1, 6]
+    - 6 6: [1, 7]
+    - 6 6: [1, 8]
+    - 6 6: [1, 9]
+    - 6 6: [1, 10]
+    - 6 6: [1, 11]
+    - 6 6: [1, 12]
+    - 6 6: [2, 0]
+    - 6 6: [2, 1]
+    - 6 6: [2, 2]
+    - 6 6: [2, 3]
+    - 6 6: [2, 4]
+    - 6 6: [2, 5]
+    - 6 6: [2, 6]
+    - 6 6: [2, 7]
+    - 6 6: [2, 8]
+    - 6 6: [2, 9]
+    - 6 6: [2, 10]
+    - 6 6: [2, 11]
+    - 6 6: [2, 12]
+    - 6 6: [3, 0]
+    - 6 6: [3, 1]
+    - 6 6: [3, 2]
+    - 6 6: [3, 3]
+    - 6 6: [3, 4]
+    - 6 6: [3, 5]
+    - 6 6: [3, 6]
+    - 6 6: [3, 7]
+    - 6 6: [3, 8]
+    - 6 6: [3, 9]
+    - 6 6: [3, 10]
+    - 6 6: [3, 11]
+    - 6 6: [3, 12]
+    - 6 6: [4, 0]
+    - 6 6: [4, 1]
+    - 6 6: [4, 2]
+    - 6 6: [4, 3]
+    - 6 6: [4, 4]
+    - 6 6: [4, 5]
+    - 6 6: [4, 6]
+    - 6 6: [4, 7]
+    - 6 6: [4, 8]
+    - 6 6: [4, 9]
+    - 6 6: [4, 10]
+    - 6 6: [4, 11]
+    - 6 6: [4, 12]
+    - 6 6: [5, 0]
+    - 6 6: [5, 1]
+    - 6 6: [5, 2]
+    - 6 6: [5, 3]
+    - 6 6: [5, 4]
+    - 6 6: [5, 5]
+    - 6 6: [5, 6]
+    - 6 6: [5, 7]
+    - 6 6: [5, 8]
+    - 6 6: [5, 9]
+    - 6 6: [5, 10]
+    - 6 6: [5, 11]
+    - 6 6: [5, 12]
+    - 6 6: [6, 0]
+    - 6 6: [6, 1]
+    - 6 6: [6, 2]
+    - 6 6: [6, 3]
+    - 6 6: [6, 4]
+    - 6 6: [6, 5]
+    - 6 6: [6, 6]
+    - 6 6: [6, 7]
+    - 6 6: [6, 8]
+    - 6 6: [6, 9]
+    - 6 6: [6, 10]
+    - 6 6: [6, 11]
+    - 6 6: [6, 12]
+    - 6 6: [7, 0]
+    - 6 6: [7, 1]
+    - 6 6: [7, 2]
+    - 6 6: [7, 3]
+    - 6 6: [7, 4]
+    - 6 6: [7, 5]
+    - 6 6: [7, 6]
+    - 6 6: [7, 7]
+    - 6 6: [7, 8]
+    - 6 6: [7, 9]
+    - 6 6: [7, 10]
+    - 6 6: [7, 11]
+    - 6 6: [7, 12]
+    - 6 6: [8, 0]
+    - 6 6: [8, 1]
+    - 6 6: [8, 2]
+    - 6 6: [8, 3]
+    - 6 6: [8, 4]
+    - 6 6: [8, 5]
+    - 6 6: [8, 6]
+    - 6 6: [8, 7]
+    - 6 6: [8, 8]
+    - 6 6: [8, 9]
+    - 6 6: [8, 10]
+    - 6 6: [8, 11]
+    - 6 6: [8, 12]
+    - 6 6: [9, 0]
+    - 6 6: [9, 1]
+    - 6 6: [9, 2]
+    - 6 6: [9, 3]
+    - 6 6: [9, 4]
+    - 6 6: [9, 5]
+    - 6 6: [9, 6]
+    - 6 6: [9, 7]
+    - 6 6: [9, 8]
+    - 6 6: [9, 9]
+    - 6 6: [9, 10]
+    - 6 6: [9, 11]
+    - 6 6: [9, 12]
+    - 6 6: [10, 0]
+    - 6 6: [10, 1]
+    - 6 6: [10, 2]
+    - 6 6: [10, 3]
+    - 6 6: [10, 4]
+    - 6 6: [10, 5]
+    - 6 6: [10, 6]
+    - 6 6: [10, 7]
+    - 6 6: [10, 8]
+    - 6 6: [10, 9]
+    - 6 6: [10, 10]
+    - 6 6: [10, 11]
+    - 6 6: [10, 12]
+    - 6 6: [11, 0]
+    - 6 6: [11, 1]
+    - 6 6: [11, 2]
+    - 6 6: [11, 3]
+    - 6 6: [11, 4]
+    - 6 6: [11, 5]
+    - 6 6: [11, 6]
+    - 6 6: [11, 7]
+    - 6 6: [11, 8]
+    - 6 6: [11, 9]
+    - 6 6: [11, 10]
+    - 6 6: [11, 11]
+    - 6 6: [11, 12]
+    - 6 6: [12, 0]
+    - 6 6: [12, 1]
+    - 6 6: [12, 2]
+    - 6 6: [12, 3]
+    - 6 6: [12, 4]
+    - 6 6: [12, 5]
+    - 6 6: [12, 6]
+    - 6 6: [12, 7]
+    - 6 6: [12, 8]
+    - 6 6: [12, 9]
+    - 6 6: [12, 10]
+    - 6 6: [12, 11]
+    - 6 6: [12, 12]
+    o_component: H
+    energy_component: summation
+    max_element: -1
+    statistics: false
+    normalizer: false
+    boxcox: false
+  graph:
+    radius: 6.0
+    max_num_nbr: 0
+    create_from_dft: false
+    if_lcmp_graph: true
+    separate_onsite: false
+    new_sp: false
+  train:
+    epochs: 5
+    pretrained: ''
+    resume: ''
+    train_ratio: 0.6
+    val_ratio: 0.2
+    test_ratio: 0.2
+    early_stopping_loss: 0.0
+    early_stopping_loss_epoch:
+    - 0.0
+    - 500
+    revert_then_decay: true
+    revert_threshold: 30
+    revert_decay_epoch:
+    - 800
+    - 2000
+    - 3000
+    - 4000
+    revert_decay_gamma:
+    - 0.4
+    - 0.5
+    - 0.5
+    - 0.4
+    clip_grad: true
+    clip_grad_value: 4.2
+    switch_sgd: false
+    switch_sgd_lr: 0.0001
+    switch_sgd_epoch: -1
+  hyperparameter:
+    batch_size: 4
+    dtype: float32
+    optimizer: adam
+    learning_rate: 0.001
+    lr_scheduler: ''
+    lr_milestones: []
+    momentum: 0.9
+    weight_decay: 0
+    criterion: MaskMSELoss
+    retain_edge_fea: true
+    lambda_eij: 0.0
+    lambda_ei: 0.1
+    lambda_etot: 0.0
+  network:
+    atom_fea_len: 64
+    edge_fea_len: 128
+    gauss_stop: 6.0
+    num_l: 5
+    aggr: add
+    distance_expansion: GaussianBasis
+    if_exp: true
+    if_multiplelinear: false
+    if_edge_update: true
+    if_lcmp: true
+    normalization: LayerNorm
+    atom_update_net: CGConv
+    trainable_gaussians: false
+    type_affine: false
+Dataset:
+  train:
+    dataset:
+      __class_name__: DeepHDataset
+      __init_params__:
+        split: train
+        split_seed: 42
+        build_graph_cfg:
+          __class_name__: FindPointsInSpheres
+          __init_params__:
+            cutoff: 6.0
+            pbc:
+            - 1
+            - 1
+            - 1
+            eps: 1.0e-08
+        config: ${DeepH}
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: true
+        drop_last: false
+        batch_size: 1
+    loader:
+      num_workers: 0
+      use_shared_memory: false
+      collate_fn: DefaultCollator
+  val:
+    dataset:
+      __class_name__: DeepHDataset
+      __init_params__:
+        split: val
+        split_seed: 42
+        build_graph_cfg:
+          __class_name__: FindPointsInSpheres
+          __init_params__:
+            cutoff: 6.0
+            pbc:
+            - 1
+            - 1
+            - 1
+            eps: 1.0e-08
+        config: ${DeepH}
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: false
+        drop_last: false
+        batch_size: 1
+    loader:
+      num_workers: 0
+      use_shared_memory: false
+      collate_fn: DefaultCollator
+  test:
+    dataset:
+      __class_name__: DeepHDataset
+      __init_params__:
+        split: test
+        split_seed: 42
+        build_graph_cfg:
+          __class_name__: FindPointsInSpheres
+          __init_params__:
+            cutoff: 6.0
+            pbc:
+            - 1
+            - 1
+            - 1
+            eps: 1.0e-08
+        config: ${DeepH}
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: false
+        drop_last: false
+        batch_size: 1
+    loader:
+      num_workers: 0
+      use_shared_memory: false
+      collate_fn: DefaultCollator

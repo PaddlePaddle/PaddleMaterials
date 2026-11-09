@@ -16,6 +16,7 @@ from ppmat.predictor.base import BasePredictor
 
 __all__ = [
     "BasePredictor",
+    "DeepHPredictor",
     "FieldPredictor",
     "PotentialPredictor",
     "PropertyPredictor",
@@ -24,7 +25,11 @@ __all__ = [
 
 
 def __getattr__(name):
-    if name == "FieldPredictor":
+    if name == "DeepHPredictor":
+        from ppmat.predictor.deeph import DeepHPredictor
+
+        predictor_class = DeepHPredictor
+    elif name == "FieldPredictor":
         from ppmat.predictor.field_predictor import FieldPredictor
 
         predictor_class = FieldPredictor

@@ -1,0 +1,22 @@
+# @package _global_
+device: gpu
+
+defaults:
+  - /Run: default
+  - /Logger: default
+  - /Model: load_model
+  - /System: load_system
+  - /Calculator: deeph_openmx
+  - /Task: deeph_dft_inference
+  - override hydra/job_logging: disabled
+  - _self_
+
+hydra:
+  job:
+    name: deeph_openmx
+    chdir: True
+  run:
+    dir: ./out_${hydra:job.name}/${now:%Y%m%d_%H%M%S}
+
+Predictor:
+  _target_: ppmat.predictor.DeepHPredictor

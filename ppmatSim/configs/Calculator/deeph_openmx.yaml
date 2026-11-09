@@ -1,0 +1,10 @@
+_target_: ppmat.calculator.deeph.DeepHDFTCalculator
+type: deeph_dft
+calculator_cls: ase.calculators.openmx.OpenMX
+calculator_kwargs:
+  xc: PBE
+  scf_kgrid: [1, 1, 1]
+  scf_energycutoff: 200
+command: null
+output_filename: openmx.log
+overlap_pattern: output/overlaps_*.h5
