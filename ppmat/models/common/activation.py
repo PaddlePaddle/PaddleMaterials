@@ -11,7 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import math
+
 import paddle
+
 from ppmat.models.common.e3nn import o3
 
 
@@ -38,6 +41,7 @@ class SiQU(paddle.nn.Layer):
 
     def forward(self, x: paddle.Tensor):
         return x * self._activation(x)
+
 
 class ScalarActivation(paddle.nn.Layer):
     """
@@ -122,3 +126,9 @@ class NormActivation(paddle.nn.Layer):
         act = self.act_vectors(norm)
         vectors_out = self.mul(act, vectors)
         return paddle.concat(x=[scalars, vectors_out], axis=-1)
+
+
+# Adapted from https://github.com/divelab/AIRS (OpenMat/HIENet)
+@paddle.jit.to_static
+def ShiftedSoftPlus(x: paddle.Tensor) -> paddle.Tensor:
+    return paddle.nn.functional.softplus(x) - math.log(2.0)

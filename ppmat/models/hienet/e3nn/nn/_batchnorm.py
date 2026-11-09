@@ -1,0 +1,208 @@
+# Copyright (c) 2025 PaddlePaddle Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Adapted from https://github.com/divelab/AIRS (OpenMat/HIENet)
+
+import paddle
+from .. import o3
+from ..util.jit import compile_mode
+
+
+@compile_mode("unsupported")
+class BatchNorm(paddle.nn.Module):
+    """Batch normalization for orthonormal representations
+
+    It normalizes by the norm of the representations.
+    Note that the norm is invariant only for orthonormal representations.
+    Irreducible representations `wigner_D` are orthonormal.
+
+    Parameters
+    ----------
+    irreps : `o3.Irreps`
+        representation
+
+    eps : float
+        avoid division by zero when we normalize by the variance
+
+    momentum : float
+        momentum of the running average
+
+    affine : bool
+        do we have weight and bias parameters
+
+    reduce : {'mean', 'max'}
+        method used to reduce
+
+    instance : bool
+        apply instance norm instead of batch norm
+
+    include_bias : bool
+        include a bias term for batch norm of scalars
+
+    normalization : str
+        which normalization method to apply (i.e., `norm` or `component`)
+    """
+
+    __constants__ = ["instance", "normalization", "irs", "affine"]
+
+    def __init__(
+        self,
+        irreps: o3.Irreps,
+        eps: float = 1e-05,
+        momentum: float = 0.1,
+        affine: bool = True,
+        reduce: str = "mean",
+        instance: bool = False,
+        include_bias: bool = True,
+        normalization: str = "component",
+    ) -> None:
+        super().__init__()
+        self.irreps = o3.Irreps(irreps)
+        self.eps = eps
+        self.momentum = momentum
+        self.affine = affine
+        self.instance = instance
+        self.include_bias = include_bias
+        num_scalar = sum(mul for mul, ir in self.irreps if ir.is_scalar())
+        num_features = self.irreps.num_irreps
+        self.features = []
+        if self.instance:
+            self.register_buffer("running_mean", None)
+            self.register_buffer("running_var", None)
+        else:
+            self.register_buffer("running_mean", paddle.zeros(num_scalar))
+            self.register_buffer("running_var", paddle.ones(num_features))
+        if affine:
+            self.weight = paddle.nn.Parameter(paddle.ones(num_features))
+            if self.include_bias:
+                self.bias = paddle.nn.Parameter(paddle.zeros(num_scalar))
+        else:
+            self.register_parameter("weight", None)
+            if self.include_bias:
+                self.register_parameter("bias", None)
+        assert isinstance(reduce, str), "reduce should be passed as a string value"
+        assert reduce in ["mean", "max"], "reduce needs to be 'mean' or 'max'"
+        self.reduce = reduce
+        irs = []
+        for mul, ir in self.irreps:
+            irs.append((mul, ir.dim, ir.is_scalar()))
+        self.irs = irs
+        assert normalization in [
+            "norm",
+            "component",
+        ], "normalization needs to be 'norm' or 'component'"
+        self.normalization = normalization
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__} ({self.irreps}, eps={self.eps}, momentum={self.momentum})"
+
+    def _roll_avg(self, curr, update) -> float:
+        return (1 - self.momentum) * curr + self.momentum * update.detach()
+
+    def forward(self, input) -> paddle.Tensor:
+        """evaluate
+
+        Parameters
+        ----------
+        input : `torch.Tensor`
+            tensor of shape ``(batch, ..., irreps.dim)``
+
+        Returns
+        -------
+        `torch.Tensor`
+            tensor of shape ``(batch, ..., irreps.dim)``
+        """
+        orig_shape = input.shape
+        batch = input.shape[0]
+        dim = input.shape[-1]
+        input = input.reshape(batch, -1, dim)
+        if self.training and not self.instance:
+            new_means = []
+            new_vars = []
+        fields = []
+        ix = 0
+        irm = 0
+        irv = 0
+        iw = 0
+        ib = 0
+        for mul, d, is_scalar in self.irs:
+            field = input[:, :, ix : ix + mul * d]
+            ix += mul * d
+            field = field.reshape(batch, -1, mul, d)
+            if is_scalar:
+                if self.training or self.instance:
+                    if self.instance:
+                        field_mean = field.mean(1).reshape(batch, mul)
+                    else:
+                        field_mean = field.mean([0, 1]).reshape(mul)
+                        new_means.append(
+                            self._roll_avg(
+                                self.running_mean[irm : irm + mul], field_mean
+                            )
+                        )
+                else:
+                    field_mean = self.running_mean[irm : irm + mul]
+                irm += mul
+                field = field - field_mean.reshape(-1, 1, mul, 1)
+            if self.training or self.instance:
+                if self.normalization == "norm":
+                    field_norm = field.pow(2).sum(3)
+                elif self.normalization == "component":
+                    field_norm = field.pow(2).mean(3)
+                else:
+                    raise ValueError(
+                        f"Invalid normalization option {self.normalization}"
+                    )
+                if self.reduce == "mean":
+                    field_norm = field_norm.mean(1)
+                elif self.reduce == "max":
+                    field_norm = field_norm._max(1).values
+                else:
+                    raise ValueError(f"Invalid reduce option {self.reduce}")
+                if not self.instance:
+                    field_norm = field_norm.mean(0)
+                    new_vars.append(
+                        self._roll_avg(self.running_var[irv : irv + mul], field_norm)
+                    )
+            else:
+                field_norm = self.running_var[irv : irv + mul]
+            irv += mul
+            field_norm = (field_norm + self.eps).pow(-0.5)
+            if self.affine:
+                weight = self.weight[iw : iw + mul]
+                iw += mul
+                field_norm = field_norm * weight
+            field = field * field_norm.reshape(-1, 1, mul, 1)
+            if self.affine and self.include_bias and is_scalar:
+                bias = self.bias[ib : ib + mul]
+                ib += mul
+                field += bias.reshape(mul, 1)
+            fields.append(field.reshape(batch, -1, mul * d))
+        assert (
+            ix == dim
+        ), f"`ix` should have reached input.size(-1) ({dim}), but it ended at {ix}"
+        if self.training and not self.instance:
+            assert irm == self.running_mean.size, "irm == self.running_mean.numel()"
+            assert irv == self.running_var.size(0), "irv == self.running_var.size(0)"
+        if self.affine:
+            assert iw == self.weight.size(0), "iw == self.weight.size(0)"
+            if self.include_bias:
+                assert ib == self.bias.size, "ib == self.bias.numel()"
+        if self.training and not self.instance:
+            if len(new_means) > 0:
+                paddle.cat(new_means, out=self.running_mean)
+            if len(new_vars) > 0:
+                paddle.cat(new_vars, out=self.running_var)
+        output = paddle.cat(fields, dim=2)
+        return output.reshape(orig_shape)

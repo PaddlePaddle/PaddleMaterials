@@ -36,6 +36,8 @@ from ppmat.models.diffnmr.diffnmr import DiffPrior
 from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
 from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
 from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
+from ppmat.models.hienet.hienet import HIENet
+from ppmat.models.hienet.hienet_graph_converter import HIENetGraphConverter
 from ppmat.models.infgcn.infgcn import InfGCN
 from ppmat.models.mattergen.mattergen import MatterGen
 from ppmat.models.mattergen.mattergen import MatterGenWithCondition
@@ -75,6 +77,8 @@ __all__ = [
     "InfGCN",
     "SFIN",
     "SphereNet",
+    "HIENet",
+    "HIENetGraphConverter",
 ]
 
 # Warning:
