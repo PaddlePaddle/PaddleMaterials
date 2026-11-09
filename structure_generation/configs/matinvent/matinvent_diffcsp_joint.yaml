@@ -1,0 +1,148 @@
+Global:
+  num_train_timesteps: 1000
+  num_inference_steps: 1000
+  rl_num_inference_steps: 1000
+
+Trainer:
+  seed: 42
+  output_dir: ./output/matinvent_diffcsp_joint
+  max_epochs: 0
+  save_freq: 1
+  log_freq: 1
+  start_eval_epoch: 1
+  eval_freq: 1
+  compute_metric_during_train: false
+
+Dataset:
+  train: ${Sample.data}
+
+Model:
+  __class_name__: MatinventRL
+  __init_params__:
+    model_type: diffcsp
+    num_inference_steps: ${Global.num_inference_steps}
+    build_structure_cfg:
+      format: array
+      niggli: False
+    rl_cfg:
+      pretrained_model_name: matinvent_diffcsp_mp20_joint
+      pretrained_model_path: null
+      rl_epoch: 120
+      topk_ratio: 0.5
+      save_freq: 100
+      sample_cfg:
+        batch_size: 192
+        num_batches: 1
+        num_inference_steps: ${Global.rl_num_inference_steps}
+        max_num: 16
+        atom_count_distribution: MP_20
+      finetune_cfg:
+        batch_size: 16
+        epochs: 3
+        timesteps: ${Global.num_train_timesteps}
+        accum_steps: 50
+        sigma: 0.025
+        optimizer_cfg:
+          __class_name__: Adam
+          __init_params__:
+            lr: 1.0e-05
+      reward_cfg:
+        reward_threshold: 0.8
+        reduce: mean
+        prop_cfg:
+          - name: hhi
+            target: descending
+            minv: 750
+            maxv: 3250
+            calculator:
+              __class_name__: PyMatGen
+              task: hhi
+      replay_cfg:
+        buffer_size: 100
+        sample_size: 10
+        reward_cutoff: 0.1
+      div_filter_cfg:
+        enabled: true
+        tol: 3
+        buff: 6
+        method: composition
+      qualification_cfg:
+        reference_path: ./data/matinvent/reference_MP2020correction.gz
+        predictor_cfg:
+          model_name: mattersim_5M
+          weights_name: mattersim-v1.0.0-5M_model.pdparams
+          device: gpu:0
+        stability_threshold: 0.1
+        fmax: 0.05
+        max_steps: 1000
+      early_stop_cfg:
+        enabled: true
+        probe_cfg:
+          data_path: ./data/mp_20/val.csv
+          cache_path: ./data/mp_20_cache/val
+          build_structure_cfg:
+            format: cif_str
+            num_cpus: 10
+          num_samples: 4
+        probe_every: 1
+        probe_every_updates: 1
+        probe_draws: 4
+        max_loss_ratio: 1.30
+        max_lattice_ratio: 1.30
+        max_type_ratio: 2.0
+    backbone_cfg:
+      __class_name__: MatinventDiffCSP
+      __init_params__:
+        decoder_cfg:
+          hidden_dim: 512
+          latent_dim: 256
+          num_layers: 6
+          act_fn: silu
+          dis_emb: sin
+          num_freqs: 128
+          edge_style: fc
+          ln: true
+          ip: true
+          smooth: true
+          pred_type: true
+          prop_dim: 512
+          pred_scalar: false
+          num_classes: 100
+        lattice_noise_scheduler_cfg:
+          __class_name__: MatinventDDPMScheduler
+          __init_params__:
+            beta_schedule: squaredcos_cap_v2
+            beta_clip_min: 1.0e-4
+            beta_clip_max: 0.9999
+            num_train_timesteps: ${Global.num_train_timesteps}
+            clip_sample: false
+        coord_noise_scheduler_cfg:
+          __class_name__: MatinventSdeVeScheduler
+          __init_params__:
+            num_train_timesteps: ${Global.num_train_timesteps}
+            sigma_min: 0.005
+            sigma_max: 0.5
+            snr: 5.0e-06
+        num_train_timesteps: ${Global.num_train_timesteps}
+        time_dim: 256
+        lattice_loss_weight: 1
+        coord_loss_weight: 1
+        atom_loss_weight: 20.0
+        time_embedding_offset: 1
+
+Sample:
+  data:
+    dataset:
+      __class_name__: NumAtomsCrystalDataset
+      __init_params__:
+        total_num: 16
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 16
+  build_structure_cfg: ${Model.__init_params__.build_structure_cfg}
+  model_sample_params:
+    atom_count_distribution: MP_20
+    num_inference_steps: ${Global.num_inference_steps}
