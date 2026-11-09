@@ -25,7 +25,11 @@ The MP2018.6.1 dataset represents a foundational benchmark for the field, encomp
 
 - QM9:
 
-    QM9 contains 130,831 molecules, split into 110,000 / 10,000 / 10,831 for train / val / test as for SphereNet, and each config trains one of the 12 targets. Missing files are downloaded from the [PaddleMaterials QM9 archive](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/qm9/qm9.zip).
+    QM9 is a benchmark of 130,831 small organic molecules with quantum-chemical properties computed at the B3LYP/6-31G(2df,p) level of theory. Following the split used for SphereNet, we partitioned the dataset into subsets, with the specific sample sizes for each subset detailed in the table below. Each config trains one of the 12 targets.
+
+    |                                   Dataset                                    | Train |  Val  | Test  | Properties |
+    | :--------------------------------------------------------------------------: | :---: | :---: | :---: | :---------: |
+    | [qm9](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/qm9/qm9.zip) | 110000 | 10000 | 10831 | mu, alpha, homo, lumo, gap, r2, zpve, U0, U, H, G, Cv |
 
 ## Model
 
