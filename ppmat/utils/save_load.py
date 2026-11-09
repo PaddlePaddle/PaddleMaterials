@@ -41,12 +41,14 @@ __all__ = [
 ]
 
 
-def _load_pretrain_from_path(path: str, model: nn.Layer):
+def _load_pretrain_from_path(path: str, model: nn.Layer, strict: bool = False):
     """Load pretrained model from given path.
 
     Args:
         path (str): File path of pretrained model, i.e. `/path/to/model.pdparams`.
         model (nn.Layer): Model with parameters.
+        strict (bool): When True, raise ``ValueError`` on missing/unexpected keys
+            or shape mismatches instead of warning. Defaults to False.
     """
     if not (os.path.isdir(path) or os.path.exists(f"{path}.pdparams")):
         raise FileNotFoundError(
@@ -55,6 +57,26 @@ def _load_pretrain_from_path(path: str, model: nn.Layer):
     param_state_dict = paddle.load(f"{path}.pdparams")
     if "state_dict" in param_state_dict:
         param_state_dict = param_state_dict["state_dict"]
+
+    if strict:
+        expected_keys = model.state_dict()
+        missing_keys = [key for key in expected_keys if key not in param_state_dict]
+        unexpected_keys = [key for key in param_state_dict if key not in expected_keys]
+        shape_mismatch = [
+            key
+            for key in expected_keys
+            if key in param_state_dict
+            and tuple(param_state_dict[key].shape) != tuple(expected_keys[key].shape)
+        ]
+        if missing_keys or unexpected_keys or shape_mismatch:
+            details = []
+            if missing_keys:
+                details.append(f"missing keys: {missing_keys}")
+            if unexpected_keys:
+                details.append(f"unexpected keys: {unexpected_keys}")
+            if shape_mismatch:
+                details.append(f"shape mismatches: {shape_mismatch}")
+            raise ValueError("Strict checkpoint load failed: " + "; ".join(details))
 
     missing_keys_unexpected_keys = model.set_state_dict(param_state_dict)
     if (
@@ -76,7 +98,12 @@ def _load_pretrain_from_path(path: str, model: nn.Layer):
     logger.message(f"Finish loading pretrained model from: {path}.pdparams")
 
 
-def load_pretrain(model: nn.Layer, path: str, weights_name: Optional[str] = None):
+def load_pretrain(
+    model: nn.Layer,
+    path: str,
+    weights_name: Optional[str] = None,
+    strict: bool = False,
+):
     """
     Load pretrained model from given path or URL.
 
@@ -95,6 +122,8 @@ def load_pretrain(model: nn.Layer, path: str, weights_name: Optional[str] = None
             - Loading from directory (defaults to 'model.pdparams')
             - Archive contains multiple parameter files
             Defaults to None.
+        strict (bool): When True, raise ``ValueError`` on missing/unexpected
+            keys or shape mismatches. Defaults to False.
     """
     if path.startswith("http"):
         # download from path(url) and get its' physical path
@@ -153,7 +182,7 @@ def load_pretrain(model: nn.Layer, path: str, weights_name: Optional[str] = None
     # remove ".pdparams" in suffix of path for convenient
     if path.endswith(".pdparams"):
         path = os.path.splitext(path)[0]
-    _load_pretrain_from_path(path, model)
+    _load_pretrain_from_path(path, model, strict=strict)
 
 
 def load_checkpoint(

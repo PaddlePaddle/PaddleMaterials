@@ -1,0 +1,151 @@
+# Copyright (c) 2026 PaddlePaddle Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# LiFlow universal propagator training configuration.
+#
+# The propagator learns the flow-matching velocity field from time-delayed
+# endpoint pairs (start, end) with an adaptive Maxwell-Boltzmann prior.  The
+# dataset computes ``velocity = end - (start + prior)`` on every access so the
+# loss and the LiFlowMSE metric consume the shared ``velocity`` key.
+#
+# PaddleMaterials ``BaseTrainer`` has no patience-based EarlyStopping, so we fix
+# ``max_epochs: 500`` and rely on the ``eval_loss`` indicator to keep the best
+# checkpoint.  This training-orchestration difference is documented in the
+# alignment report with both PyTorch/Paddle best-epoch and best validation loss.
+
+Global:
+  do_train: true
+  do_eval: true
+  do_test: false
+  prim_eager_enabled: false
+
+Trainer:
+  output_dir: output/liflow_universal_propagator
+  max_epochs: 500
+  max_iter: null
+  seed: 42
+  compute_metric_during_train: false
+  save_freq: 10
+  log_freq: 10
+  start_eval_epoch: 1
+  eval_freq: 1
+  use_amp: false
+  eval_with_no_grad: true
+  best_metric_indicator: eval_loss
+  name_for_best_metric: loss
+  greater_is_better: false
+
+Model:
+  __class_name__: LiFlow
+  __init_params__:
+    num_features: 64
+    num_radial_basis: 20
+    num_layers: 3
+    num_elements: 77
+    r_max: 5.0
+    r_offset: 0.5
+    ref_temp: 1000.0
+    prediction_mode: velocity
+
+Metric:
+  velocity:
+    __class_name__: LiFlowMSE
+    __init_params__: {}
+
+Optimizer:
+  __class_name__: Adam
+  clip_norm: 10.0
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr: 0.0003
+
+Execution:
+  backend: eager
+  __init_params__:
+    full_graph: false
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: LiFlowDataset
+      __init_params__:
+        path: data/liflow
+        split: train
+        time_delay_steps: 100
+        cutoff: 5.0
+        periodic: true
+        seed: 42
+        # The full trajectory archive does not fit in RAM and would also be
+        # pickled into every DataLoader worker; keep the lazy ``npz`` reader.
+        in_memory: false
+    loader:
+      num_workers: 2
+      use_shared_memory: false
+      collate_fn: DefaultCollator
+      as_dict: true
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 16
+        shuffle: true
+        drop_last: false
+  val:
+    dataset:
+      __class_name__: LiFlowDataset
+      __init_params__:
+        path: data/liflow
+        split: val
+        time_delay_steps: 100
+        cutoff: 5.0
+        periodic: true
+        seed: 42
+        # The full trajectory archive does not fit in RAM and would also be
+        # pickled into every DataLoader worker; keep the lazy ``npz`` reader.
+        in_memory: false
+    loader:
+      num_workers: 2
+      use_shared_memory: false
+      collate_fn: DefaultCollator
+      as_dict: true
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 16
+        shuffle: false
+        drop_last: false
+  test:
+    dataset:
+      __class_name__: LiFlowDataset
+      __init_params__:
+        path: data/liflow
+        split: test
+        time_delay_steps: 100
+        cutoff: 5.0
+        periodic: true
+        seed: 42
+        # The full trajectory archive does not fit in RAM and would also be
+        # pickled into every DataLoader worker; keep the lazy ``npz`` reader.
+        in_memory: false
+    loader:
+      num_workers: 2
+      use_shared_memory: false
+      collate_fn: DefaultCollator
+      as_dict: true
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 16
+        shuffle: false
+        drop_last: false

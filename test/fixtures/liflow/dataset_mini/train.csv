@@ -1,0 +1,4 @@
+name,temp,t_start,t_end,prior_Li,prior_frame,comp
+train_a,800,0,119,1,0,mini
+train_b,800,0,119,1,0,mini
+train_c,800,0,119,1,0,mini

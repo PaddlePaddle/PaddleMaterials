@@ -37,6 +37,8 @@ from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
 from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
 from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
 from ppmat.models.infgcn.infgcn import InfGCN
+from ppmat.models.liflow.dual_painn import DualPaiNN
+from ppmat.models.liflow.liflow import LiFlow
 from ppmat.models.mattergen.mattergen import MatterGen
 from ppmat.models.mattergen.mattergen import MatterGenWithCondition
 from ppmat.models.mattersim.m3gnet import M3GNet
@@ -75,6 +77,8 @@ __all__ = [
     "InfGCN",
     "SFIN",
     "SphereNet",
+    "DualPaiNN",
+    "LiFlow",
 ]
 
 # Warning:
@@ -177,6 +181,10 @@ MODEL_REGISTRY = {
     "infgcn_omol25_mc_5k_trimmed": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_omol25_mc_5k_trimmed.zip",
     "infgcn_qm9": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_qm9.zip",
     "diffnmr_msdnmr_nless15": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/spectrum_elucidation/diffnmr/diffnmr_msdnmr_nless15.zip",
+    # LiFlow is released as a single universal propagator package.  There is no
+    # published corrector checkpoint yet, so only the checkpoint that really
+    # exists on BCE is registered here.
+    "liflow_universal": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/molecular_dynamics_integrator/liflow/liflow_universal.zip",
 }
 
 
@@ -272,6 +280,7 @@ def build_model_from_name(
     model_name: str,
     weights_name: Optional[str] = None,
     model_config_modifier: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None,
+    strict_weights: bool = False,
 ):
     extracted_path = download.get_weights_path_from_url(MODEL_REGISTRY[model_name])
     path = resolve_model_package_dir(model_name, extracted_path)
@@ -289,6 +298,6 @@ def build_model_from_name(
     vocab = build_vocab(config.get("Vocabulary"))
     model = build_model(model_config, vocab=vocab)
 
-    save_load.load_pretrain(model, path, weights_name)
+    save_load.load_pretrain(model, path, weights_name, strict=strict_weights)
 
     return model, config
