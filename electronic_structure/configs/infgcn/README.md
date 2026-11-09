@@ -185,8 +185,6 @@ $$
     </tbody>
 </table>
 
-QM9_EC is evaluated on the last 1,600 test molecules without rotation, MP_EC (cubic) on all 1,000 test structures and each MD17_EC molecule on its full test split without rotation; all use every grid point with a positive reference density and average the NMAE per sample.
-
 ---
 
 ## Command
