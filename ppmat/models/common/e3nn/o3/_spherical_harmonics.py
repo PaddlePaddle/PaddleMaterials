@@ -92,7 +92,14 @@ class SphericalHarmonics(paddle.nn.Layer):
 
     def forward(self, x: paddle.Tensor) -> paddle.Tensor:
         if self.normalize:
-            x = paddle.nn.functional.normalize(x=x, axis=-1)
+            # Same arithmetic as paddle.nn.functional.normalize (x / max(|x|, eps))
+            # but built from sqrt/div: Paddle 3.1's p_norm backward has no
+            # second-order implementation, which training needs when forces and
+            # stresses are themselves differentiated.
+            norm = paddle.sqrt(
+                paddle.clip(paddle.sum(x * x, axis=-1, keepdim=True), min=1e-24)
+            )
+            x = x / paddle.clip(norm, min=1e-12)
         sh = _spherical_harmonics(self._lmax, x[..., 0], x[..., 1], x[..., 2])
         if not self._is_range_lmax:
             sh = paddle.concat(

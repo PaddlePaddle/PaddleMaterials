@@ -246,7 +246,11 @@ def _uncompress_file_zip(filepath):
                 files.extract(item, file_dir)
 
         elif _is_a_single_dir(file_list):
-            rootpath = os.path.splitext(file_list[0])[0].split(os.sep)[-1]
+            # Zip entries always use "/" as separator, which does not match os.sep
+            # on Windows. Use basename so both platforms resolve the top-level dir.
+            rootpath = os.path.basename(
+                os.path.splitext(file_list[0].replace("\\", "/"))[0].rstrip("/")
+            )
             uncompressed_path = os.path.join(file_dir, rootpath)
 
             for item in file_list:
@@ -275,7 +279,10 @@ def _uncompress_file_tar(filepath, mode="r:*"):
             for item in file_list:
                 files.extract(item, file_dir)
         elif _is_a_single_dir(file_list):
-            rootpath = os.path.splitext(file_list[0])[0].split(os.sep)[-1]
+            # Same cross-platform separator issue as the zip branch above.
+            rootpath = os.path.basename(
+                os.path.splitext(file_list[0].replace("\\", "/"))[0].rstrip("/")
+            )
             uncompressed_path = os.path.join(file_dir, rootpath)
             for item in file_list:
                 files.extract(item, file_dir)

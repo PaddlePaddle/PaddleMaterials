@@ -22,6 +22,7 @@ from ppmat.models.common.e3nn import o3
 from ppmat.models.common.e3nn.util import prod
 
 from ._instruction import Instruction
+from .._einsum import einsum as _einsum
 
 
 def reshape(self, *args, **kwargs):
@@ -150,15 +151,15 @@ def codegen_tensor_product_right(
                     if specialized_code and (in1_l, in2_l, out_l) == (0, 0, 0):
                         x2_reshaped = x2_part.reshape(batch_size, in2_mul)
                         if shared_weights:
-                            path_result = paddle.einsum("uvw,bv->buw", w, x2_reshaped)
+                            path_result = _einsum("uvw,bv->buw", w, x2_reshaped)
                         else:
-                            path_result = paddle.einsum("buvw,bv->buw", w, x2_reshaped)
+                            path_result = _einsum("buvw,bv->buw", w, x2_reshaped)
                         path_result = path_result.reshape(batch_size, in1_mul, out_mul)
                     elif specialized_code and in1_l == 0:
                         if shared_weights:
-                            path_result = paddle.einsum("uvw,bvi->buwi", w, x2_part)
+                            path_result = _einsum("uvw,bvi->buwi", w, x2_part)
                         else:
-                            path_result = paddle.einsum("buvw,bvi->buwi", w, x2_part)
+                            path_result = _einsum("buvw,bvi->buwi", w, x2_part)
                         path_result = path_result.reshape(
                             batch_size, in1_mul, out_mul * out_dim
                         )
@@ -166,11 +167,11 @@ def codegen_tensor_product_right(
                     elif specialized_code and in2_l == 0:
                         x2_reshaped = x2_part.reshape(batch_size, in2_mul)
                         if shared_weights:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "uvw,ij,bv->buiwj", w, i1, x2_reshaped
                             )
                         else:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "buvw,ij,bv->buiwj", w, i1, x2_reshaped
                             )
                         path_result = path_result.reshape(
@@ -179,9 +180,9 @@ def codegen_tensor_product_right(
                         path_result = path_result / sqrt(out_dim)
                     elif specialized_code and out_l == 0:
                         if shared_weights:
-                            path_result = paddle.einsum("uvw,bvi->buiw", w, x2_part)
+                            path_result = _einsum("uvw,bvi->buiw", w, x2_part)
                         else:
-                            path_result = paddle.einsum("buvw,bvi->buiw", w, x2_part)
+                            path_result = _einsum("buvw,bvi->buiw", w, x2_part)
                         path_result = path_result.reshape(
                             batch_size, in1_mul * in1_dim, out_mul
                         )
@@ -189,11 +190,11 @@ def codegen_tensor_product_right(
                     else:
                         w3j = w3j_dict[in1_l, in2_l, out_l]
                         if shared_weights:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "uvw,ijk,bvj->buiwk", w, w3j, x2_part
                             )
                         else:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "buvw,ijk,bvj->buiwk", w, w3j, x2_part
                             )
                         path_result = path_result.reshape(
@@ -201,7 +202,7 @@ def codegen_tensor_product_right(
                         )
                 else:
                     w3j = w3j_dict[in1_l, in2_l, out_l]
-                    path_result = paddle.einsum("ijk,bvj->bvik", w3j, x2_part)
+                    path_result = _einsum("ijk,bvj->bvik", w3j, x2_part)
                     path_result = path_result.reshape(
                         batch_size, in2_mul * in1_dim, out_dim
                     )
@@ -210,21 +211,21 @@ def codegen_tensor_product_right(
                     if specialized_code and (in1_l, in2_l, out_l) == (0, 0, 0):
                         x2_reshaped = x2_part.reshape(batch_size, in2_mul)
                         if shared_weights:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "u,uw,bu->buw", w, e2, x2_reshaped
                             )
                         else:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "bu,uw,bu->buw", w, e2, x2_reshaped
                             )
                         path_result = path_result.reshape(batch_size, in1_mul, out_mul)
                     elif specialized_code and in1_l == 0:
                         if shared_weights:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "u,uw,bui->buwi", w, e2, x2_part
                             )
                         else:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "bu,uw,bui->buwi", w, e2, x2_part
                             )
                         path_result = path_result.reshape(
@@ -234,11 +235,11 @@ def codegen_tensor_product_right(
                     elif specialized_code and in2_l == 0:
                         x2_reshaped = x2_part.reshape(batch_size, in2_mul)
                         if shared_weights:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "u,ij,uw,bu->buiwj", w, i1, e2, x2_reshaped
                             )
                         else:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "bu,ij,uw,bu->buiwj", w, i1, e2, x2_reshaped
                             )
                         path_result = path_result.reshape(
@@ -247,11 +248,11 @@ def codegen_tensor_product_right(
                         path_result = path_result / sqrt(out_dim)
                     elif specialized_code and out_l == 0:
                         if shared_weights:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "u,uw,bui->buiw", w, e2, x2_part
                             )
                         else:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "bu,uw,bui->buiw", w, e2, x2_part
                             )
                         path_result = path_result.reshape(
@@ -261,11 +262,11 @@ def codegen_tensor_product_right(
                     else:
                         w3j = w3j_dict[in1_l, in2_l, out_l]
                         if shared_weights:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "u,ijk,uw,buj->buiwk", w, w3j, e1, x2_part
                             )
                         else:
-                            path_result = paddle.einsum(
+                            path_result = _einsum(
                                 "bu,ijk,uw,buj->buiwk", w, w3j, e1, x2_part
                             )
                         path_result = path_result.reshape(
@@ -273,36 +274,36 @@ def codegen_tensor_product_right(
                         )
                 elif specialized_code and (in1_l, in2_l, out_l) == (0, 0, 0):
                     x2_reshaped = x2_part.reshape(batch_size, in2_mul)
-                    path_result = paddle.einsum("uw,bu->buw", e2, x2_reshaped)
+                    path_result = _einsum("uw,bu->buw", e2, x2_reshaped)
                     path_result = path_result.reshape(batch_size, in1_mul, out_mul)
                 elif specialized_code and (in1_l, in2_l, out_l) == (1, 1, 1):
                     w3j = w3j_dict[in1_l, in2_l, out_l]
-                    path_result = paddle.einsum("ijk,uw,buj->buiwk", w3j, e1, x2_part)
+                    path_result = _einsum("ijk,uw,buj->buiwk", w3j, e1, x2_part)
                     path_result = path_result.reshape(
                         batch_size, in1_mul * in1_dim, out_mul * out_dim
                     )
                 elif specialized_code and in1_l == 0:
-                    path_result = paddle.einsum("uw,bui->buwi", e2, x2_part)
+                    path_result = _einsum("uw,bui->buwi", e2, x2_part)
                     path_result = path_result.reshape(
                         batch_size, in1_mul, out_mul * out_dim
                     )
                     path_result = path_result / sqrt(out_dim)
                 elif specialized_code and in2_l == 0:
                     x2_reshaped = x2_part.reshape(batch_size, in2_mul)
-                    path_result = paddle.einsum("ij,uw,bu->buiwj", i1, e2, x2_reshaped)
+                    path_result = _einsum("ij,uw,bu->buiwj", i1, e2, x2_reshaped)
                     path_result = path_result.reshape(
                         batch_size, in1_mul * in1_dim, out_mul * out_dim
                     )
                     path_result = path_result / sqrt(out_dim)
                 elif specialized_code and out_l == 0:
-                    path_result = paddle.einsum("uw,bui->buiw", e2, x2_part)
+                    path_result = _einsum("uw,bui->buiw", e2, x2_part)
                     path_result = path_result.reshape(
                         batch_size, in1_mul * in1_dim, out_mul
                     )
                     path_result = path_result / sqrt(in1_dim)
                 else:
                     w3j = w3j_dict[in1_l, in2_l, out_l]
-                    path_result = paddle.einsum("ijk,uw,buj->buiwk", w3j, e1, x2_part)
+                    path_result = _einsum("ijk,uw,buj->buiwk", w3j, e1, x2_part)
                     path_result = path_result.reshape(
                         batch_size, in1_mul * in1_dim, out_mul * out_dim
                     )
@@ -310,11 +311,11 @@ def codegen_tensor_product_right(
                 if ins.has_weight:
                     w3j = w3j_dict[in1_l, in2_l, out_l]
                     if shared_weights:
-                        path_result = paddle.einsum(
+                        path_result = _einsum(
                             "uv,ijk,uw,bvj->buiwvk", w, w3j, e1, x2_part
                         )
                     else:
-                        path_result = paddle.einsum(
+                        path_result = _einsum(
                             "buv,ijk,uw,bvj->buiwvk", w, w3j, e1, x2_part
                         )
                     path_result = path_result.reshape(
@@ -322,7 +323,7 @@ def codegen_tensor_product_right(
                     )
                 else:
                     w3j = w3j_dict[in1_l, in2_l, out_l]
-                    path_result = paddle.einsum("ijk,uw,bvj->buiwvk", w3j, e1, x2_part)
+                    path_result = _einsum("ijk,uw,bvj->buiwvk", w3j, e1, x2_part)
                     path_result = path_result.reshape(
                         batch_size, in1_mul * in1_dim, out_mul * out_dim
                     )
@@ -469,198 +470,198 @@ def codegen_tensor_product_left_right(
             key = ins.i_in1, ins.i_in2, ins.connection_mode[:2]
             if key not in xx_dict:
                 if ins.connection_mode[:2] == "uu":
-                    xx_dict[key] = paddle.einsum("zui,zuj->zuij", x1_tensor, x2_tensor)
+                    xx_dict[key] = _einsum("zui,zuj->zuij", x1_tensor, x2_tensor)
                 else:
-                    xx_dict[key] = paddle.einsum("zui,zvj->zuvij", x1_tensor, x2_tensor)
+                    xx_dict[key] = _einsum("zui,zvj->zuvij", x1_tensor, x2_tensor)
             xx = xx_dict[key]
             l1l2l3 = mul_ir_in1.ir.l, mul_ir_in2.ir.l, mul_ir_out.ir.l
             w3j = w3j_dict.get(l1l2l3, None)
             if ins.connection_mode == "uvw":
                 assert ins.has_weight
                 if specialized_code and l1l2l3 == (0, 0, 0):
-                    result = paddle.einsum(
+                    result = _einsum(
                         f"{z}uvw,zu,zv->zw",
                         w,
                         x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                         x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                     )
                 elif specialized_code and mul_ir_in1.ir.l == 0:
-                    result = paddle.einsum(
+                    result = _einsum(
                         f"{z}uvw,zu,zvj->zwj",
                         w,
                         x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                         x2_tensor,
                     ) / sqrt(mul_ir_out.ir.dim)
                 elif specialized_code and mul_ir_in2.ir.l == 0:
-                    result = paddle.einsum(
+                    result = _einsum(
                         f"{z}uvw,zui,zv->zwi",
                         w,
                         x1_tensor,
                         x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                     ) / sqrt(mul_ir_out.ir.dim)
                 elif specialized_code and mul_ir_out.ir.l == 0:
-                    result = paddle.einsum(
+                    result = _einsum(
                         f"{z}uvw,zui,zvi->zw", w, x1_tensor, x2_tensor
                     ) / sqrt(mul_ir_in1.ir.dim)
                 else:
-                    result = paddle.einsum(f"{z}uvw,ijk,zuvij->zwk", w, w3j, xx)
+                    result = _einsum(f"{z}uvw,ijk,zuvij->zwk", w, w3j, xx)
             elif ins.connection_mode == "uvu":
                 assert mul_ir_in1.mul == mul_ir_out.mul
                 if ins.has_weight:
                     if specialized_code and l1l2l3 == (0, 0, 0):
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uv,zu,zv->zu",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         )
                     elif specialized_code and mul_ir_in1.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uv,zu,zvj->zuj",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor,
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_in2.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uv,zui,zv->zui",
                             w,
                             x1_tensor,
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_out.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uv,zui,zvi->zu", w, x1_tensor, x2_tensor
                         ) / sqrt(mul_ir_in1.ir.dim)
                     else:
-                        result = paddle.einsum(f"{z}uv,ijk,zuvij->zuk", w, w3j, xx)
+                        result = _einsum(f"{z}uv,ijk,zuvij->zuk", w, w3j, xx)
                 else:
-                    result = paddle.einsum("ijk,zuvij->zuk", w3j, xx)
+                    result = _einsum("ijk,zuvij->zuk", w3j, xx)
             elif ins.connection_mode == "uvv":
                 assert mul_ir_in2.mul == mul_ir_out.mul
                 if ins.has_weight:
                     if specialized_code and l1l2l3 == (0, 0, 0):
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uv,zu,zv->zv",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         )
                     elif specialized_code and mul_ir_in1.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uv,zu,zvj->zvj",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor,
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_in2.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uv,zui,zv->zvi",
                             w,
                             x1_tensor,
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_out.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uv,zui,zvi->zv", w, x1_tensor, x2_tensor
                         ) / sqrt(mul_ir_in1.ir.dim)
                     else:
-                        result = paddle.einsum(f"{z}uv,ijk,zuvij->zvk", w, w3j, xx)
+                        result = _einsum(f"{z}uv,ijk,zuvij->zvk", w, w3j, xx)
                 elif specialized_code and l1l2l3 == (0, 0, 0):
-                    result = paddle.einsum(
+                    result = _einsum(
                         "zu,zv->zv",
                         x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                         x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                     )
                 elif specialized_code and mul_ir_in1.ir.l == 0:
-                    result = paddle.einsum(
+                    result = _einsum(
                         "zu,zvj->zvj",
                         x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                         x2_tensor,
                     ) / sqrt(mul_ir_out.ir.dim)
                 elif specialized_code and mul_ir_in2.ir.l == 0:
-                    result = paddle.einsum(
+                    result = _einsum(
                         "zui,zv->zvi",
                         x1_tensor,
                         x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                     ) / sqrt(mul_ir_out.ir.dim)
                 elif specialized_code and mul_ir_out.ir.l == 0:
-                    result = paddle.einsum("zui,zvi->zv", x1_tensor, x2_tensor) / sqrt(
+                    result = _einsum("zui,zvi->zv", x1_tensor, x2_tensor) / sqrt(
                         mul_ir_in1.ir.dim
                     )
                 else:
-                    result = paddle.einsum("ijk,zuvij->zvk", w3j, xx)
+                    result = _einsum("ijk,zuvij->zvk", w3j, xx)
             elif ins.connection_mode == "uuw":
                 assert mul_ir_in1.mul == mul_ir_in2.mul
                 if ins.has_weight:
                     if specialized_code and l1l2l3 == (0, 0, 0):
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uw,zu,zu->zw",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         )
                     elif specialized_code and mul_ir_in1.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uw,zu,zuj->zwj",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor,
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_in2.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uw,zui,zu->zwi",
                             w,
                             x1_tensor,
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_out.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}uw,zui,zui->zw", w, x1_tensor, x2_tensor
                         ) / sqrt(mul_ir_in1.ir.dim)
                     else:
-                        result = paddle.einsum(f"{z}uw,ijk,zuij->zwk", w, w3j, xx)
+                        result = _einsum(f"{z}uw,ijk,zuij->zwk", w, w3j, xx)
                 else:
                     assert mul_ir_out.mul == 1
-                    result = paddle.einsum("ijk,zuij->zk", w3j, xx)
+                    result = _einsum("ijk,zuij->zk", w3j, xx)
             elif ins.connection_mode == "uuu":
                 assert mul_ir_in1.mul == mul_ir_in2.mul == mul_ir_out.mul
                 if ins.has_weight:
                     if specialized_code and l1l2l3 == (0, 0, 0):
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}u,zu,zu->zu",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         )
                     elif specialized_code and l1l2l3 == (1, 1, 1):
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}u,zui->zui",
                             w,
                             paddle.cross(x=x1_tensor, y=x2_tensor, axis=2),
                         ) / sqrt(2 * 3)
                     elif specialized_code and mul_ir_in1.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}u,zu,zuj->zuj",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor,
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_in2.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}u,zui,zu->zui",
                             w,
                             x1_tensor,
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_out.ir.l == 0:
-                        result = paddle.einsum(
+                        result = _einsum(
                             f"{z}u,zui,zui->zu", w, x1_tensor, x2_tensor
                         ) / sqrt(mul_ir_in1.ir.dim)
                     else:
-                        result = paddle.einsum(f"{z}u,ijk,zuij->zuk", w, w3j, xx)
+                        result = _einsum(f"{z}u,ijk,zuij->zuk", w, w3j, xx)
                 elif specialized_code and l1l2l3 == (0, 0, 0):
-                    result = paddle.einsum(
+                    result = _einsum(
                         "zu,zu->zu",
                         x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                         x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
@@ -670,29 +671,29 @@ def codegen_tensor_product_left_right(
                         1.0 / sqrt(2 * 3)
                     )
                 elif specialized_code and mul_ir_in1.ir.l == 0:
-                    result = paddle.einsum(
+                    result = _einsum(
                         "zu,zuj->zuj",
                         x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                         x2_tensor,
                     ) / sqrt(mul_ir_out.ir.dim)
                 elif specialized_code and mul_ir_in2.ir.l == 0:
-                    result = paddle.einsum(
+                    result = _einsum(
                         "zui,zu->zui",
                         x1_tensor,
                         x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                     ) / sqrt(mul_ir_out.ir.dim)
                 elif specialized_code and mul_ir_out.ir.l == 0:
-                    result = paddle.einsum("zui,zui->zu", x1_tensor, x2_tensor) / sqrt(
+                    result = _einsum("zui,zui->zu", x1_tensor, x2_tensor) / sqrt(
                         mul_ir_in1.ir.dim
                     )
                 else:
-                    result = paddle.einsum("ijk,zuij->zuk", w3j, xx)
+                    result = _einsum("ijk,zuij->zuk", w3j, xx)
             elif ins.connection_mode == "uvuv":
                 assert mul_ir_in1.mul * mul_ir_in2.mul == mul_ir_out.mul
                 if ins.has_weight:
-                    result = paddle.einsum(f"{z}uv,ijk,zuvij->zuvk", w, w3j, xx)
+                    result = _einsum(f"{z}uv,ijk,zuvij->zuvk", w, w3j, xx)
                 else:
-                    result = paddle.einsum("ijk,zuvij->zuvk", w3j, xx)
+                    result = _einsum("ijk,zuvij->zuvk", w3j, xx)
             elif ins.connection_mode == "uvu<v":
                 assert mul_ir_in1.mul == mul_ir_in2.mul
                 assert mul_ir_in1.mul * (mul_ir_in1.mul - 1) // 2 == mul_ir_out.mul
@@ -701,9 +702,9 @@ def codegen_tensor_product_left_right(
                 )
                 xx_subset = xx[:, i[0], i[1]]
                 if ins.has_weight:
-                    result = paddle.einsum(f"{z}w,ijk,zwij->zwk", w, w3j, xx_subset)
+                    result = _einsum(f"{z}w,ijk,zwij->zwk", w, w3j, xx_subset)
                 else:
-                    result = paddle.einsum("ijk,zwij->zwk", w3j, xx_subset)
+                    result = _einsum("ijk,zwij->zwk", w3j, xx_subset)
             elif ins.connection_mode == "u<vw":
                 assert mul_ir_in1.mul == mul_ir_in2.mul
                 assert ins.has_weight
@@ -711,7 +712,7 @@ def codegen_tensor_product_left_right(
                     row=mul_ir_in1.mul, col=mul_ir_in1.mul, offset=1
                 )
                 xx_subset = xx[:, i[0], i[1]]
-                result = paddle.einsum(f"{z}qw,ijk,zqij->zwk", w, w3j, xx_subset)
+                result = _einsum(f"{z}qw,ijk,zqij->zwk", w, w3j, xx_subset)
             result = ins.path_weight * result
             outputs.append(result.reshape(batch_numel, mul_ir_out.dim))
         final_outputs = []

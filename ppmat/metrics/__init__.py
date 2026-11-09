@@ -31,11 +31,36 @@ __all__ = [
 
 
 class IgnoreNanMetricWrapper:
-    def __init__(self, **metric_cfg):
+    """Compute a metric while ignoring ``nan`` labels.
+
+    ``flatten_if_same_numel`` exists for layouts that keep the same element
+    count with different trailing dimensions, e.g. stress stored as ``[1, 3, 3]``
+    per sample while the model emits ``[3, 3]``.  It is off by default so every
+    existing model keeps the previous strict shape behaviour.
+    """
+
+    def __init__(self, flatten_if_same_numel=False, **metric_cfg):
+        self._flatten_if_same_numel = flatten_if_same_numel
         self._metric_cfg = metric_cfg
         self._metric = build_metric(self._metric_cfg)
 
     def __call__(self, pred, label):
+        if pred.shape != label.shape:
+            if not self._flatten_if_same_numel:
+                raise ValueError(
+                    f"pred shape {list(pred.shape)} != label shape "
+                    f"{list(label.shape)}. Set flatten_if_same_numel=True only "
+                    "when both tensors hold the same element count with "
+                    "different trailing dimensions."
+                )
+            if pred.numel() != label.numel():
+                raise ValueError(
+                    f"cannot flatten pred shape {list(pred.shape)} and label "
+                    f"shape {list(label.shape)}: element counts differ "
+                    f"({pred.numel()} vs {label.numel()})."
+                )
+            pred = pred.reshape([-1])
+            label = label.reshape([-1])
 
         valid_value_indices = ~paddle.isnan(label)
         valid_label = label[valid_value_indices]

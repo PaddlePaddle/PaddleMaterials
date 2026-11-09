@@ -29,6 +29,17 @@ def moment(f, n, dtype=None, device=None):
     return f(z).pow(y=n).mean()
 
 
+# e3nn estimates ``cst`` from a 1e6-sample Monte-Carlo draw of a seeded torch
+# generator, so its value is a fixed (but noisy, ~1.5e-3) estimate.  Paddle's
+# generator produces different samples, which shifts the constant enough to
+# break reproduction of checkpoints trained with e3nn.  An activation that
+# needs that exact parity declares the e3nn value on the callable itself
+# (``f.e3nn_cst``); everything else keeps the Monte-Carlo estimate, which is
+# the behaviour the existing Paddle checkpoints were trained with.
+def _pinned_constant(f):
+    return getattr(f, "e3nn_cst", None)
+
+
 class normalize2mom(paddle.nn.Layer):
     _is_id: bool
     cst: float
@@ -40,7 +51,9 @@ class normalize2mom(paddle.nn.Layer):
 
             device = _get_device(f)
         with paddle.no_grad():
-            cst = moment(f, 2, dtype="float64", device="cpu").pow(y=-0.5).item()
+            cst = _pinned_constant(f)
+            if cst is None:
+                cst = moment(f, 2, dtype="float64", device="cpu").pow(y=-0.5).item()
         if abs(cst - 1) < 0.0001:
             self._is_id = True
         else:
@@ -52,9 +65,7 @@ class normalize2mom(paddle.nn.Layer):
         if self._is_id:
             return self.f(x)
         else:
-            return self.f(x).multiply(
-                paddle.to_tensor(self.cst)
-            )  
+            return self.f(x) * self.cst  
 
     @staticmethod
     def _make_tracing_inputs(n: int):

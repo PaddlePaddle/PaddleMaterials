@@ -26,6 +26,7 @@ from ppmat.models.common.e3nn.util import prod
 from ppmat.models.common.e3nn.util.codegen import CodeGenMixin
 
 from ._tensor_product._codegen import _sum_tensors
+from ._einsum import einsum as _einsum
 
 
 class Instruction(NamedTuple):
@@ -347,9 +348,9 @@ def _codegen_linear(
                 flat_weight_index += path_nweight
 
                 if f_in is None:
-                    ein_out = paddle.einsum(f"{z}uw,zui->zwi", w, x_list[ins.i_in])
+                    ein_out = _einsum(f"{z}uw,zui->zwi", w, x_list[ins.i_in])
                 else:
-                    ein_out = paddle.einsum(f"{z}xyuw,zxui->zywi", w, x_list[ins.i_in])
+                    ein_out = _einsum(f"{z}xyuw,zxui->zywi", w, x_list[ins.i_in])
 
                 ein_out = ins.path_weight * ein_out
                 out_list += [
