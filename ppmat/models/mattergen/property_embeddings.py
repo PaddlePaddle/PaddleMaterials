@@ -463,8 +463,12 @@ class PropertyEmbedding(paddle.nn.Layer):
             raise ValueError(f"Invalid scaler_name: {scaler_name}")
 
     def forward(self, data, use_unconditional_embedding) -> paddle.Tensor:
+        # The paddle.all() shortcut reads a device value and breaks the SOT graph, so
+        # tensor data takes the where() path below, which gives the same zeros: the
+        # unconditional module depends only on the shape of its input.
         if (
-            paddle.all(x=use_unconditional_embedding)
+            not isinstance(data, paddle.Tensor)
+            and paddle.all(x=use_unconditional_embedding)
             and self.unconditional_embedding_module.only_depends_on_shape_of_input
         ):
             return self.unconditional_embedding_module(x=data)
