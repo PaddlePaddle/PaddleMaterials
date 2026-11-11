@@ -11,6 +11,7 @@ from ppmat.models.common.basis_utils import real_sph_harm
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
 from ppmat.utils.crystal import get_pbc_distances
+from ppmat.utils.pgl_compat import graph_count
 from ppmat.utils.scatter import scatter
 
 """This module is adapted from https://github.com/Open-Catalyst-Project/ocp/tree/master/ocpmodels/models
@@ -104,13 +105,12 @@ class SphericalBasisLayer(paddle.nn.Layer):
         dist = dist / self.cutoff
         rbf = paddle.stack(x=[f(dist) for f in self.bessel_funcs], axis=1)
         rbf = self.envelope(dist).unsqueeze(axis=-1) * rbf
-        cbf = paddle.stack(
-            x=[
-                paddle.zeros_like(angle) + self.sph_funcs[0],
-                *(function(angle) for function in self.sph_funcs[1:]),
-            ],
-            axis=1,
-        )
+        # Unpacking a generator into a list literal compiles to
+        # list.extend(generator), which SOT does not support.
+        cbf_terms = [paddle.zeros_like(angle) + self.sph_funcs[0]]
+        for function in self.sph_funcs[1:]:
+            cbf_terms.append(function(angle))
+        cbf = paddle.stack(x=cbf_terms, axis=1)
         n, k = self.num_spherical, self.num_radial
         out = (rbf[idx_kj].reshape([-1, n, k]) * cbf.reshape([-1, n, 1])).reshape(
             [-1, n * k]
@@ -221,7 +221,11 @@ class InteractionPPBlock(paddle.nn.Layer):
         sbf = self.lin_sbf1(sbf)
         sbf = self.lin_sbf2(sbf)
         x_kj = x_kj[idx_kj] * sbf
-        x_kj = scatter(x_kj, idx_ji, dim=0, dim_size=x.shape[0])
+        # scatter() branches on x_kj.shape[0] == 0. The triplet count comes from a
+        # masked selection, so SOT cannot evaluate that branch and breaks the graph.
+        x_kj = paddle.index_add(
+            paddle.zeros([x.shape[0], x_kj.shape[1]], dtype=x_kj.dtype), idx_ji, 0, x_kj
+        )
         x_kj = self.act(self.lin_up(x_kj))
         h = x_ji + x_kj
         for layer in self.layers_before_skip:
@@ -417,22 +421,18 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
             raise ValueError(f"Unknown loss type {loss_type}.")
 
     def triplets(self, edge_index, cell_offsets=None, num_nodes=None):
+        """Build the triplets k->j->i from the directed edges (row -> col).
+
+        ``num_nodes`` is not used; it is kept for backward compatibility.
+        """
         row, col = edge_index
-        value = paddle.arange(1, row.shape[0] + 1, dtype="int64")
-        # build matrix of edge ids per target
-        n = col.shape[0]
-        rows = paddle.arange(n).unsqueeze(1)
-        cols = paddle.arange(n).unsqueeze(0)
-        mask = (col.unsqueeze(1) == col.unsqueeze(0)) & (cols <= rows)
-        col_ = mask.astype("int64").sum(axis=1) - 1
-        mat = paddle.scatter_nd(
-            paddle.stack([col, col_], axis=1),
-            value,
-            shape=[num_nodes, col_.max().item() + 1],
-        )
-        idx_kj = mat[row][mat[row] > 0] - 1
-        tmp = paddle.nonzero(mat[row], as_tuple=False)
-        idx_ji = tmp[:, 0]
+        # Entry (ji, kj) is true when edge kj ends where edge ji starts. nonzero()
+        # lists the pairs ordered by ji and then by kj. Building them from a dense
+        # edge table instead would need the largest in-degree on the host, and
+        # reading it back breaks the SOT graph.
+        pairs = paddle.nonzero(row.unsqueeze(1) == col.unsqueeze(0), as_tuple=False)
+        idx_ji = pairs[:, 0]
+        idx_kj = pairs[:, 1]
         idx_k = paddle.index_select(row, idx_kj, axis=0)
         idx_j = paddle.index_select(row, idx_ji, axis=0)
         idx_i = paddle.index_select(col, idx_ji, axis=0)
@@ -462,11 +462,12 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
 
     @runtime_boundary("forward")
     def _forward(self, data):
-        #  The data in data['graph'] is numpy.ndarray, convert it to paddle.Tensor
-        data["graph"] = data["graph"].tensor()
+        # Graph.tensor() converts the numpy arrays in place and returns the same
+        # graph. Writing it back into data would make SOT guard on the graph object
+        # and recompile for every new graph.
+        graph = data["graph"].tensor()
 
         # unpack graph dict
-        graph = data["graph"]
         batch = graph.graph_node_id
         pos = graph.node_feat["cart_coords"]
         edge_index = graph.edges
@@ -520,7 +521,11 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
             P += out_block(x, rbf, i, num_nodes=pos.shape[0])
 
         # readout
-        energy = scatter(P, batch, dim=0, reduce=self.readout)
+        # Without dim_size, scatter() reads index.max() back from the device, which
+        # breaks the SOT graph.
+        energy = scatter(
+            P, batch, dim=0, dim_size=graph_count(graph), reduce=self.readout
+        )
         return energy
 
     def forward(self, data, return_loss=True, return_prediction=True):
