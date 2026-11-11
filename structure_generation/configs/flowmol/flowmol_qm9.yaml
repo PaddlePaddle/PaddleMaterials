@@ -1,0 +1,209 @@
+Global:
+  # Whether to train, evaluate or test
+  do_train: True
+  do_eval: True
+  do_test: False
+  # Atom type ordering shared by the model and the dataset
+  atom_map: ["C", "H", "N", "O", "F"]
+  # Fake-atom dropout probability shared by the model and the dataset
+  fake_atom_p: 0.0
+  # Number of integration steps used during sampling
+  num_inference_steps: 250
+  # Position prior shared by the model and the training dataset
+  prior_std: 1.0
+  prior_align: True
+
+Trainer:
+  # Max epochs to train
+  max_epochs: 1000
+  # Random seed
+  seed: 42
+  # Save path for checkpoints and logs
+  output_dir: ./output/flowmol_qm9
+  # Save frequency [epoch]
+  save_freq: 50
+  # Logging frequency [step]
+  log_freq: 10
+  # Start evaluation epoch
+  start_eval_epoch: 1
+  # Evaluation frequency [epoch]
+  eval_freq: 1
+  # Pretrained model path, if null, no pretrained model will be loaded
+  pretrained_model_path: null
+  # Resume from checkpoint path
+  resume_from_checkpoint: null
+  # whether use automatic mixed precision
+  use_amp: False
+  # automatic mixed precision level
+  amp_level: 'O1'
+  # whether run a model on no_grad mode during evaluation
+  eval_with_no_grad: True
+  # gradient accumulation steps
+  gradient_accumulation_steps: 1
+  # best metric indicator
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: "loss"
+  greater_is_better: False
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'epoch'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: FlowMol
+  __init_params__:
+    atom_type_map: ${Global.atom_map}
+    total_loss_weights:
+      positions: 3.0
+      atom_types: 0.4
+      atom_charges: 1.0
+      bond_types: 2.0
+    interpolant_scheduler_config:
+      __class_name__: FlowMolInterpolantScheduler
+      __init_params__:
+        schedule_type:
+          positions: linear
+          atom_types: linear
+          atom_charges: linear
+          bond_types: linear
+        cosine_params: {}
+    vector_field_config:
+      n_charges: 6
+      n_bond_types: 4
+      charge_offset: 2
+      n_hidden_scalars: 256
+      n_hidden_edge_feats: 128
+      n_vec_channels: 16
+      n_cp_feats: 4
+      n_message_gvps: 3
+      n_update_gvps: 3
+      n_position_update_gvps: 3
+      n_molecule_updates: 8
+      convs_per_update: 1
+      n_recycles: 1
+      rbf_dim: 32
+      rbf_dmax: 14
+      message_norm: 100
+      separate_mol_updaters: True
+      update_edge_w_distance: True
+      stochasticity: 10.0
+      high_confidence_threshold: 0.0
+      cat_temperature: 0.05
+      time_embedding_dim: 1
+      a_token_dim: 0
+      c_token_dim: 0
+      e_token_dim: 0
+      self_conditioning: False
+      scprop: 0.5
+    prior_config:
+      positions:
+        type: centered-normal
+        kwargs:
+          std: ${Global.prior_std}
+      atom_types: {type: ctmc}
+      atom_charges: {type: ctmc}
+      bond_types: {type: ctmc}
+    time_scaled_loss: False
+    fake_atom_p: ${Global.fake_atom_p}
+    distort_p: 0.0
+    distort_t: 0.5
+    default_n_timesteps: ${Global.num_inference_steps}
+    execution_backend: eager
+    runtime_options: null
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr: 0.00025
+    weight_decay: 1.0e-12
+  clip_value: 1.0
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: FlowMolDataset
+      __init_params__:
+        path: "./data/flowmol_qm9/train_data_processed.npz"
+        atom_map: ${Global.atom_map}
+        fake_atom_p: ${Global.fake_atom_p}
+        fake_atom_std: 1.0
+        prior_std: ${Global.prior_std}
+        prior_align: ${Global.prior_align}
+        seed: 42
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: False
+        batch_size: 128
+  val:
+    dataset:
+      __class_name__: FlowMolDataset
+      __init_params__:
+        path: "./data/flowmol_qm9/val_data_processed.npz"
+        atom_map: ${Global.atom_map}
+        fake_atom_p: ${Global.fake_atom_p}
+        fake_atom_std: 1.0
+        prior_std: ${Global.prior_std}
+        prior_align: ${Global.prior_align}
+        seed: 42
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 128
+  test:
+    dataset:
+      __class_name__: FlowMolDataset
+      __init_params__:
+        path: "./data/flowmol_qm9/test_data_processed.npz"
+        atom_map: ${Global.atom_map}
+        fake_atom_p: ${Global.fake_atom_p}
+        fake_atom_std: 1.0
+        prior_std: ${Global.prior_std}
+        prior_align: ${Global.prior_align}
+        seed: 42
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 128
+
+Sampler:
+  data:
+    dataset:
+      __class_name__: FlowMolSamplingDataset
+      __init_params__:
+        path: "./data/flowmol_qm9/train_data_n_atoms_histogram.npz"
+        total_num: 64
+        seed: 42
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 64
+  model_sample_params:
+    num_inference_steps: ${Global.num_inference_steps}
+  output_dir: ./output/flowmol_qm9_samples

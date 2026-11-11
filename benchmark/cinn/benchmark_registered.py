@@ -140,6 +140,20 @@ def build_workflow(model_name: str, backend: str):
         batch = next(iter(sampler._sample_loader))
         return sampler, lambda: sampler.sample(batch), "full_reverse_diffusion"
 
+    if model_name.startswith("flowmol"):
+        sampler = MolecularSampler(
+            model_name=model_name,
+            weights_name="best.pdparams",
+            config_overrides=[
+                *overrides,
+                "Sampler.data.dataset.__init_params__.total_num=1",
+                "Sampler.data.dataset.__init_params__.seed=2026",
+                "Sampler.model_sample_params.num_inference_steps=2",
+            ],
+        )
+        batch = next(iter(sampler._sample_loader))
+        return sampler, lambda: sampler.sample(batch), "two_step_molecule_sampling"
+
     if model_name.startswith(("diffcsp_", "mattergen_")):
         sampler = StructureSampler(
             model_name=model_name,

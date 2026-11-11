@@ -1,0 +1,117 @@
+Global:
+  do_train: False
+  do_eval: False
+  do_test: False
+  # Atom type ordering of the released model
+  atom_map: ["C", "H", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
+  # Fake-atom dropout probability shared by the model and the dataset
+  fake_atom_p: 0.3
+  # Number of integration steps used during sampling
+  num_inference_steps: 250
+
+Trainer:
+  max_epochs: 20
+  seed: 42
+  output_dir: ./output/flowmol3
+  save_freq: 0
+  log_freq: 10
+  start_eval_epoch: 1
+  eval_freq: 0
+  pretrained_model_path: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: 'O1'
+  eval_with_no_grad: True
+  gradient_accumulation_steps: 1
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: "loss"
+  greater_is_better: False
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'epoch'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: FlowMol
+  __init_params__:
+    atom_type_map: ${Global.atom_map}
+    total_loss_weights:
+      positions: 3.0
+      atom_types: 0.4
+      atom_charges: 1.0
+      bond_types: 2.0
+    interpolant_scheduler_config:
+      __class_name__: FlowMolInterpolantScheduler
+      __init_params__:
+        schedule_type:
+          positions: linear
+          atom_types: linear
+          atom_charges: linear
+          bond_types: linear
+        cosine_params: {}
+    vector_field_config:
+      n_charges: 6
+      n_bond_types: 4
+      charge_offset: 2
+      n_hidden_scalars: 256
+      n_hidden_edge_feats: 128
+      n_vec_channels: 32
+      n_cp_feats: 4
+      n_message_gvps: 3
+      n_update_gvps: 3
+      n_position_update_gvps: 3
+      n_molecule_updates: 6
+      convs_per_update: 1
+      n_recycles: 1
+      rbf_dim: 32
+      rbf_dmax: 10
+      message_norm: sum
+      separate_mol_updaters: True
+      update_edge_w_distance: True
+      stochasticity: 30.0
+      high_confidence_threshold: 0.9
+      cat_temperature: 0.05
+      time_embedding_dim: 64
+      a_token_dim: 64
+      c_token_dim: 64
+      e_token_dim: 64
+      self_conditioning: True
+      scprop: 0.5
+    prior_config:
+      positions: {type: centered-normal, kwargs: {std: 1.0}}
+      atom_types: {type: ctmc}
+      atom_charges: {type: ctmc}
+      bond_types: {type: ctmc}
+    time_scaled_loss: True
+    fake_atom_p: ${Global.fake_atom_p}
+    distort_p: 0.7
+    distort_t: 0.25
+    default_n_timesteps: ${Global.num_inference_steps}
+    execution_backend: eager
+    runtime_options: null
+
+Dataset:
+  train: null
+  val: null
+
+Sampler:
+  data:
+    dataset:
+      __class_name__: FlowMol3GeomSamplingDataset
+      __init_params__:
+        total_num: 16
+        seed: 42
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 16
+  model_sample_params:
+    num_inference_steps: ${Global.num_inference_steps}
+  output_dir: ./output/flowmol3_samples
