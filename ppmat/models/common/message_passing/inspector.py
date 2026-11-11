@@ -29,6 +29,17 @@ class Inspector(object):
             keys += self.params[func].keys()
         return set(keys)
 
+    def ordered_keys(self, func_names: Optional[List[str]] = None) -> List[str]:
+        """Same names as keys(), in first-seen signature order.
+
+        SOT cannot iterate a set, so callers that loop over these names inside a
+        compiled forward need a list.
+        """
+        keys = []
+        for func in func_names or list(self.params.keys()):
+            keys += self.params[func].keys()
+        return list(dict.fromkeys(keys))
+
     def __implements__(self, cls, func_name: str) -> bool:
         if cls.__name__ == "MessagePassing":
             return False
