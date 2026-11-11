@@ -36,9 +36,7 @@ def _build_basis_constants(num_spherical, num_radial):
 
     zeros = np.zeros((num_spherical, num_radial), dtype=np.float64)
     zeros[0] = np.arange(1, num_radial + 1, dtype=np.float64) * np.pi
-    points = np.arange(
-        1, num_radial + num_spherical, dtype=np.float64
-    ) * np.pi
+    points = np.arange(1, num_radial + num_spherical, dtype=np.float64) * np.pi
     roots = np.zeros(num_radial + num_spherical - 1, dtype=np.float64)
     for order in range(1, num_spherical):
         for i in range(num_radial + num_spherical - 1 - order):
@@ -56,9 +54,7 @@ def _build_basis_constants(num_spherical, num_radial):
         values = special.spherical_jn(order + 1, zeros[order])
         normalizers[order] = 1.0 / np.sqrt(0.5 * values**2)
 
-    harmonic_prefactors = np.zeros(
-        (num_spherical, num_spherical), dtype=np.float64
-    )
+    harmonic_prefactors = np.zeros((num_spherical, num_spherical), dtype=np.float64)
     for degree in range(num_spherical):
         for order in range(degree + 1):
             harmonic_prefactors[degree, order] = math.sqrt(
@@ -86,11 +82,7 @@ def _spherical_jn_series(order, x, num_terms=20):
     term = paddle.ones_like(x)
     series = term
     for index in range(1, num_terms):
-        term = (
-            term
-            * -x_squared
-            / (2 * index * (2 * order + 2 * index + 1))
-        )
+        term = term * -x_squared / (2 * index * (2 * order + 2 * index + 1))
         series = series + term
     return x**order / _double_factorial(2 * order + 1) * series
 
@@ -154,9 +146,7 @@ class SphericalBesselBasis(paddle.nn.Layer):
         self.num_radial = num_radial
         self.cutoff = cutoff
 
-        zeros, normalizers, _ = _build_basis_constants(
-            num_spherical, num_radial
-        )
+        zeros, normalizers, _ = _build_basis_constants(num_spherical, num_radial)
         self.register_buffer(
             "zeros",
             paddle.to_tensor(np.array(zeros, copy=True), dtype="float32"),
@@ -164,9 +154,7 @@ class SphericalBesselBasis(paddle.nn.Layer):
         )
         self.register_buffer(
             "normalizers",
-            paddle.to_tensor(
-                np.array(normalizers, copy=True), dtype="float32"
-            ),
+            paddle.to_tensor(np.array(normalizers, copy=True), dtype="float32"),
             persistable=False,
         )
         self.register_buffer(
@@ -196,8 +184,7 @@ class SphericalBesselBasis(paddle.nn.Layer):
             )
             for degree in range(1, self.num_spherical - 1):
                 values.append(
-                    (2 * degree + 1) / safe_arguments * values[-1]
-                    - values[-2]
+                    (2 * degree + 1) / safe_arguments * values[-1] - values[-2]
                 )
 
         basis = paddle.zeros_like(arguments)
@@ -209,9 +196,11 @@ class SphericalBesselBasis(paddle.nn.Layer):
                 _spherical_jn_series(degree, degree_arguments),
                 degree_values,
             )
-            basis = basis + (
-                degree_values * self.normalizers[degree]
-            ).unsqueeze(1) * self.degree_selectors[degree]
+            basis = (
+                basis
+                + (degree_values * self.normalizers[degree]).unsqueeze(1)
+                * self.degree_selectors[degree]
+            )
         return basis
 
 
@@ -224,9 +213,7 @@ class RealSphericalHarmonics(paddle.nn.Layer):
         _, _, prefactors = _build_basis_constants(num_spherical, 1)
         self.register_buffer(
             "prefactors",
-            paddle.to_tensor(
-                np.array(prefactors, copy=True), dtype="float32"
-            ),
+            paddle.to_tensor(np.array(prefactors, copy=True), dtype="float32"),
             persistable=False,
         )
         self.register_buffer(
@@ -248,9 +235,7 @@ class RealSphericalHarmonics(paddle.nn.Layer):
             persistable=False,
         )
 
-    def forward(
-        self, cos_angle, sin_angle, cos_torsion, sin_torsion
-    ):
+    def forward(self, cos_angle, sin_angle, cos_torsion, sin_torsion):
         one = paddle.ones_like(cos_angle)
         polynomials = {(0, 0): one}
 
@@ -267,34 +252,26 @@ class RealSphericalHarmonics(paddle.nn.Layer):
             )
 
         for order in range(1, self.num_spherical):
-            polynomials[(order, order)] = (
-                1 - 2 * order
-            ) * polynomials[(order - 1, order - 1)]
+            polynomials[(order, order)] = (1 - 2 * order) * polynomials[
+                (order - 1, order - 1)
+            ]
 
         for order in range(self.num_spherical - 1):
             polynomials[(order + 1, order)] = (
-                (2 * order + 1)
-                * cos_angle
-                * polynomials[(order, order)]
+                (2 * order + 1) * cos_angle * polynomials[(order, order)]
             )
 
         for order in range(self.num_spherical):
             for degree in range(order + 2, self.num_spherical):
                 polynomials[(degree, order)] = (
-                    (2 * degree - 1)
-                    * cos_angle
-                    * polynomials[(degree - 1, order)]
-                    - (order + degree - 1)
-                    * polynomials[(degree - 2, order)]
+                    (2 * degree - 1) * cos_angle * polynomials[(degree - 1, order)]
+                    - (order + degree - 1) * polynomials[(degree - 2, order)]
                 ) / (degree - order)
 
         harmonics = []
         sqrt_two = math.sqrt(2.0)
         for degree in range(self.num_spherical):
-            harmonics.append(
-                self.prefactors[degree, 0]
-                * polynomials[(degree, 0)]
-            )
+            harmonics.append(self.prefactors[degree, 0] * polynomials[(degree, 0)])
             for order in range(1, degree + 1):
                 harmonics.append(
                     sqrt_two
@@ -327,9 +304,7 @@ class SphericalFourierBesselEmbedding(paddle.nn.Layer):
         super().__init__()
         self.num_spherical = num_spherical
         self.num_radial = num_radial
-        self.radial_basis = SphericalBesselBasis(
-            num_spherical, num_radial, cutoff
-        )
+        self.radial_basis = SphericalBesselBasis(num_spherical, num_radial, cutoff)
         self.spherical_harmonics = RealSphericalHarmonics(num_spherical)
 
     def forward(
@@ -353,12 +328,9 @@ class SphericalFourierBesselEmbedding(paddle.nn.Layer):
 
         num_triplets = angle_cos.shape[0]
         angle_embedding = (
-            radial_basis * angle_harmonics.reshape(
-                [num_triplets, self.num_spherical, 1]
-            )
-        ).reshape(
-            [num_triplets, self.num_spherical * self.num_radial]
-        )
+            radial_basis
+            * angle_harmonics.reshape([num_triplets, self.num_spherical, 1])
+        ).reshape([num_triplets, self.num_spherical * self.num_radial])
         torsion_embedding = (
             radial_basis.reshape(
                 [
@@ -379,9 +351,7 @@ class SphericalFourierBesselEmbedding(paddle.nn.Layer):
         ).reshape(
             [
                 num_triplets,
-                self.num_spherical
-                * self.num_spherical
-                * self.num_radial,
+                self.num_spherical * self.num_spherical * self.num_radial,
             ]
         )
         return angle_embedding, torsion_embedding

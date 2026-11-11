@@ -4,7 +4,8 @@
 # 双方对本代码及相关成果享有同等权利。
 
 # Copyright (C) 2026 Suzhou National Laboratory and Baidu PaddlePaddle team
-# This code was jointly developed by Suzhou National Laboratory and Baidu PaddlePaddle team.
+# This code was jointly developed by Suzhou National Laboratory and Baidu
+# PaddlePaddle team.
 # Suzhou National Laboratory provided the design concept for the model framework,
 # and Baidu PaddlePaddle team was responsible for the code implementation.
 # Both parties shall have equal rights to use this code and related work products.
