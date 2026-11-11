@@ -1,0 +1,184 @@
+Global:
+  # Whether to train, evaluate or test
+  do_train: True
+  do_eval: False
+  do_test: False
+  # Number of training timesteps for the DDPM scheduler
+  num_train_timesteps: 1000
+  # Fixed atom sequence length of the MP-20 subset, shared by the model and
+  # every dataset split
+  max_atoms: 20
+  # Lattice normalization constant shared by the model and every dataset
+  # split (the released weights are trained with this value)
+  max_length: 46.7425
+
+Trainer:
+  # Max epochs to train
+  max_epochs: 1000
+  # Random seed
+  seed: 42
+  # Save path for checkpoints and logs
+  output_dir: ./output/crystaldit_mp20
+  # Save frequency [epoch]
+  save_freq: 100
+  # Logging frequency [step]
+  log_freq: 10
+
+  # Start evaluation epoch
+  start_eval_epoch: 1
+  # Evaluation frequency [epoch]
+  eval_freq: 1
+  # Pretrained model path
+  pretrained_model_path: null
+  # Resume from checkpoint path
+  resume_from_checkpoint: null
+  # whether use automatic mixed precision
+  use_amp: False
+  # automatic mixed precision level
+  amp_level: 'O1'
+  # run the model under no_grad during evaluation
+  eval_with_no_grad: True
+  # gradient accumulation steps
+  gradient_accumulation_steps: 1
+
+  # best metric indicator
+  best_metric_indicator: 'train_loss'
+  # The name of the best metric
+  name_for_best_metric: 'loss'
+  # The metric whether is better when it is greater
+  greater_is_better: False
+
+  # compute metric during training or evaluation
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'step'
+
+  # logging backends
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: CrystalDiT
+  __init_params__:
+    # Fixed atom sequence length of the MP-20 subset
+    max_atoms: ${Global.max_atoms}
+    # Transformer hidden dimension
+    hidden_size: 512
+    # Number of DiT blocks
+    depth: 18
+    # Attention head count
+    num_heads: 8
+    # MLP expansion ratio
+    mlp_ratio: 4.0
+    # Sinusoidal timestep embedding dimension of the timestep MLP
+    frequency_embedding_size: 256
+    # Lattice normalization constant shared with the dataset
+    max_length: ${Global.max_length}
+    # Number of training timesteps
+    num_train_timesteps: ${Global.num_train_timesteps}
+    # Linear beta schedule bounds (OpenAI DDPM linear schedule)
+    beta_start: 0.0001
+    beta_end: 0.02
+    # DDPM posterior variance type (original FIXED_SMALL choice)
+    variance_type: fixed_small
+    # Sampling clip of the predicted x0 (original clip_denoised=True, [-1, 1])
+    clip_sample: true
+    clip_sample_range: 1.0
+    # Loss weights
+    atom_loss_weight: 100.0
+    # Per-feature MSE weights over (period, group, x, y, z)
+    feature_weights:
+      - 1.5
+      - 2.0
+      - 1.0
+      - 1.0
+      - 1.0
+
+Optimizer:
+  __class_name__: AdamW
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    weight_decay: 0.01
+    lr:
+      __class_name__: Cosine
+      __init_params__:
+        learning_rate: 0.0001
+        eta_min: 0.00001
+  clip_norm: 1.0
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: CrystalDiTDataset
+      __init_params__:
+        path: "./data/mp_20/train.csv"
+        max_atoms: ${Global.max_atoms}
+        max_length: ${Global.max_length}
+        num_cpus: 10
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 256
+  val:
+    dataset:
+      __class_name__: CrystalDiTDataset
+      __init_params__:
+        path: "./data/mp_20/val.csv"
+        max_atoms: ${Global.max_atoms}
+        max_length: ${Global.max_length}
+        num_cpus: 10
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 128
+  test:
+    dataset:
+      __class_name__: CrystalDiTDataset
+      __init_params__:
+        path: "./data/mp_20/test.csv"
+        max_atoms: ${Global.max_atoms}
+        max_length: ${Global.max_length}
+        num_cpus: 10
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 128
+
+Sample:
+  data:
+    dataset:
+      __class_name__: NumAtomsCrystalDataset
+      __init_params__:
+        total_num: 16
+        dist_name: ALEX_MP_20
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 16
+  build_structure_cfg:
+    format: array
+    niggli: False
+
+  model_sample_params:
+    num_inference_steps: 1000

@@ -56,6 +56,7 @@ CINN 要求 CUDA 设备以及启用 CINN 的 Paddle。当前运行时不支持 A
 | `CHGNet` | `forward` | AST | 能量/力/应力/磁矩推理 |
 | `DiffCSP` | `denoise_step` | SOT | 结构采样 |
 | `MatterGen`、`MatterGenWithCondition` | `denoise_step` | SOT | 无条件和条件采样 |
+| `CrystalDiT` | `denoise_step` | SOT | 结构采样 |
 | `MolecularGraphFormer` | `graph_encoder`、`denoise_step` | SOT | 无独立注册流程 |
 | `NMRNetCLIP` | `graph_encoder`、`spectrum_encoder` | SOT | 无独立注册流程 |
 | `DiffPrior` | `denoise_step` | SOT | 无独立注册流程 |

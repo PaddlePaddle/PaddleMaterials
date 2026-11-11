@@ -29,6 +29,7 @@ from ppmat.models.common.graph_converter import CrystalNN
 from ppmat.models.common.graph_converter import FindPointsInSpheres
 from ppmat.models.common.graph_converter import MolecularGraphConverter
 from ppmat.models.common.graph_converter import RadiusGraphConverter
+from ppmat.models.crystaldit.crystaldit import CrystalDiT
 from ppmat.models.diffcsp.diffcsp import DiffCSP
 from ppmat.models.diffcsp.diffcsp import DiffCSPWithType
 from ppmat.models.diffnmr.diffnmr import DiffNMR
@@ -54,6 +55,7 @@ from ppmat.vocab import build_vocab
 __all__ = [
     "iComformer",
     "ComformerGraphConverter",
+    "CrystalDiT",
     "DiffCSP",
     "DiffCSPWithType",
     "FindPointsInSpheres",
@@ -89,6 +91,7 @@ __all__ = [
 #         ├── best.pdparams
 #         └── latest.pdparams
 MODEL_REGISTRY = {
+    "crystaldit_mp20": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/CrystalDiT/crystaldit_mp20.zip",
     "comformer_mp2018_train_60k_e_form": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/comformer/comformer_mp2018_train_60k_e_form.zip",
     "comformer_mp2018_train_60k_band_gap": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/comformer/comformer_mp2018_train_60k_band_gap.zip",
     "comformer_mp2018_train_60k_G": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/comformer/comformer_mp2018_train_60k_G.zip",
