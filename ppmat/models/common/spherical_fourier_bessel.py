@@ -237,7 +237,10 @@ class RealSphericalHarmonics(paddle.nn.Layer):
 
     def forward(self, cos_angle, sin_angle, cos_torsion, sin_torsion):
         one = paddle.ones_like(cos_angle)
-        polynomials = {(0, 0): one}
+        # Looking up a dict by a tuple key breaks the SOT graph, so the table of
+        # associated Legendre polynomials is keyed by degree * n + order.
+        n = self.num_spherical
+        polynomials = {0: one}
 
         torsion_cosines = [one]
         torsion_sines = [paddle.zeros_like(one)]
@@ -252,31 +255,31 @@ class RealSphericalHarmonics(paddle.nn.Layer):
             )
 
         for order in range(1, self.num_spherical):
-            polynomials[(order, order)] = (1 - 2 * order) * polynomials[
-                (order - 1, order - 1)
+            polynomials[order * n + order] = (1 - 2 * order) * polynomials[
+                (order - 1) * n + (order - 1)
             ]
 
         for order in range(self.num_spherical - 1):
-            polynomials[(order + 1, order)] = (
-                (2 * order + 1) * cos_angle * polynomials[(order, order)]
+            polynomials[(order + 1) * n + order] = (
+                (2 * order + 1) * cos_angle * polynomials[order * n + order]
             )
 
         for order in range(self.num_spherical):
             for degree in range(order + 2, self.num_spherical):
-                polynomials[(degree, order)] = (
-                    (2 * degree - 1) * cos_angle * polynomials[(degree - 1, order)]
-                    - (order + degree - 1) * polynomials[(degree - 2, order)]
+                polynomials[degree * n + order] = (
+                    (2 * degree - 1) * cos_angle * polynomials[(degree - 1) * n + order]
+                    - (order + degree - 1) * polynomials[(degree - 2) * n + order]
                 ) / (degree - order)
 
         harmonics = []
         sqrt_two = math.sqrt(2.0)
         for degree in range(self.num_spherical):
-            harmonics.append(self.prefactors[degree, 0] * polynomials[(degree, 0)])
+            harmonics.append(self.prefactors[degree, 0] * polynomials[degree * n])
             for order in range(1, degree + 1):
                 harmonics.append(
                     sqrt_two
                     * self.prefactors[degree, order]
-                    * polynomials[(degree, order)]
+                    * polynomials[degree * n + order]
                     * sin_angle**order
                     * torsion_cosines[order]
                 )
@@ -284,7 +287,7 @@ class RealSphericalHarmonics(paddle.nn.Layer):
                 harmonics.append(
                     sqrt_two
                     * self.prefactors[degree, order]
-                    * polynomials[(degree, order)]
+                    * polynomials[degree * n + order]
                     * sin_angle**order
                     * torsion_sines[order]
                 )

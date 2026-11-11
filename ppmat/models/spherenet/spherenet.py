@@ -30,6 +30,7 @@ from ppmat.models.common.spherical_fourier_bessel import DistEmbedding
 from ppmat.models.common.spherical_fourier_bessel import SphericalFourierBesselEmbedding
 from ppmat.models.spherenet.geometry import compute_geometry
 from ppmat.models.spherenet.geometry import select_torsion_edges
+from ppmat.utils.pgl_compat import graph_count
 from ppmat.utils.scatter import scatter_sum
 from ppmat.utils.scatter import scatter_sum_first_order
 
@@ -492,6 +493,7 @@ class SphereNet(RuntimeMixin, paddle.nn.Layer):
             idx_kj,
             idx_ji,
             idx_qj,
+            graph_count(graph),
         )
 
     @runtime_boundary("forward")
@@ -505,6 +507,7 @@ class SphereNet(RuntimeMixin, paddle.nn.Layer):
         idx_kj,
         idx_ji,
         idx_qj,
+        num_graphs=None,
     ):
         if self.use_extra_node_feature and node_feature is not None:
             extra_node_feature = self.extra_emb(node_feature)
@@ -524,12 +527,14 @@ class SphereNet(RuntimeMixin, paddle.nn.Layer):
         e = self.init_e(z, extra_node_feature, emb_out, i, j)
         v = self.init_v(e, i, dim_size=num_nodes)
         require_second_order = self.compute_forces and self.training
-        u = _aggregate(v, node_batch, None, require_second_order)
+        # Without num_graphs, the graph-level sums read index.max() back from the
+        # device, which breaks the SOT graph.
+        u = _aggregate(v, node_batch, num_graphs, require_second_order)
 
         for update_e, update_v in zip(self.update_es, self.update_vs):
             e = update_e(e, emb_out, idx_kj, idx_ji)
             v = update_v(e, i, dim_size=num_nodes)
-            u = u + _aggregate(v, node_batch, None, require_second_order)
+            u = u + _aggregate(v, node_batch, num_graphs, require_second_order)
 
         forces = None
         if self.compute_forces:
