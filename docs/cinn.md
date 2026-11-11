@@ -59,6 +59,7 @@ and timings.
 | `M3GNet` | `forward` | AST | energy/force inference |
 | `CHGNet` | `forward` | AST | energy/force/stress/magnetic-moment inference |
 | `DiffCSP` | `denoise_step` | SOT | structure sampling |
+| `MiAD` | `denoise_step` | SOT | structure sampling and training |
 | `MatterGen`, `MatterGenWithCondition` | `denoise_step` | SOT | unconditional and conditional sampling |
 | `MolecularGraphFormer` | `graph_encoder`, `denoise_step` | SOT | no standalone registered workflow |
 | `NMRNetCLIP` | `graph_encoder`, `spectrum_encoder` | SOT | no standalone registered workflow |

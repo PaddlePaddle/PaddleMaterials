@@ -239,6 +239,22 @@ class DDPMScheduler:
         elif beta_schedule == "squaredcos_cap_v2":
             # Glide cosine schedule
             self.betas = betas_for_alpha_bar(num_train_timesteps)
+        elif beta_schedule == "clipped_cosine":
+            # Maid cosine  schedule
+            s = 0.008
+            discretization = paddle.linspace(
+                0, num_train_timesteps, num_train_timesteps + 1, dtype="float64"
+            )
+            alphas_cumprod = (
+                paddle.cos(
+                    (discretization / num_train_timesteps + s) / (1 + s) * math.pi * 0.5
+                )
+                ** 2
+            )
+            alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+            self.betas = paddle.clip(
+                1 - alphas_cumprod[1:] / alphas_cumprod[:-1], 1e-4, 0.9999
+            ).cast("float32")
         elif beta_schedule == "sigmoid":
             # GeoDiff sigmoid schedule
             betas = paddle.linspace(-6, 6, num_train_timesteps)

@@ -1,0 +1,168 @@
+Global:
+  do_train: True
+  do_eval: False
+  do_test: False
+
+Trainer:
+  max_epochs: 2
+  seed: 42
+  output_dir: ./output/miad_mp20
+  save_freq: 100
+  log_freq: 10
+  start_eval_epoch: 1
+  eval_freq: 1
+  pretrained_model_path: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: 'O1'
+  eval_with_no_grad: True
+  gradient_accumulation_steps: 1
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: "loss"
+  greater_is_better: False
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'step'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: MiAD
+  __init_params__:
+    model_cfg:
+      hidden_dim: 512
+      latent_dim: 256
+      num_layers: 6
+      max_atoms: 100
+      mirage_num_atoms: 25
+      act_fn: silu
+      dis_emb: sin
+      num_freqs: 128
+      edge_style: fc
+      ln: true
+      ip: true
+      smooth: true
+      pred_type: true
+    diffusion_cfg:
+      cont_time: false
+      num_steps: 1000
+      eps: 1e-3
+      lat_diffusion:
+        scheduler_cfg:
+          __class_name__: DDPMScheduler
+          __init_params__:
+            num_train_timesteps: 1000
+            beta_schedule: clipped_cosine
+      frac_diffusion:
+        step_lr: 0.00001
+        scheduler_cfg:
+          __class_name__: ScoreSdeVeSchedulerWrapped
+          __init_params__:
+            num_train_timesteps: 1000
+            sigma_min: 0.005
+            sigma_max: 0.5
+            sampling_eps: 0.001
+      type_diffusion:
+        __class_name__: D3PMUniformDiffusion
+        __init_params__:
+          loss_scale: 1000
+          scheduler_cfg:
+            __class_name__: D3PMUniformScheduler
+            __init_params__:
+              num_train_timesteps: 1000
+              num_types: 100
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr: 0.001
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/train.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: true
+          niggli: true
+          num_cpus: 10
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: False
+        batch_size: 4
+  val:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/val.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: true
+          niggli: true
+          num_cpus: 10
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 4
+    loader:
+      collate_fn: DefaultCollator
+  test:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/test.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: true
+          niggli: true
+          num_cpus: 10
+    sampler:
+      __class_name__: DistributedBatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 4
+    loader:
+      collate_fn: DefaultCollator
+
+Sample:
+  data:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/test.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: true
+          niggli: true
+          num_cpus: 10
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 4
+    loader:
+      collate_fn: DefaultCollator
+  build_structure_cfg:
+    format: array
+    niggli: False
+  metrics:
+    __class_name__: SUNMetric
+    __init_params__:
+      # Official MiAD semantics: novelty references the training split.
+      reference_file_path: "./data/mp_20/train.csv"
+  model_sample_params:
+    num_inference_steps: 1000
