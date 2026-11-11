@@ -138,6 +138,7 @@ def test_force_coordinates_are_leaf_before_runtime_boundary(monkeypatch):
         idx_kj,
         idx_ji,
         idx_qj,
+        num_graphs=None,
     ):
         observed["stop_gradient"] = pos.stop_gradient
         return (
