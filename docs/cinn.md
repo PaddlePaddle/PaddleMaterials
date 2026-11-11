@@ -60,6 +60,8 @@ and timings.
 | `CHGNet` | `forward` | AST | energy/force/stress/magnetic-moment inference |
 | `DiffCSP` | `denoise_step` | SOT | structure sampling |
 | `MatterGen`, `MatterGenWithCondition` | `denoise_step` | SOT | unconditional and conditional sampling |
+| `Chemeleon2LDMModule` | `denoise_step` | SOT | structure sampling |
+| `Chemeleon2VAEModule` | none | eager only | training only |
 | `MolecularGraphFormer` | `graph_encoder`, `denoise_step` | SOT | no standalone registered workflow |
 | `NMRNetCLIP` | `graph_encoder`, `spectrum_encoder` | SOT | no standalone registered workflow |
 | `DiffPrior` | `denoise_step` | SOT | no standalone registered workflow |

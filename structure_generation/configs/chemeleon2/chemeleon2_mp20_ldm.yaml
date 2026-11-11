@@ -1,0 +1,134 @@
+Global:
+  do_eval: True
+
+Model:
+  __class_name__: Chemeleon2LDMModule
+  __init_params__:
+    denoiser:
+      __class_name__: Chemeleon2DiT
+      __init_params__:
+        hidden_dim: 768
+        num_layers: 12
+        num_heads: 12
+        mlp_ratio: 4.0
+        input_dim: 8
+        learn_sigma: true
+    diffusion_configs:
+      timestep_respacing: ""
+      noise_schedule: linear
+      sigma_small: false
+      learn_sigma: true
+      diffusion_steps: 1000
+    vae:
+      __class_name__: Chemeleon2VAEModule
+      __init_params__:
+        encoder:
+          __class_name__: Chemeleon2TransformerEncoder
+          __init_params__:
+            max_num_elements: 100
+            d_model: 512
+            nhead: 8
+            dim_feedforward: 2048
+            activation: gelu
+            dropout: 0.0
+            num_layers: 8
+        decoder:
+          __class_name__: Chemeleon2TransformerDecoder
+          __init_params__:
+            max_num_elements: 100
+            d_model: 512
+            nhead: 8
+            dim_feedforward: 2048
+            activation: gelu
+            dropout: 0.0
+            num_layers: 8
+        latent_dim: 8
+        loss_weights: {}
+    vae_ckpt_path: null
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/train.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 32
+  val:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/val.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 32
+  test:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/test.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 32
+
+Trainer:
+  max_epochs: 100
+  seed: 42
+  output_dir: ./output/chemeleon2_ldm
+  save_freq: 500
+  log_freq: 20
+  start_eval_epoch: 1
+  eval_freq: 100
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'epoch'
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: 'loss'
+  greater_is_better: False
+
+Optimizer:
+  __class_name__: AdamW
+  __init_params__:
+    lr: 0.0001
+    weight_decay: 0.0
+
+Sample:
+  data:
+    dataset:
+      __class_name__: NumAtomsCrystalDataset
+      __init_params__:
+        total_num: 10
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 10
+  build_structure_cfg:
+    format: array
+    niggli: False
+  metrics:
+    __class_name__: StructGenMetric
+    __init_params__:
+      reference_file_path: "./data/mp_20/novelty_reference.pkl"
