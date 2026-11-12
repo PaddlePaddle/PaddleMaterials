@@ -15,13 +15,17 @@
 import os
 import os.path as osp
 from collections import defaultdict
+from collections.abc import Mapping
 from collections.abc import Sequence
 
 import pandas as pd
 from tqdm import tqdm
 
 from ppmat.datasets.build_molecule import BuildMolecule
+from ppmat.datasets.build_solvent import BuildBinaryMixture
+from ppmat.datasets.build_solvent import BuildSolvent
 from ppmat.datasets.build_structure import BuildStructure
+from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.predictor.base import BasePredictor
 from ppmat.utils import logger
 
@@ -88,6 +92,76 @@ class PropertyPredictor(BasePredictor):
     def from_molecule(self, molecule):
         data = self.graph_converter(molecule)
         return self._run_model(data)
+
+    def from_mixture(self, data1, data2, x1):
+        """Predict binary-mixture activity coefficients from pre-built solvent data.
+
+        Args:
+            data1: Dict with keys ``graph``, ``hba``, ``hbd``, ``intra_hb`` for
+                the first mixture component (as produced by
+                ``BuildSolvent``).
+            data2: Dict with the same keys for the second component.
+            x1: Mole fraction of the first component, in ``[0, 1]``.
+                For batched prediction, pass equally sized sequences for
+                ``data1``, ``data2`` and ``x1``.
+
+        Returns:
+            Prediction dict from the model.
+        """
+        build_mixture = BuildBinaryMixture()
+        if isinstance(data1, Mapping):
+            samples = [build_mixture(data1, data2, x1)]
+        else:
+            samples = [
+                build_mixture(first, second, composition)
+                for first, second, composition in zip(data1, data2, x1, strict=True)
+            ]
+        return self._run_model(DefaultCollator()(samples))
+
+    def from_mixture_csv(self, csv_path, save_path=None, batch_size=32):
+        """Predict log activity coefficients for SMILES pairs in a CSV.
+
+        The required columns are ``smiles1``, ``smiles2`` and ``x1``. The
+        returned table preserves input columns and adds ``ln_gamma1`` and
+        ``ln_gamma2``. Mole fractions must be finite and in ``[0, 1]``.
+        """
+        if batch_size < 1:
+            raise ValueError("batch_size must be positive.")
+        records = pd.read_csv(csv_path)
+        required = {"smiles1", "smiles2", "x1"}
+        missing = required.difference(records.columns)
+        if missing:
+            raise ValueError(f"Mixture CSV is missing columns: {sorted(missing)}")
+        if records[list(required)].isna().any().any():
+            raise ValueError("Mixture CSV must not contain missing SMILES or x1.")
+        if self.graph_converter_fn is None:
+            raise ValueError("Mixture prediction requires Predict.graph_converter.")
+        build_solvent = BuildSolvent(
+            self.graph_converter_fn,
+            self.predict_config.get("build_molecule_cfg"),
+        )
+        solvents = {}
+        predictions = []
+        for start in tqdm(range(0, len(records), batch_size), desc="Predict"):
+            first_components, second_components, compositions = [], [], []
+            for row in records.iloc[start : start + batch_size].itertuples(index=False):
+                for smiles in (row.smiles1, row.smiles2):
+                    if smiles not in solvents:
+                        solvents[smiles] = build_solvent(smiles)
+                first_components.append(solvents[row.smiles1])
+                second_components.append(solvents[row.smiles2])
+                compositions.append(row.x1)
+            result = self.from_mixture(
+                first_components, second_components, compositions
+            )
+            predictions.extend(result[self.model.property_name].numpy().reshape(-1, 2))
+        predictions = pd.DataFrame(predictions, columns=["ln_gamma1", "ln_gamma2"])
+        results = records.copy()
+        results[predictions.columns] = predictions
+        if save_path is not None:
+            results.to_csv(save_path, index=False)
+            logger.info(f"Saved prediction results to {save_path}")
+        return results
 
     def from_cif_file(self, cif_file_path, save_path=None):
         """Predict crystal properties from CIF file(s).

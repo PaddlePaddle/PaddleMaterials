@@ -1,0 +1,153 @@
+Vocabulary:
+  atom:
+    type: categorical
+    tokens: [C, N, O, S, F, Si, P, Cl, Br, Mg, Na, Ca, Fe, As, Al, I, B, V, K, Tl, Yb,
+      Sb, Sn, Ag, Pd, Co, Se, Ti, Zn, H, Li, Ge, Cu, Au, Ni, Cd, In, Mn, Zr, Cr, Pt,
+      Hg, Pb]
+    num_embeddings: 43
+  degree:
+    type: categorical
+    tokens: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    num_embeddings: 11
+  implicit_valence:
+    type: categorical
+    tokens: [0, 1, 2, 3, 4, 5, 6]
+    num_embeddings: 7
+  formal_charge:
+    type: numeric
+    tokens: []
+    num_embeddings: 0
+  radical_electrons:
+    type: numeric
+    tokens: []
+    num_embeddings: 0
+  hybridization:
+    type: categorical
+    tokens: [SP, SP2, SP3, SP3D, SP3D2]
+    num_embeddings: 5
+  is_aromatic:
+    type: numeric
+    tokens: []
+    num_embeddings: 0
+  total_num_hs:
+    type: categorical
+    tokens: [0, 1, 2, 3, 4]
+    num_embeddings: 5
+  bond:
+    type: categorical
+    tokens: [NO_BOND, SINGLE, DOUBLE, TRIPLE, AROMATIC]
+    num_embeddings: 5
+
+Global:
+  label_names: ["gamma"]
+  do_train: True
+  do_eval: True
+  do_test: False
+
+Trainer:
+  max_epochs: 100
+  seed: 2021
+  output_dir: ./output/gegnn_binary_gamma
+  save_freq: 5
+  log_freq: 20
+  start_eval_epoch: 1
+  eval_freq: 1
+  pretrained_model_path: null
+  pretrained_weight_name: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: "O1"
+  eval_with_no_grad: False
+  gradient_accumulation_steps: 1
+  best_metric_indicator: "eval_metric"
+  name_for_best_metric: "gamma"
+  greater_is_better: False
+  compute_metric_during_train: True
+  metric_strategy_during_eval: "epoch"
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Predict:
+  eval_with_no_grad: False
+  graph_converter: &molecular_graph
+    __class_name__: MolecularGraphConverter
+    __init_params__:
+      remove_h: False
+      add_self_loops: True
+      edge_mode: bidirectional
+      node_feature_key: h
+
+Model:
+  __class_name__: GEGNNBinary
+  __init_params__:
+    in_dim: 74
+    edge_in_feats: 1
+    hidden_dim: 256
+    n_classes: 1
+    mlp_dropout_rate: 0.0
+    mlp_activation: "softplus"
+    mpnn_activation: "relu"
+    mlp_num_hid_layers: 2
+    property_name: ${Global.label_names}
+
+
+Metric:
+  gamma:
+    __class_name__: paddle.nn.L1Loss
+    __init_params__: {}
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr:
+      __class_name__: ReduceOnPlateau
+      __init_params__:
+        learning_rate: 0.001
+        mode: "min"
+        factor: 0.8
+        patience: 3
+        min_lr: 0.0000001
+        by_epoch: True
+        indicator: "train_loss"
+        indicator_name: "loss"
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: BinaryActivityDataset
+      __init_params__:
+        path: ./data/binary_activity/fold_0/train.csv
+        solvent_list_path: ./data/binary_activity/solvent_list.csv
+        vocab: ${Vocabulary}
+        build_molecule_cfg:
+          format: smiles
+        build_graph_cfg: *molecular_graph
+    loader: &activity_loader
+      num_workers: 0
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 256
+  val:
+    dataset:
+      __class_name__: BinaryActivityDataset
+      __init_params__:
+        path: ./data/binary_activity/fold_0/val.csv
+        solvent_list_path: ./data/binary_activity/solvent_list.csv
+        vocab: ${Vocabulary}
+        build_molecule_cfg:
+          format: smiles
+        build_graph_cfg: *molecular_graph
+    loader: *activity_loader
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 256

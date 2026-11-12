@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import functools
 import json
+from collections.abc import Mapping
 
 from ppmat.utils import download
 
@@ -37,12 +38,14 @@ VOCAB_MD5_REGISTRY = {
 
 
 def build_vocab(
-    name: str | None,
+    name: str | Mapping | None,
 ) -> dict | None:
-    """Build a registered vocabulary package."""
+    """Build a registered or inline vocabulary package."""
 
     if name is None:
         return None
+    if isinstance(name, Mapping):
+        return _parse_vocab(name)
     return _build_vocab_from_name(name)
 
 
@@ -55,9 +58,16 @@ def _build_vocab_from_name(name: str) -> dict:
     with open(path, encoding="utf-8") as file_obj:
         vocabularies = json.load(file_obj)
 
+    return _parse_vocab(vocabularies)
+
+
+def _parse_vocab(vocabularies: Mapping) -> dict:
     result = {}
     for role, vocab_cfg in vocabularies.items():
         vocab_cfg = dict(vocab_cfg)
+        if "token_to_id" in vocab_cfg:
+            result[role] = vocab_cfg
+            continue
         tokens = vocab_cfg["tokens"]
         if vocab_cfg["type"] == "element":
             symbols = [token["value"] for token in tokens]
