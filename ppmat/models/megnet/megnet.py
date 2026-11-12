@@ -24,13 +24,53 @@ import paddle
 import paddle.nn as nn
 import pgl
 from paddle.nn import Linear
-from pgl.math import segment_softmax
 from pgl.math import segment_sum
 
 from ppmat.models.common import initializer
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
 from ppmat.utils import logger
+from ppmat.utils.pgl_compat import graph_count
+
+
+def segment_softmax(data, segment_ids, num_segments=None):
+    """Segment softmax with the same values and gradients as pgl.math.segment_softmax.
+
+    PGL computes the segment max under ``paddle.no_grad()``, and SOT cannot trace
+    a ``with`` block, so the max is detached instead. When ``num_segments`` is
+    given, segment_pool is not used either: CINN's symbolic shape inference for
+    segment_pool only handles MEAN and fails for MAX and SUM. The per-segment max
+    then comes from a one-hot membership mask, which needs
+    ``len(data) * num_segments`` elements of memory.
+    """
+    if num_segments is None:
+        data_max = paddle.geometric.segment_max(data, segment_ids).detach()
+    else:
+        # [N, S, D] -> [S, D]
+        member = paddle.nn.functional.one_hot(segment_ids, num_segments)
+        masked = paddle.where(
+            member.astype("bool").unsqueeze(-1),
+            data.unsqueeze(1),
+            paddle.full([1], float("-inf"), dtype=data.dtype),
+        )
+        data_max = paddle.max(masked, axis=0).detach()
+    data_max = paddle.gather(data_max, segment_ids, axis=0)
+    data = paddle.exp(data - data_max)
+    sum_data = _segment_sum(data, segment_ids, num_segments)
+    sum_data = paddle.gather(sum_data, segment_ids, axis=0)
+    return data / sum_data
+
+
+def _segment_sum(data, segment_ids, num_segments=None):
+    """Segment sum; uses index_add instead of segment_pool when num_segments is given.
+
+    See segment_softmax for why segment_pool is avoided. The sum can differ from
+    segment_pool in float32 rounding because the accumulation order differs.
+    """
+    if num_segments is None:
+        return segment_sum(data, segment_ids)
+    out = paddle.zeros([num_segments, *data.shape[1:]], dtype=data.dtype)
+    return paddle.index_add(out, segment_ids, 0, data)
 
 
 class GaussianExpansion(paddle.nn.Layer):
@@ -377,9 +417,9 @@ class MEGNetGraphConv(paddle.nn.Layer):
     def node_update(self, graph, node_feat, edge_feat, u):
         src, dst, eid = graph.sorted_edges(sort_by="dst")
         # node_feat_e = paddle.geometric.segment_mean(edge_feat[eid], dst)
-        node_feat_e = self.sorted_segment_mean(
-            edge_feat[eid], dst, graph.num_nodes.item()
-        )
+        # graph.num_nodes is a device tensor after Graph.tensor(); reading it with
+        # .item() breaks the SOT graph, so use the row count of node_feat.
+        node_feat_e = self.sorted_segment_mean(edge_feat[eid], dst, node_feat.shape[0])
         node_feat = paddle.concat([node_feat, node_feat_e, u], axis=1)
         node_feat = self.node_func(node_feat)
         return node_feat
@@ -571,17 +611,19 @@ class Set2Set(nn.Layer):
             time_major=True,
         )
 
-    def forward(self, graph, x):
+    def forward(self, graph, x, num_graphs=None):
         """Forward function of Graph Global Pooling "Set2Set".
 
         Args:
             graph: the graph object from (:code:`Graph`)
             x: A tensor with shape (num_nodes, feature_size).
+            num_graphs: Number of graphs as a host integer. When it is None, it is
+                read from graph_id on the device.
         Return:
             output_feat: A tensor with shape (num_nodes, output_size).
         """
         graph_id = graph.graph_node_id
-        batch_size = graph_id.max() + 1
+        batch_size = graph_id.max() + 1 if num_graphs is None else num_graphs
         h = (
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
@@ -591,8 +633,8 @@ class Set2Set(nn.Layer):
             q, h = self.lstm(q_star.unsqueeze(0), h)
             q = q.reshape((batch_size, self.input_dim))
             e = (x * q.index_select(graph_id, axis=0)).sum(axis=-1, keepdim=True)
-            a = segment_softmax(e, graph_id)
-            r = segment_sum(a * x, graph_id)
+            a = segment_softmax(e, graph_id, num_graphs)
+            r = _segment_sum(a * x, graph_id, num_graphs)
             q_star = paddle.concat([q, r], axis=-1)
 
         return q_star
@@ -619,17 +661,19 @@ class EdgeSet2Set(paddle.nn.Layer):
             direction="forward",
         )
 
-    def forward(self, graph, x):
+    def forward(self, graph, x, num_graphs=None):
         """Forward function of Graph Global Pooling "Set2Set".
 
         Args:
             graph: the graph object from (:code:`Graph`)
             x: A tensor with shape (num_nodes, feature_size).
+            num_graphs: Number of graphs as a host integer. When it is None, it is
+                read from graph_id on the device.
         Return:
             output_feat: A tensor with shape (num_nodes, output_size).
         """
         graph_id = graph.graph_edge_id
-        batch_size = graph_id.max() + 1
+        batch_size = graph_id.max() + 1 if num_graphs is None else num_graphs
         h = (
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
@@ -639,8 +683,8 @@ class EdgeSet2Set(paddle.nn.Layer):
             q, h = self.lstm(q_star.unsqueeze(0), h)
             q = q.reshape((batch_size, self.input_dim))
             e = (x * q.index_select(graph_id, axis=0)).sum(axis=-1, keepdim=True)
-            a = segment_softmax(e, graph_id)
-            r = segment_sum(a * x, graph_id)
+            a = segment_softmax(e, graph_id, num_graphs)
+            r = _segment_sum(a * x, graph_id, num_graphs)
             q_star = paddle.concat([q, r], axis=-1)
 
         return q_star
@@ -792,9 +836,7 @@ class MEGNetPlus(RuntimeMixin, paddle.nn.Layer):
         #  The data in data['graph'] is numpy.ndarray, convert it to paddle.Tensor
         g = data["graph"].tensor()
         # print(data["id"])
-        batch_size = g.num_graph
-        if isinstance(batch_size, paddle.Tensor):
-            batch_size = int(batch_size)
+        batch_size = graph_count(g)
         state_attr = paddle.zeros(
             [batch_size, self.embedding.dim_state_embedding], dtype="float32"
         )
@@ -809,8 +851,8 @@ class MEGNetPlus(RuntimeMixin, paddle.nn.Layer):
         for block in self.blocks:
             output = block(g, edge_feat, node_feat, state_feat)
             edge_feat, node_feat, state_feat = output
-        node_vec = self.node_s2s(g, node_feat)
-        edge_vec = self.edge_s2s(g, edge_feat)
+        node_vec = self.node_s2s(g, node_feat, batch_size)
+        edge_vec = self.edge_s2s(g, edge_feat, batch_size)
 
         vec = paddle.concat([node_vec, edge_vec, state_feat], axis=1)
         if self.dropout:

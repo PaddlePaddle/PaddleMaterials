@@ -123,9 +123,30 @@ def scatter_sum_first_order(
 
     dim_size = _resolve_dim_size(index, dim_size)
     out = _zeros(src, [dim_size, *src.shape[1:]])
-    if src.shape[0] == 0:
+    num_rows = src.shape[0]
+    # Only a known size can take the shortcut. A dynamic row count (compiled
+    # inference with dynamic axes) is a tensor while tracing, and branching on
+    # it would trace a cond; scatter_nd_add returns `out` for empty rows.
+    if isinstance(num_rows, int) and num_rows == 0:
         return out + src.sum() * 0
     return paddle.scatter_nd_add(out, index.reshape([-1, 1]), src)
+
+
+def _first_axis_index(
+    row_index: paddle.Tensor,
+    index: paddle.Tensor,
+) -> paddle.Tensor:
+    """Destination row of every source row for a first-axis scatter.
+
+    ``index`` is ``row_index`` broadcast to the source shape. With a dynamic row
+    count a one-dimensional ``row_index`` already holds the rows, which keeps a
+    reshape and a slice out of the traced graph.
+    """
+    if isinstance(index.shape[0], int):
+        return index.reshape([index.shape[0], -1])[:, 0]
+    if row_index.ndim == 1:
+        return row_index
+    return index.flatten(1)[:, 0]
 
 
 def _scatter_sum(
@@ -136,6 +157,7 @@ def _scatter_sum(
 ) -> paddle.Tensor:
     dim = _normalize_dim(src, dim)
     dim_size = _resolve_dim_size(index, dim_size)
+    row_index = index
     index = _broadcast(index, src, dim)
     size = list(src.shape)
     size[dim] = dim_size
@@ -145,9 +167,13 @@ def _scatter_sum(
     # source rows while preserving the second-order gradients used by force
     # training. Other axes retain put_along_axis's broadcast semantics.
     if dim == 0:
-        if src.shape[0] == 0:
+        num_rows = src.shape[0]
+        # Only a known size can take the shortcut. A dynamic row count (compiled
+        # inference with dynamic axes) is a tensor while tracing, and branching
+        # on it would trace a cond; index_add returns `out` for empty rows.
+        if isinstance(num_rows, int) and num_rows == 0:
             return out + src.sum() * 0
-        idx_1d = index.reshape([index.shape[0], -1])[:, 0]
+        idx_1d = _first_axis_index(row_index, index)
         if src.dtype in _INDEX_ADD_DTYPES:
             return paddle.index_add(
                 x=out,
@@ -185,7 +211,9 @@ def _scatter_mean(
     result = _scatter_sum(src, index, dim, dim_size)
     index_dim = min(dim, index.ndim - 1)
 
-    ones = paddle.ones(index.shape, dtype=src.dtype).to(src.place)
+    # ones_like keeps the counts on the device of index. Reading .place of a
+    # tensor inside a captured function would break the SOT graph.
+    ones = paddle.ones_like(index, dtype=src.dtype)
     count = _scatter_sum(ones, index, index_dim, result.shape[dim])
     count = paddle.clip(count, min=1)
     count = _broadcast(count, result, dim)

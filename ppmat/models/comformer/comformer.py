@@ -26,6 +26,7 @@ import paddle.nn as nn
 from ppmat.models.common.message_passing.message_passing import MessagePassing
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
+from ppmat.utils.pgl_compat import graph_count
 from ppmat.utils.scatter import scatter
 
 
@@ -468,7 +469,11 @@ class iComformer(RuntimeMixin, nn.Layer):
         for i in range(1, len(self.att_layers)):
             node_features = self.att_layers[i](node_features, edges, edge_features)
 
-        features = scatter(node_features, batch_idx, dim=0, reduce="mean")
+        # Without dim_size, scatter() reads index.max() back from the device,
+        # which breaks the SOT graph.
+        features = scatter(
+            node_features, batch_idx, dim=0, dim_size=graph_count(graph), reduce="mean"
+        )
         features = self.fc(features)
         result = self.fc_out(features)
         return result

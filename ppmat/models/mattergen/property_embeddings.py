@@ -4,7 +4,8 @@
 # 双方对本代码及相关成果享有同等权利。
 
 # Copyright (C) 2026 Suzhou National Laboratory and Baidu PaddlePaddle team
-# This code was jointly developed by Suzhou National Laboratory and Baidu PaddlePaddle team.
+# This code was jointly developed by Suzhou National Laboratory and Baidu
+# PaddlePaddle team.
 # Suzhou National Laboratory provided the design concept for the model framework,
 # and Baidu PaddlePaddle team was responsible for the code implementation.
 # Both parties shall have equal rights to use this code and related work products.
@@ -462,8 +463,12 @@ class PropertyEmbedding(paddle.nn.Layer):
             raise ValueError(f"Invalid scaler_name: {scaler_name}")
 
     def forward(self, data, use_unconditional_embedding) -> paddle.Tensor:
+        # The paddle.all() shortcut reads a device value and breaks the SOT graph, so
+        # tensor data takes the where() path below, which gives the same zeros: the
+        # unconditional module depends only on the shape of its input.
         if (
-            paddle.all(x=use_unconditional_embedding)
+            not isinstance(data, paddle.Tensor)
+            and paddle.all(x=use_unconditional_embedding)
             and self.unconditional_embedding_module.only_depends_on_shape_of_input
         ):
             return self.unconditional_embedding_module(x=data)
