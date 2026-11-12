@@ -112,7 +112,15 @@ class SphericalBasisLayer(paddle.nn.Layer):
             cbf_terms.append(function(angle))
         cbf = paddle.stack(x=cbf_terms, axis=1)
         n, k = self.num_spherical, self.num_radial
-        out = (rbf[idx_kj].reshape([-1, n, k]) * cbf.reshape([-1, n, 1])).reshape(
+        # Adding rbf to zeros with index_add copies it exactly. CINN leaves index_add
+        # to the PHI kernel, so rbf is computed once per edge. Without this copy, CINN
+        # fuses the gather rbf[idx_kj] into the ops that produce rbf and evaluates
+        # all n * k Bessel functions once per triplet.
+        rbf = paddle.index_add(
+            paddle.zeros_like(rbf), paddle.arange(rbf.shape[0]), 0, rbf
+        )
+        rbf_kj = paddle.gather(rbf, idx_kj)
+        out = (rbf_kj.reshape([-1, n, k]) * cbf.reshape([-1, n, 1])).reshape(
             [-1, n * k]
         )
         return out
@@ -139,7 +147,8 @@ class EmbeddingBlock(paddle.nn.Layer):
     ) -> paddle.Tensor:
         x = self.emb(x)
         rbf = self.act(self.lin_rbf(rbf))
-        return self.act(self.lin(paddle.concat(x=[x[i], x[j], rbf], axis=-1)))
+        h = paddle.concat(x=[paddle.gather(x, i), paddle.gather(x, j), rbf], axis=-1)
+        return self.act(self.lin(h))
 
 
 class ResidualLayer(paddle.nn.Layer):
@@ -220,7 +229,7 @@ class InteractionPPBlock(paddle.nn.Layer):
         x_kj = self.act(self.lin_down(x_kj))
         sbf = self.lin_sbf1(sbf)
         sbf = self.lin_sbf2(sbf)
-        x_kj = x_kj[idx_kj] * sbf
+        x_kj = paddle.gather(x_kj, idx_kj) * sbf
         # scatter() branches on x_kj.shape[0] == 0. The triplet count comes from a
         # masked selection, so SOT cannot evaluate that branch and breaks the graph.
         x_kj = paddle.index_add(
@@ -516,15 +525,19 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
             edge_index = edge_index.T
             to_jimages = paddle.zeros([edge_index.shape[1], 3], dtype="int64")
             offsets = paddle.zeros([edge_index.shape[1], 3], dtype=pos.dtype)
-            dist = (pos[edge_index[0]] - pos[edge_index[1]]).norm(axis=-1)
+            dist = (
+                paddle.gather(pos, edge_index[0]) - paddle.gather(pos, edge_index[1])
+            ).norm(axis=-1)
         i, j, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
             edge_index, to_jimages, num_nodes=atom_types.shape[0]
         )
         # compute angles
-        pos_i = pos[idx_i]
-        pos_j = pos[idx_j]
-        pos_ji = pos_j - pos_i + offsets[idx_ji]
-        pos_kj = pos[idx_k] - pos_j + offsets[idx_kj]
+        # paddle.gather selects the same rows as tensor indexing with less eager
+        # overhead per call.
+        pos_i = paddle.gather(pos, idx_i)
+        pos_j = paddle.gather(pos, idx_j)
+        pos_ji = pos_j - pos_i + paddle.gather(offsets, idx_ji)
+        pos_kj = paddle.gather(pos, idx_k) - pos_j + paddle.gather(offsets, idx_kj)
         a = (pos_ji * pos_kj).sum(axis=-1)
         b = paddle.cross(pos_ji, pos_kj).norm(axis=-1)
         angle = paddle.atan2(b, a)
