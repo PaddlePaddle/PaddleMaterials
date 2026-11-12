@@ -472,9 +472,14 @@ class TestMixtureCSVPrediction(unittest.TestCase):
         )
         records.to_csv(self.csv_path, index=False)
         output_path = os.path.join(self.root.name, "result.csv")
-        results = self.predictor.from_mixture_csv(
-            self.csv_path, output_path, batch_size=2
-        )
+        with patch.object(
+            self.predictor, "from_mixture", wraps=self.predictor.from_mixture
+        ) as predict_mixture:
+            results = self.predictor.from_mixture_csv(
+                self.csv_path, output_path, batch_size=2
+            )
+        predict_mixture.assert_called_once()
+        self.assertEqual(len(predict_mixture.call_args.args[0]), 2)
         self.assertEqual(
             list(results.columns), list(records.columns) + ["ln_gamma1", "ln_gamma2"]
         )

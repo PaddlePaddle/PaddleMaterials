@@ -15,6 +15,7 @@
 import os
 import os.path as osp
 from collections import defaultdict
+from collections.abc import Mapping
 from collections.abc import Sequence
 
 import pandas as pd
@@ -101,13 +102,21 @@ class PropertyPredictor(BasePredictor):
                 ``BuildSolvent``).
             data2: Dict with the same keys for the second component.
             x1: Mole fraction of the first component, in ``[0, 1]``.
+                For batched prediction, pass equally sized sequences for
+                ``data1``, ``data2`` and ``x1``.
 
         Returns:
             Prediction dict from the model.
         """
-        sample = BuildBinaryMixture()(data1, data2, x1)
-        data = DefaultCollator()([sample])
-        return self._run_model(data)
+        build_mixture = BuildBinaryMixture()
+        if isinstance(data1, Mapping):
+            samples = [build_mixture(data1, data2, x1)]
+        else:
+            samples = [
+                build_mixture(first, second, composition)
+                for first, second, composition in zip(data1, data2, x1, strict=True)
+            ]
+        return self._run_model(DefaultCollator()(samples))
 
     def from_mixture_csv(self, csv_path, save_path=None, batch_size=32):
         """Predict log activity coefficients for SMILES pairs in a CSV.
@@ -133,17 +142,18 @@ class PropertyPredictor(BasePredictor):
         )
         solvents = {}
         predictions = []
-        build_mixture = BuildBinaryMixture()
         for start in tqdm(range(0, len(records), batch_size), desc="Predict"):
-            samples = []
+            first_components, second_components, compositions = [], [], []
             for row in records.iloc[start : start + batch_size].itertuples(index=False):
                 for smiles in (row.smiles1, row.smiles2):
                     if smiles not in solvents:
                         solvents[smiles] = build_solvent(smiles)
-                samples.append(
-                    build_mixture(solvents[row.smiles1], solvents[row.smiles2], row.x1)
-                )
-            result = self._run_model(DefaultCollator()(samples))
+                first_components.append(solvents[row.smiles1])
+                second_components.append(solvents[row.smiles2])
+                compositions.append(row.x1)
+            result = self.from_mixture(
+                first_components, second_components, compositions
+            )
             predictions.extend(result[self.model.property_name].numpy().reshape(-1, 2))
         predictions = pd.DataFrame(predictions, columns=["ln_gamma1", "ln_gamma2"])
         results = records.copy()

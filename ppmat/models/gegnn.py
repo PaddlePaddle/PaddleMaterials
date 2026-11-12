@@ -335,7 +335,6 @@ class GEGNNBinary(paddle.nn.Layer):
         return self._predict_head_gradient(data)
 
     def forward(self, data, return_loss=True, return_prediction=True):
-        assert return_loss or return_prediction
         if self.training and return_loss:
             excess_gibbs_energy, derivative, output = self._forward(
                 data, create_graph=True
