@@ -12,15 +12,19 @@ Execution:
   backend: cinn
   __init_params__:
     full_graph: false
+    dynamic_shape: true
 ```
 
-`Execution.__init_params__` 可以省略，`full_graph` 默认为 `false`。命令行也可以
-使用相同配置，例如 `Execution.backend=cinn`。
+`Execution.__init_params__` 可以省略，`full_graph` 默认为 `false`，`dynamic_shape`
+默认为 `true`。命令行也可以使用相同配置，例如 `Execution.backend=cinn`。
 
 - `full_graph: false` 使用 SOT 捕获，允许断图；
 - `full_graph: true` 使用 AST 转换，要求整个边界成为一个静态程序，只适用于
   下表标记为 **AST** 的模型。算力和应力模型需要它，因为 SOT 捕获可能在
-  `paddle.grad` 和它的输入之间断开，具体设置见模型 README。
+  `paddle.grad` 和它的输入之间断开，具体设置见模型 README；
+- `dynamic_shape: true` 把边界声明的动态维按动态形状编译（见[动态维](#动态维)），
+  任意边数、三体数共用一个程序。只对 eval 模式下的 AST 捕获生效。
+  `dynamic_shape: false` 时每种输入形状编译一个程序。
 
 CINN 要求 CUDA 设备以及启用 CINN 的 Paddle。当前运行时不支持 AMP 和分布式
 执行。
@@ -33,6 +37,32 @@ CINN 要求 CUDA 设备以及启用 CINN 的 Paddle。当前运行时不支持 A
 
 编译在第一次调用边界时发生。运行时按后端、训练/评估模式和边界名缓存；切换后端
 或修改运行选项会清空缓存。
+
+### 动态维
+
+AST 捕获为每种输入形状跟踪一个静态程序，CINN 再逐个编译。力模型在 MD 或结构
+弛豫中几乎每一步都会遇到新的边数和三体数，没有动态维时几乎每一步都要重新编译。
+边界可以声明哪些维度会在调用之间变化：
+
+```python
+@runtime_boundary("forward", dynamic_dims={"edge_index": 1, "idx_kj": 0})
+def _runtime_forward(self, pos, edge_index, idx_kj):
+    ...
+```
+
+`full_graph: true` 且 `dynamic_shape: true` 时，eval 模式的调用会给
+`paddle.jit.to_static` 传入 `InputSpec`，其中这些维为 `None`。只有声明维不同的
+调用共用一个程序；其他维（例如原子数）或非张量参数变化时会编译新程序。`M3GNet`、
+`CHGNet` 和 `SphereNet` 势模型声明了各自的边、三体和键角维。
+
+训练保持静态形状：训练 batch 的原子数也在变，而原子维是静态的，只把边维设为
+动态并不能消除训练时的重编；`SphereNet` 训练所需的二阶力梯度还依赖空三元组
+分支，这个分支只有在静态形状下才能在跟踪时确定。
+
+在带动态维的边界内，`x.shape[0]` 这类尺寸在跟踪时是张量。不要在它上面分支
+（`if x.shape[0] == 0:`）：AST 转换会把它变成 `pd_op.if`，其反向曾使 `M3GNet`
+的力算错，CINN 也无法编译 `SphereNet` 的这个分支。这类捷径只对 Python int 尺寸
+保留，空输入用不带分支的写法处理，例如掩码。
 
 边界名表示稳定的计算角色：
 
