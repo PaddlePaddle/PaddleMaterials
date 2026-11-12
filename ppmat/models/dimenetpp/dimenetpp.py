@@ -423,35 +423,55 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
     def triplets(self, edge_index, cell_offsets=None, num_nodes=None):
         """Build the triplets k->j->i from the directed edges (row -> col).
 
-        ``num_nodes`` is not used; it is kept for backward compatibility.
+        The triplets of edge ji are listed in the order of ji, and for one ji in
+        the order of the index of kj. ``num_nodes`` is not used; it is kept for
+        backward compatibility.
         """
         row, col = edge_index
-        # Entry (ji, kj) is true when edge kj ends where edge ji starts. nonzero()
-        # lists the pairs ordered by ji and then by kj. Building them from a dense
-        # edge table instead would need the largest in-degree on the host, and
-        # reading it back breaks the SOT graph.
-        pairs = paddle.nonzero(row.unsqueeze(1) == col.unsqueeze(0), as_tuple=False)
-        idx_ji = pairs[:, 0]
-        idx_kj = pairs[:, 1]
-        idx_k = paddle.index_select(row, idx_kj, axis=0)
-        idx_j = paddle.index_select(row, idx_ji, axis=0)
-        idx_i = paddle.index_select(col, idx_ji, axis=0)
+        # The edges kj of edge ji are the edges into its source node j = row[ji]. A
+        # stable sort by target node puts the edges into each node next to each
+        # other, in edge order, and searchsorted finds where the run of node j
+        # starts and how long it is. This takes O(E log E + T log E) time and
+        # O(E + T) memory for E edges and T triplets; comparing every pair of edges
+        # takes O(E^2) of both.
+        order = paddle.argsort(col, stable=True)
+        sorted_col = paddle.gather(col, order)
+        start = paddle.searchsorted(sorted_col, row)
+        count = paddle.searchsorted(sorted_col, row, right=True) - start
+        # Triplet t belongs to the edge ji whose range [end - count, end) of the
+        # running total contains t, and takes the edge kj at the same position in
+        # the run of node j. The number of triplets stays a tensor; reading it back
+        # with .item() would break the SOT graph.
+        end = paddle.cumsum(count)
+        triplet = paddle.arange(paddle.sum(count), dtype=count.dtype)
+        idx_ji = paddle.searchsorted(end, triplet, right=True)
+        run_offset = start - (end - count)
+        idx_kj = paddle.gather(order, triplet + paddle.gather(run_offset, idx_ji))
+        idx_k = paddle.gather(row, idx_kj)
+        idx_i = paddle.gather(col, idx_ji)
         if cell_offsets is None:
             # Without cell offsets, only drop triplets whose two edges share an atom.
             mask2 = idx_i != idx_k
         else:
             # A periodic image can bring i and k together, so keep i == k when the
             # combined cell offset is non-zero.
-            cell_offset_kji = cell_offsets[idx_kj] + cell_offsets[idx_ji]
+            cell_offset_kji = paddle.gather(cell_offsets, idx_kj) + paddle.gather(
+                cell_offsets, idx_ji
+            )
             mask2 = (idx_i != idx_k) | paddle.any(cell_offset_kji != 0, axis=-1)
+        # Select once for all five arrays; every boolean-mask selection reads the
+        # number of selected entries back from the device.
+        keep = paddle.nonzero(mask2).squeeze(-1)
+        idx_kj = paddle.gather(idx_kj, keep)
+        idx_ji = paddle.gather(idx_ji, keep)
         return (
             col,
             row,
-            idx_i[mask2],
-            idx_j[mask2],
-            idx_k[mask2],
-            idx_kj[mask2],
-            idx_ji[mask2],
+            paddle.gather(idx_i, keep),
+            paddle.gather(row, idx_ji),
+            paddle.gather(idx_k, keep),
+            idx_kj,
+            idx_ji,
         )
 
     def normalize(self, tensor):
