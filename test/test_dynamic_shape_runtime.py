@@ -38,6 +38,8 @@ from ppmat.models.common.runtime import DynamicShapeRuntime
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import boundary_dynamic_dims
 from ppmat.models.common.runtime import runtime_boundary
+from ppmat.utils.scatter import scatter
+from ppmat.utils.scatter import scatter_sum_first_order
 
 
 @pytest.fixture
@@ -180,3 +182,27 @@ def test_cinn_dynamic_shape_option_is_normalized():
     assert backend.accepts_input_spec({"full_graph": True, "dynamic_shape": True})
     assert not backend.accepts_input_spec({"full_graph": False, "dynamic_shape": True})
     assert not backend.accepts_input_spec({"full_graph": True, "dynamic_shape": False})
+
+
+@pytest.mark.parametrize("reduce_fn", ["scatter", "scatter_sum_first_order"])
+def test_scatter_accepts_empty_rows_with_a_dynamic_axis(reduce_fn):
+    def reduce(src, index):
+        if reduce_fn == "scatter":
+            return scatter(src, index, dim=0, dim_size=3)
+        return scatter_sum_first_order(src, index, dim_size=3)
+
+    compiled = paddle.jit.to_static(
+        reduce,
+        input_spec=[
+            paddle.static.InputSpec([None, 2], "float32"),
+            paddle.static.InputSpec([None], "int64"),
+        ],
+        backend=None,
+        full_graph=True,
+    )
+    for rows in (4, 0):
+        src = paddle.ones([rows, 2], dtype="float32")
+        index = paddle.to_tensor(np.arange(rows) % 3, dtype="int64")
+        np.testing.assert_allclose(
+            compiled(src, index).numpy(), reduce(src, index).numpy()
+        )

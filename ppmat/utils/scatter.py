@@ -129,9 +129,24 @@ def scatter_sum_first_order(
 
     dim_size = _resolve_dim_size(index, dim_size)
     out = _zeros(src, [dim_size, *src.shape[1:]])
-    if src.shape[0] == 0:
+    num_rows = src.shape[0]
+    # Only a known size can take the shortcut. A dynamic row count (compiled
+    # inference with dynamic axes) is a tensor while tracing, and branching on
+    # it would trace a cond; scatter_nd_add returns `out` for empty rows.
+    if isinstance(num_rows, int) and num_rows == 0:
         return out + src.sum() * 0
     return paddle.scatter_nd_add(out, index.reshape([-1, 1]), src)
+
+
+def _first_axis_index(index: paddle.Tensor) -> paddle.Tensor:
+    """Destination row of every source row, from an index broadcast to the source shape.
+
+    A dynamic row count is not a Python int while tracing, so the rows are taken
+    with flatten, which keeps that axis symbolic.
+    """
+    if isinstance(index.shape[0], int):
+        return index.reshape([index.shape[0], -1])[:, 0]
+    return index.flatten(1)[:, 0]
 
 
 def _scatter_sum(
@@ -151,14 +166,14 @@ def _scatter_sum(
     # training. Other axes retain put_along_axis's broadcast semantics.
     if dim == 0:
         # Compiled execution skips the shortcut, which would branch on a traced
-        # dimension; index_add accepts empty rows.
+        # dimension (a dynamic row count is a tensor while tracing); index_add
+        # returns `out` for empty rows.
         if not in_compiled_execution() and src.shape[0] == 0:
             return out + src.sum() * 0
         if index.ndim == 1:
             idx_1d = index
         else:
-            index = _broadcast(index, src, dim)
-            idx_1d = index.reshape([index.shape[0], -1])[:, 0]
+            idx_1d = _first_axis_index(_broadcast(index, src, dim))
         if src.dtype in _INDEX_ADD_DTYPES:
             return paddle.index_add(
                 x=out,
