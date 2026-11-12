@@ -32,6 +32,10 @@ from paddle.io import Dataset
 from pymatgen.io.ase import AseAtomsAdaptor
 
 from ppmat.datasets.build_structure import BuildStructure
+from ppmat.datasets.cache_fingerprint import cache_matches_data
+from ppmat.datasets.cache_fingerprint import compute_data_fingerprint
+from ppmat.datasets.cache_fingerprint import mark_cache_rebuilding
+from ppmat.datasets.cache_fingerprint import save_data_fingerprint
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.models import build_graph_converter
 from ppmat.utils import download
@@ -347,11 +351,24 @@ class TmqmDataset(Dataset):
                 logger.warning("Found missing cache files, will regenerate cache")
                 overwrite_orig = True
 
+        # The build settings alone do not identify the data: also check that the
+        # cache was built from the current input before reusing it.
+        data_fingerprint = compute_data_fingerprint(
+            self.row_data, extra=(self.charge_data, self.bond_data)
+        )
+        if self.cache_exists and not overwrite_orig:
+            if not cache_matches_data(
+                self.cache_path,
+                data_fingerprint,
+                ["structures"] + (["graphs"] if build_graph_cfg is not None else []),
+            ):
+                overwrite_orig = True
         if overwrite_orig or not self.cache_exists:
 
             if dist.get_rank() == 0:
 
                 os.makedirs(self.cache_path, exist_ok=True)
+                mark_cache_rebuilding(self.cache_path)
                 self.save_to_cache(
                     osp.join(self.cache_path, "build_structure_cfg.pkl"),
                     build_structure_cfg,
@@ -400,6 +417,8 @@ class TmqmDataset(Dataset):
             # Synchronize all processes
             if dist.is_initialized():
                 dist.barrier()
+        if dist.get_rank() == 0:
+            save_data_fingerprint(self.cache_path, data_fingerprint)
 
         self.structures = [
             osp.join(structure_cache_path, f"{i:010d}.pkl")

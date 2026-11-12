@@ -36,6 +36,10 @@ from rdkit import RDLogger
 
 from ppmat.datasets.build_molecule import BuildMolecule
 from ppmat.datasets.build_spectrum import BuildSpectrumNMR
+from ppmat.datasets.cache_fingerprint import cache_matches_data
+from ppmat.datasets.cache_fingerprint import compute_data_fingerprint
+from ppmat.datasets.cache_fingerprint import mark_cache_rebuilding
+from ppmat.datasets.cache_fingerprint import save_data_fingerprint
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.models import build_graph_converter
 from ppmat.models.diffnmr.utils import diffgraphformer_utils as utils
@@ -377,9 +381,24 @@ class MSDnmrDataset(Dataset):
         graph_cache_path = osp.join(self.cache_path, "graphs")
         spectrum_cache_path = osp.join(self.cache_path, "spectrums")
 
+        # The build settings alone do not identify the data: also check that the
+        # cache was built from the current input before reusing it.
+        data_fingerprint = compute_data_fingerprint(
+            zip(self.raw_data["smiles"], self.raw_data["tokenized_nmr"])
+        )
+        if self.cache_exists and not overwrite:
+            if not cache_matches_data(
+                self.cache_path,
+                data_fingerprint,
+                ["molecules"]
+                + (["graphs"] if build_graph_cfg is not None else [])
+                + (["spectrums"] if build_spectrum_cfg is not None else []),
+            ):
+                overwrite = True
         if overwrite or not self.cache_exists:
             if dist.get_rank() == 0:
                 os.makedirs(self.cache_path, exist_ok=True)
+                mark_cache_rebuilding(self.cache_path)
                 self.save_to_cache(
                     osp.join(self.cache_path, "build_molecule_cfg.pkl"),
                     build_molecule_cfg,
@@ -439,6 +458,8 @@ class MSDnmrDataset(Dataset):
 
             if dist.is_initialized():
                 dist.barrier()
+        if dist.get_rank() == 0:
+            save_data_fingerprint(self.cache_path, data_fingerprint)
         self.molecules = [
             osp.join(molecule_cache_path, f"{i:010d}.pkl")
             for i in range(self.num_samples)

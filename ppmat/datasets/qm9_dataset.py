@@ -24,10 +24,15 @@ from typing import Dict
 from typing import Optional
 
 import numpy as np
-import pandas as pd
 import paddle.distributed as dist
+import pandas as pd
 from paddle.io import Dataset
+
 from ppmat.datasets.build_molecule import BuildMolecule
+from ppmat.datasets.cache_fingerprint import cache_matches_data
+from ppmat.datasets.cache_fingerprint import compute_data_fingerprint
+from ppmat.datasets.cache_fingerprint import mark_cache_rebuilding
+from ppmat.datasets.cache_fingerprint import save_data_fingerprint
 from ppmat.models import build_graph_converter
 from ppmat.utils import download
 from ppmat.utils import logger
@@ -241,9 +246,20 @@ class QM9Dataset(Dataset):
 
         molecule_cache_path = osp.join(self.cache_path, "molecules")
         graph_cache_path = osp.join(self.cache_path, "graphs")
+        # The build settings alone do not identify the data: also check that the
+        # cache was built from the current input before reusing it.
+        data_fingerprint = compute_data_fingerprint(self.raw_data["molecule"])
+        if self.cache_exists and not overwrite:
+            if not cache_matches_data(
+                self.cache_path,
+                data_fingerprint,
+                ["molecules"] + (["graphs"] if build_graph_cfg is not None else []),
+            ):
+                overwrite = True
         if overwrite or not self.cache_exists:
             if dist.get_rank() == 0:
                 os.makedirs(self.cache_path, exist_ok=True)
+                mark_cache_rebuilding(self.cache_path)
                 self.save_to_cache(
                     osp.join(self.cache_path, "build_molecule_cfg.pkl"),
                     build_molecule_cfg,
@@ -276,6 +292,8 @@ class QM9Dataset(Dataset):
 
             if dist.is_initialized():
                 dist.barrier()
+        if dist.get_rank() == 0:
+            save_data_fingerprint(self.cache_path, data_fingerprint)
 
         self.molecules = [
             osp.join(molecule_cache_path, f"{i:010d}.pkl")
@@ -305,8 +323,8 @@ class QM9Dataset(Dataset):
         logger.info(f"Read {len(data)} molecules from {path}")
 
         data = {key: data[key].tolist() for key in data if "Unnamed" not in key}
-        data["molecule"] = data.pop("standard_xyz") # adapted for this qm9 split file
-        data["id"] = data["molecule_id"] # adapted for this qm9 split file
+        data["molecule"] = data.pop("standard_xyz")  # adapted for this qm9 split file
+        data["id"] = data["molecule_id"]  # adapted for this qm9 split file
         num_samples = 0
         for key in data:
             num_samples = max(num_samples, len(data[key]))

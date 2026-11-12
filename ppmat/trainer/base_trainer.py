@@ -45,6 +45,11 @@ from ppmat.utils import save_load
 from ppmat.utils.execution import configure_execution_backend
 
 
+def _every(count: int, freq) -> bool:
+    """Whether ``count`` falls on a multiple of ``freq``; ``freq <= 0`` never fires."""
+    return freq is not None and freq > 0 and count % freq == 0
+
+
 class BaseTrainer:
     """Base Trainer for training model. A simple but feature-complete training and
     eval loop for model training.
@@ -441,7 +446,7 @@ class BaseTrainer:
 
             # log the current step
             if (
-                self.state.step_in_eval_epoch % self.config["log_freq"] == 0
+                _every(self.state.step_in_eval_epoch, self.config["log_freq"])
                 or self.state.step_in_eval_epoch == self.state.max_steps_in_eval_epoch
                 or self.state.step_in_eval_epoch == 1
             ):
@@ -640,7 +645,7 @@ class BaseTrainer:
 
             # log training info
             if (
-                self.state.step_in_train_epoch % self.config["log_freq"] == 0
+                _every(self.state.step_in_train_epoch, self.config["log_freq"])
                 or self.state.step_in_train_epoch == self.state.max_steps_in_train_epoch
                 or self.state.step_in_train_epoch == 1
             ):
@@ -876,9 +881,10 @@ class BaseTrainer:
                 tensorboard_writer=self.tensorboard_writer,
             )
 
-            # save checkpoint when epoch is divisible by save_freq
-            if (
-                self.state.epoch % self.config["save_freq"] == 0
+            # save checkpoint when epoch is divisible by save_freq; save_freq <= 0
+            # disables the per-epoch checkpoints ("latest" and "best" are still saved)
+            if self.config["save_freq"] > 0 and (
+                _every(self.state.epoch, self.config["save_freq"])
                 or self.state.epoch == self.config["max_epochs"]
                 or self.state.epoch == 1
             ):
@@ -902,11 +908,13 @@ class BaseTrainer:
                 print_log=(self.state.epoch == 1),
             )
 
-            # evaluate model when epoch is divisible by eval_freq
+            # evaluate model when epoch is divisible by eval_freq; eval_freq <= 0
+            # disables evaluation during training
             if (
                 self.eval_freq_steps is None
+                and self.config["eval_freq"] > 0
                 and (
-                    self.state.epoch % self.config["eval_freq"] == 0
+                    _every(self.state.epoch, self.config["eval_freq"])
                     or self.state.epoch == self.config["max_epochs"]
                     or self.state.epoch == 1
                 )

@@ -32,6 +32,10 @@ from paddle.io import Dataset
 from pymatgen.core import Structure
 
 from ppmat.datasets.build_structure import BuildStructure
+from ppmat.datasets.cache_fingerprint import cache_matches_data
+from ppmat.datasets.cache_fingerprint import compute_data_fingerprint
+from ppmat.datasets.cache_fingerprint import mark_cache_rebuilding
+from ppmat.datasets.cache_fingerprint import save_data_fingerprint
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.models import build_graph_converter
 from ppmat.utils import download
@@ -360,11 +364,23 @@ class MatbenchDataset(Dataset):
         structure_cache_path = osp.join(self.cache_path, "structures")
         graph_cache_path = osp.join(self.cache_path, "graphs")
 
+        # The build settings alone do not identify the data: also check that the
+        # cache was built from the current input before reusing it.
+        data_fingerprint = compute_data_fingerprint(self.raw_data["structures"])
+        if self.cache_exists and not self.overwrite:
+            if not cache_matches_data(
+                self.cache_path,
+                data_fingerprint,
+                ["structures"]
+                + (["graphs"] if self.build_graph_cfg is not None else []),
+            ):
+                self.overwrite = True
         if self.overwrite or not self.cache_exists:
             # Convert structures and graphs (only rank 0 process)
             if dist.get_rank() == 0:
                 # Save build configs to cache
                 os.makedirs(self.cache_path, exist_ok=True)
+                mark_cache_rebuilding(self.cache_path)
                 self.save_to_cache(
                     osp.join(self.cache_path, "build_structure_cfg.pkl"),
                     self.build_structure_cfg,
@@ -410,6 +426,8 @@ class MatbenchDataset(Dataset):
             # Sync all processes
             if dist.is_initialized():
                 dist.barrier()
+        if dist.get_rank() == 0:
+            save_data_fingerprint(self.cache_path, data_fingerprint)
 
         # Set up structure and graph paths
         self.structures = [
