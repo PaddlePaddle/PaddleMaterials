@@ -361,3 +361,59 @@ class GEGNNBinary(paddle.nn.Layer):
     def predict(self, data):
         _, _, output = self._forward(data)
         return {self.property_name: output}
+
+
+class _TensorGraphView:
+    """Graph attributes constructed from traced tensors inside the adapter."""
+
+    def __init__(self, edges, node_features, graph_node_id):
+        self.edges = edges
+        self.num_nodes = int(node_features.shape[0])
+        self.node_feat = {"h": node_features}
+        self.graph_node_id = graph_node_id
+
+    def tensor(self):
+        return self
+
+
+class GEGNNTensorPredictor(paddle.nn.Layer):
+    """Expose GE-GNN prediction to ``to_static`` through tensor-only inputs.
+
+    Call :meth:`pack` outside the compiled function. PGL graph objects must not
+    cross the static input boundary. Node/edge counts may specialize the graph
+    and trigger compilation again. This adapter preserves the composition
+    derivative; do not wrap prediction in ``paddle.no_grad()``.
+    """
+
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    @staticmethod
+    def pack(data):
+        """Pack an existing collated binary-mixture batch without rebuilding it."""
+        flat = {
+            key: GEGNNBinary._as_column(data[key])
+            for key in ("x1", "inter_hb", "intra_hb1", "intra_hb2")
+        }
+        for key in ("g1", "g2", "empty_solvsys"):
+            graph = data[key].tensor()
+            flat[key + "_edges"] = graph.edges
+            flat[key + "_graph_node_id"] = graph.graph_node_id
+            if key != "empty_solvsys":
+                flat[key + "_node_features"] = graph.node_feat["h"]
+            else:
+                flat[key + "_node_features"] = paddle.zeros(
+                    [int(graph.num_nodes), 1], dtype="float32"
+                )
+        return flat
+
+    def forward(self, flat):
+        data = {key: flat[key] for key in ("x1", "inter_hb", "intra_hb1", "intra_hb2")}
+        for key in ("g1", "g2", "empty_solvsys"):
+            data[key] = _TensorGraphView(
+                flat[key + "_edges"],
+                flat[key + "_node_features"],
+                flat[key + "_graph_node_id"],
+            )
+        return self.model.predict(data)[self.model.property_name]
