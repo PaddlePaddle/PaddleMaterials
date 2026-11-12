@@ -185,7 +185,9 @@ def _scatter_mean(
     result = _scatter_sum(src, index, dim, dim_size)
     index_dim = min(dim, index.ndim - 1)
 
-    ones = paddle.ones(index.shape, dtype=src.dtype).to(src.place)
+    # ones_like keeps the counts on the device of index. Reading .place of a
+    # tensor inside a captured function would break the SOT graph.
+    ones = paddle.ones_like(index, dtype=src.dtype)
     count = _scatter_sum(ones, index, index_dim, result.shape[dim])
     count = paddle.clip(count, min=1)
     count = _broadcast(count, result, dim)

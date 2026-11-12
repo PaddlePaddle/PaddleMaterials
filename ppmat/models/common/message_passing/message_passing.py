@@ -121,14 +121,22 @@ class MessagePassing(paddle.nn.Layer):
         self.inspector.inspect(self.message_and_aggregate, pop_first=True)
         self.inspector.inspect(self.update, pop_first=True)
         self.inspector.inspect(self.edge_update)
-        self.__user_args__ = self.inspector.keys(
-            ["message", "aggregate", "update"]
-        ).difference(self.special_args)
-        self.__fused_user_args__ = self.inspector.keys(
-            ["message_and_aggregate", "update"]
-        ).difference(self.special_args)
-        self.__edge_user_args__ = self.inspector.keys(["edge_update"]).difference(
-            self.special_args
+        # __collect__ iterates these names on every call. Iterating a set breaks
+        # the SOT graph, so keep them in a tuple.
+        self.__user_args__ = tuple(
+            k
+            for k in self.inspector.ordered_keys(["message", "aggregate", "update"])
+            if k not in self.special_args
+        )
+        self.__fused_user_args__ = tuple(
+            k
+            for k in self.inspector.ordered_keys(["message_and_aggregate", "update"])
+            if k not in self.special_args
+        )
+        self.__edge_user_args__ = tuple(
+            k
+            for k in self.inspector.ordered_keys(["edge_update"])
+            if k not in self.special_args
         )
         self.fuse = self.inspector.implements("message_and_aggregate")
         self._explain = False

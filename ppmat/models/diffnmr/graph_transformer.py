@@ -19,7 +19,6 @@ import paddle.nn as nn
 from paddle.nn import functional as F
 
 from ppmat.models.diffnmr.utils import diffgraphformer_utils
-from ppmat.schedulers import scheduling_diffnmr
 
 
 class GraphTransformer(nn.Layer):
@@ -130,8 +129,14 @@ class GraphTransformer(nn.Layer):
         X = self.mlp_in_X(X)
         y = self.mlp_in_y(y)
 
-        after_in = diffgraphformer_utils.PlaceHolder(X, E=new_E, y=y).mask(node_mask)
-        X, E, y = after_in.X, after_in.E, after_in.y
+        # Mask inline instead of PlaceHolder(...).mask(node_mask): building a
+        # PlaceHolder from tensors and its symmetry check (a device-to-host read)
+        # break the SOT graph. new_E is symmetric by construction.
+        x_mask = paddle.unsqueeze(node_mask, axis=-1).astype(X.dtype)
+        e_mask1 = paddle.unsqueeze(x_mask, axis=2)
+        e_mask2 = paddle.unsqueeze(x_mask, axis=1)
+        X = X * x_mask
+        E = new_E * e_mask1 * e_mask2
 
         # Transformer layers
         for layer in self.tf_layers:
@@ -149,7 +154,11 @@ class GraphTransformer(nn.Layer):
         # Symmetrize E
         E = 0.5 * (E + paddle.transpose(E, perm=[0, 2, 1, 3]))
 
-        return diffgraphformer_utils.PlaceHolder(X=X, E=E, y=y).mask(node_mask)
+        # Same inline masking as above; the PlaceHolder is built last so that the only
+        # graph break comes after the network.
+        X = X * x_mask
+        E = E * e_mask1 * e_mask2
+        return diffgraphformer_utils.PlaceHolder(X=X, E=E, y=y)
 
 
 class MolecularEncoder(nn.Layer):
@@ -394,7 +403,8 @@ class NodeEdgeBlock(nn.Layer):
         # 1. Map X to keys and queries
         Q = self.q(X) * x_mask
         K = self.k(X) * x_mask
-        scheduling_diffnmr.assert_correctly_masked(Q, x_mask)
+        # No assert_correctly_masked checks in this block: they read a device value
+        # (.item()), which breaks the SOT graph inside the layer loop.
 
         # 2. Reshape to (bs, n, n_head, df) with dx = n_head * df
         Q = paddle.reshape(Q, (Q.shape[0], Q.shape[1], self.n_head, self.df))
@@ -406,7 +416,6 @@ class NodeEdgeBlock(nn.Layer):
         # Compute unnormalized attentions. Y is (bs, n, n, n_head, df)
         Y = Q * K
         Y = Y / math.sqrt(Y.shape[-1])
-        scheduling_diffnmr.assert_correctly_masked(Y, (e_mask1 * e_mask2).unsqueeze(-1))
 
         E1 = self.e_mul(E) * e_mask1 * e_mask2  # bs, n, n, dx
         E1 = paddle.reshape(
@@ -431,7 +440,6 @@ class NodeEdgeBlock(nn.Layer):
 
         # Output E
         newE = self.e_out(newE) * e_mask1 * e_mask2
-        scheduling_diffnmr.assert_correctly_masked(newE, e_mask1 * e_mask2)
 
         # Compute attentions. attn is still (bs, n, n, n_head, df)
         softmax_mask = paddle.expand(
@@ -502,14 +510,16 @@ class Etoy(nn.Layer):
         """
         mask = paddle.expand(e_mask1 * e_mask2, shape=[-1, -1, -1, E.shape[-1]])
         float_imask = 1 - mask.astype("float32")
-        divide = paddle.sum(mask, axis=(1, 2))
-        m = paddle.sum(E, axis=(1, 2)) / divide
-        mi = paddle.min(paddle.min(E + 1e6 * float_imask, axis=2), axis=1)
-        ma = paddle.max(paddle.max(E - 1e6 * float_imask, axis=2), axis=1)
-        std = (
-            paddle.sum((E - m.unsqueeze(1).unsqueeze(1)) ** 2 * mask, axis=(1, 2))
-            / divide
-        )
+        # Reduce over the flattened n * n axis: CINN in Paddle 3.3 generates an invalid
+        # kernel for chained reductions such as min(min(E, axis=2), axis=1).
+        E = paddle.flatten(E, start_axis=1, stop_axis=2)  # bs, n * n, de
+        mask = paddle.flatten(mask, start_axis=1, stop_axis=2)
+        float_imask = paddle.flatten(float_imask, start_axis=1, stop_axis=2)
+        divide = paddle.sum(mask, axis=1)
+        m = paddle.sum(E, axis=1) / divide
+        mi = paddle.min(E + 1e6 * float_imask, axis=1)
+        ma = paddle.max(E - 1e6 * float_imask, axis=1)
+        std = paddle.sum((E - m.unsqueeze(1)) ** 2 * mask, axis=1) / divide
         z = paddle.concat([m, mi, ma, std], axis=1)
         out = self.lin(z)
         return out
@@ -527,8 +537,9 @@ def masked_softmax(x, mask, axis=-1):
     Returns:
         Tensor with masked softmax applied.
     """
-    if paddle.sum(mask) == 0:
-        return x
+    # A Python branch on a device value would break the SOT graph, so the all-masked
+    # case is selected with paddle.where instead of an early return.
+    all_masked = paddle.sum(mask) == 0
 
     # TODO: ndim check: only support adding dimensions backwards now
     x_dims = x.ndim
@@ -543,5 +554,10 @@ def masked_softmax(x, mask, axis=-1):
     x_masked = paddle.where(
         mask == 0, paddle.to_tensor(-float("inf"), dtype=x.dtype), x_masked
     )
+    # If everything is masked, x_masked is all -inf and softmax would give NaN, also in
+    # the gradient; use zeros there, since x is returned in that case.
+    x_masked = paddle.where(all_masked, paddle.zeros_like(x_masked), x_masked)
 
-    return paddle.nn.functional.softmax(x_masked, axis=axis)
+    return paddle.where(
+        all_masked, x, paddle.nn.functional.softmax(x_masked, axis=axis)
+    )
