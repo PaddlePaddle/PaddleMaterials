@@ -208,7 +208,11 @@ class EdgeUpdate(paddle.nn.Layer):
         x_kj = x_kj * rbf
 
         x_kj = self.act(self.lin_down(x_kj))
-        if idx_kj.shape[0] == 0:
+        num_triplets = idx_kj.shape[0]
+        # A dynamic triplet axis (compiled inference only) is a tensor here and
+        # always takes the general path, which also yields a zero message for
+        # zero triplets; branching on it would trace a cond that CINN rejects.
+        if isinstance(num_triplets, int) and num_triplets == 0:
             # Empty Linear/Matmul inputs have no second-order gradient in
             # Paddle. With no triplets, the aggregated geometric message is 0.
             x_kj = x_kj * 0.0
@@ -496,7 +500,12 @@ class SphereNet(RuntimeMixin, paddle.nn.Layer):
             graph_count(graph),
         )
 
-    @runtime_boundary("forward")
+    @runtime_boundary(
+        "forward",
+        # Edge and triplet counts change at every MD step; the atom count stays
+        # static. Applies to the AST capture of the potentials only.
+        dynamic_dims={"edge_index": 1, "idx_kj": 0, "idx_ji": 0, "idx_qj": 0},
+    )
     def _runtime_forward(
         self,
         z,
