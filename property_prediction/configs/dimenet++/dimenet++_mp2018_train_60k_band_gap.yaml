@@ -103,11 +103,13 @@ Metric:
 Optimizer:
   __class_name__: Adam
   __init_params__:
+    amsgrad: True
     lr:
       __class_name__: Cosine
       __init_params__:
         learning_rate: 0.001
         by_epoch: True
+  clip_norm_global: 10
 
 Dataset:
   train:

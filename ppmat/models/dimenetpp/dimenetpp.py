@@ -1,3 +1,4 @@
+import math
 from typing import Callable
 from typing import Optional
 
@@ -55,11 +56,8 @@ class BesselBasisLayer(paddle.nn.Layer):
             .numpy()
             .dtype,
             default_initializer=paddle.nn.initializer.Assign(
-                paddle.empty(
-                    shape=[
-                        num_radial,
-                    ]
-                )
+                paddle.arange(1, num_radial + 1, dtype=paddle.get_default_dtype())
+                * math.pi
             ),
         )
         self.freq.stop_gradient = False
@@ -418,7 +416,7 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         else:
             raise ValueError(f"Unknown loss type {loss_type}.")
 
-    def triplets(self, edge_index, num_nodes):
+    def triplets(self, edge_index, cell_offsets=None, num_nodes=None):
         row, col = edge_index
         value = paddle.arange(1, row.shape[0] + 1, dtype="int64")
         # build matrix of edge ids per target
@@ -438,7 +436,14 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         idx_k = paddle.index_select(row, idx_kj, axis=0)
         idx_j = paddle.index_select(row, idx_ji, axis=0)
         idx_i = paddle.index_select(col, idx_ji, axis=0)
-        mask2 = idx_i != idx_k
+        if cell_offsets is None:
+            # Without cell offsets, only drop triplets whose two edges share an atom.
+            mask2 = idx_i != idx_k
+        else:
+            # A periodic image can bring i and k together, so keep i == k when the
+            # combined cell offset is non-zero.
+            cell_offset_kji = cell_offsets[idx_kj] + cell_offsets[idx_ji]
+            mask2 = (idx_i != idx_k) | paddle.any(cell_offset_kji != 0, axis=-1)
         return (
             col,
             row,
@@ -463,29 +468,36 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         # unpack graph dict
         graph = data["graph"]
         batch = graph.graph_node_id
-        lattices = graph.node_feat["lattice"]
         pos = graph.node_feat["cart_coords"]
-        frac = graph.node_feat["frac_coords"]
         edge_index = graph.edges
-        to_jimages = graph.edge_feat["pbc_offset"]
-        num_atoms = graph.node_feat["num_atoms"]
-        num_bonds = graph.edge_feat["num_edges"]
         atom_types = graph.node_feat["atom_types"]
 
-        out = get_pbc_distances(
-            frac,
-            edge_index.T,
-            lattices,
-            to_jimages,
-            num_atoms,
-            num_bonds,
-            return_offsets=True,
-        )
-        edge_index = out["edge_index"]
-        dist = out["distances"]
-        offsets = out["offsets"]
-        j, i, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
-            edge_index, num_nodes=atom_types.shape[0]
+        if "lattice" in graph.node_feat:
+            lattices = graph.node_feat["lattice"]
+            frac = graph.node_feat["frac_coords"]
+            to_jimages = graph.edge_feat["pbc_offset"]
+            num_atoms = graph.node_feat["num_atoms"]
+            num_bonds = graph.edge_feat["num_edges"]
+            out = get_pbc_distances(
+                frac,
+                edge_index.T,
+                lattices,
+                to_jimages,
+                num_atoms,
+                num_bonds,
+                return_offsets=True,
+            )
+            edge_index = out["edge_index"]
+            dist = out["distances"]
+            offsets = out["offsets"]
+        else:
+            # Molecules have no periodic images.
+            edge_index = edge_index.T
+            to_jimages = paddle.zeros([edge_index.shape[1], 3], dtype="int64")
+            offsets = paddle.zeros([edge_index.shape[1], 3], dtype=pos.dtype)
+            dist = (pos[edge_index[0]] - pos[edge_index[1]]).norm(axis=-1)
+        i, j, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
+            edge_index, to_jimages, num_nodes=atom_types.shape[0]
         )
         # compute angles
         pos_i = pos[idx_i]
