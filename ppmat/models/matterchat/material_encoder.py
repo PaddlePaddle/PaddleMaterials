@@ -14,6 +14,9 @@
 
 """Checkpoint-compatible MatterChat features from the framework CHGNet."""
 
+from dataclasses import asdict
+from dataclasses import dataclass
+
 import paddle
 from paddle import nn
 
@@ -22,23 +25,43 @@ from ppmat.models.chgnet.chgnet import GatedMLP
 from ppmat.models.chgnet.chgnet_graph_converter import CHGNetGraphConverter
 
 
+@dataclass
+class MaterialEncoderConfig:
+    """CHGNet feature settings matching the released MatterChat checkpoint."""
+
+    atom_fea_dim: int = 64
+    bond_fea_dim: int = 64
+    angle_fea_dim: int = 64
+    composition_model: str = "MPtrj"
+    num_radial: int = 9
+    num_angular: int = 9
+    n_conv: int = 4
+    atom_conv_hidden_dim: int = 64
+    update_bond: bool = True
+    bond_conv_hidden_dim: int = 64
+    update_angle: bool = True
+    angle_layer_hidden_dim: int = 0
+    conv_dropout: float = 0.0
+    read_out: str = "ave"
+    mlp_hidden_dims: tuple = (64, 64)
+    mlp_dropout: float = 0.0
+    mlp_first: bool = True
+    is_intensive: bool = True
+    atom_graph_cutoff: float = 5.0
+    bond_graph_cutoff: float = 3.0
+    cutoff_coeff: float = 5.0
+    learnable_rbf: bool = True
+    mlp_out_bias: bool = True
+
+
 class MatterChatEncoder(CHGNet):
     """Reuse CHGNet graph construction and message passing with dialogue weights."""
 
-    _ATOM_GRAPH_CUTOFF = 5
-    _BOND_GRAPH_CUTOFF = 3
-
-    def __init__(self):
-        super().__init__(
-            num_radial=9,
-            num_angular=9,
-            mlp_hidden_dims=(64, 64),
-            atom_graph_cutoff=self._ATOM_GRAPH_CUTOFF,
-            bond_graph_cutoff=self._BOND_GRAPH_CUTOFF,
-            cutoff_coeff=5,
-            mlp_out_bias=True,
-            property_names=["energy_per_atom"],
-        )
+    def __init__(self, config=None):
+        config = MaterialEncoderConfig(**({} if config is None else config))
+        if config.n_conv < 1:
+            raise ValueError("n_conv must be positive.")
+        super().__init__(**asdict(config), property_names=["energy_per_atom"])
         # Released MatterChat weights contain neither gated nor readout norms.
         for layer in self.sublayers():
             if isinstance(layer, GatedMLP):
@@ -46,8 +69,8 @@ class MatterChatEncoder(CHGNet):
                 layer.bn2 = nn.Identity()
         self.readout_norm = None
         self.graph_converter = CHGNetGraphConverter(
-            atom_graph_cutoff=self._ATOM_GRAPH_CUTOFF,
-            bond_graph_cutoff=self._BOND_GRAPH_CUTOFF,
+            atom_graph_cutoff=config.atom_graph_cutoff,
+            bond_graph_cutoff=config.bond_graph_cutoff,
         )
 
     @paddle.no_grad()

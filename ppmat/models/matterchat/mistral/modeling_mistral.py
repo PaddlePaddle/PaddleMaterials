@@ -24,6 +24,8 @@ from typing import Union
 import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
+from paddle.nn.attention import SDPBackend
+from paddle.nn.attention import sdpa_kernel
 
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
@@ -31,6 +33,9 @@ from ppmat.models.matterchat.mistral.configuration_mistral import MistralConfig
 from ppmat.models.matterchat.utils.activations import get_activation
 from ppmat.models.matterchat.utils.weight_init import default_init_weights
 from ppmat.utils import logger
+
+# Retain the existing beam search's GNMT length normalization.
+_BEAM_LENGTH_PENALTY_OFFSET = 5.0
 
 
 class _SubscriptableOutput:
@@ -303,19 +308,15 @@ class MistralAttention(nn.Layer):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        # softmax in fp32 for numerical stability, then cast back
-        attn_weights = paddle.matmul(
-            query_states, key_states.transpose([0, 1, 3, 2])
-        ) / math.sqrt(self.head_dim)
-
         if attention_mask is not None:
-            causal_mask = attention_mask[:, :, :, : key_states.shape[-2]]
-            attn_weights = attn_weights + causal_mask
-
-        attn_weights = F.softmax(attn_weights, axis=-1, dtype=paddle.float32).cast(
-            query_states.dtype
+            attention_mask = attention_mask[:, :, :, : key_states.shape[-2]]
+        attn_output, attn_weights = self._compute_attention(
+            query_states,
+            key_states,
+            value_states,
+            attention_mask,
+            output_attentions,
         )
-        attn_output = paddle.matmul(attn_weights, value_states)
 
         if attn_output.shape != [bsz, self.num_heads, q_len, self.head_dim]:
             raise ValueError(
@@ -328,94 +329,52 @@ class MistralAttention(nn.Layer):
         attn_output = attn_output.reshape([bsz, q_len, -1])
         attn_output = self.o_proj(attn_output)
 
-        if not output_attentions:
-            attn_weights = None
-
         return attn_output, attn_weights, past_key_value
+
+    def _compute_attention(
+        self, query_states, key_states, value_states, attention_mask, output_attentions
+    ):
+        attn_weights = paddle.matmul(
+            query_states, key_states.transpose([0, 1, 3, 2])
+        ) / math.sqrt(self.head_dim)
+        if attention_mask is not None:
+            attn_weights = attn_weights + attention_mask
+        attn_weights = F.softmax(attn_weights, axis=-1, dtype=paddle.float32).cast(
+            query_states.dtype
+        )
+        attn_weights = F.dropout(
+            attn_weights, p=self.attention_dropout, training=self.training
+        )
+        attn_output = paddle.matmul(attn_weights, value_states)
+        return attn_output, attn_weights if output_attentions else None
 
 
 class MistralSdpaAttention(MistralAttention):
     """Mistral attention using paddle.nn.functional.scaled_dot_product_attention."""
 
-    def forward(
-        self,
-        hidden_states: paddle.Tensor,
-        attention_mask: Optional[paddle.Tensor] = None,
-        position_ids: Optional[paddle.Tensor] = None,
-        past_key_value: Optional["DynamicCache"] = None,
-        output_attentions: bool = False,
-        use_cache: bool = False,
-        cache_position: Optional[paddle.Tensor] = None,
-        **kwargs,
-    ) -> Tuple[paddle.Tensor, Optional[paddle.Tensor], Optional[Tuple[paddle.Tensor]]]:
+    def _compute_attention(
+        self, query_states, key_states, value_states, attention_mask, output_attentions
+    ):
         if output_attentions:
-            return super().forward(
-                hidden_states=hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-                cache_position=cache_position,
-            )
-
-        bsz, q_len, _ = hidden_states.shape
-
-        query_states = self.q_proj(hidden_states)
-        key_states = self.k_proj(hidden_states)
-        value_states = self.v_proj(hidden_states)
-
-        query_states = query_states.reshape(
-            [bsz, q_len, self.num_heads, self.head_dim]
-        ).transpose([0, 2, 1, 3])
-        key_states = key_states.reshape(
-            [bsz, q_len, self.num_key_value_heads, self.head_dim]
-        ).transpose([0, 2, 1, 3])
-        value_states = value_states.reshape(
-            [bsz, q_len, self.num_key_value_heads, self.head_dim]
-        ).transpose([0, 2, 1, 3])
-
-        cos, sin = self.rotary_emb(value_states, position_ids)
-        query_states, key_states = apply_rotary_pos_emb(
-            query_states, key_states, cos, sin
-        )
-
-        if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            key_states, value_states = past_key_value.update(
-                key_states, value_states, self.layer_idx, cache_kwargs
-            )
-
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
-
-        # Use SDPA for prefill; fall back to manual attention for generation
-        # because Paddle SDPA does not support q_len != k_len.
-        if q_len == key_states.shape[2]:
-            attn_output = paddle.nn.functional.scaled_dot_product_attention(
+            return super()._compute_attention(
                 query_states,
                 key_states,
                 value_states,
-                attn_mask=None,
+                attention_mask,
+                output_attentions,
+            )
+        # Avoid memory-efficient FP32 kernels that reject valid GPU input shapes.
+        with sdpa_kernel([SDPBackend.FLASH_ATTENTION, SDPBackend.MATH]):
+            attn_output = F.scaled_dot_product_attention(
+                query_states.transpose([0, 2, 1, 3]),
+                key_states.transpose([0, 2, 1, 3]),
+                value_states.transpose([0, 2, 1, 3]),
+                attn_mask=attention_mask,
                 dropout_p=self.attention_dropout if self.training else 0.0,
-                is_causal=True,
+                is_causal=False,
                 training=self.training,
-                enable_gqa=False,
             )
-        else:
-            attn_weights = paddle.matmul(
-                query_states, key_states.transpose([0, 1, 3, 2])
-            ) / math.sqrt(self.head_dim)
-            attn_weights = F.softmax(attn_weights, axis=-1, dtype=paddle.float32).cast(
-                query_states.dtype
-            )
-            attn_output = paddle.matmul(attn_weights, value_states)
-
-        attn_output = attn_output.transpose([0, 2, 1, 3])
-        attn_output = attn_output.reshape([bsz, q_len, -1])
-        attn_output = self.o_proj(attn_output)
-
-        return attn_output, None, past_key_value
+        return attn_output.transpose([0, 2, 1, 3]), None
 
 
 MISTRAL_ATTENTION_CLASSES = {
@@ -844,10 +803,18 @@ class MistralForCausalLM(MistralPreTrainedModel):
         temperature=1.0,
         _suppress_token_id=None,
     ):
-        """Beam search generation following HF GenerationMixin pattern."""
+        """Search active beams and retain completed responses at every step."""
         seq_len = inputs_embeds.shape[1]
-        eos_token_id = getattr(self.config, "eos_token_id", 2)
+        eos_token_id = self.config.eos_token_id
         vocab_size = self.config.vocab_size
+        max_new_tokens = max_length - seq_len
+
+        def normalized_score(score, length):
+            penalty = (
+                (_BEAM_LENGTH_PENALTY_OFFSET + length)
+                / (_BEAM_LENGTH_PENALTY_OFFSET + 1)
+            ) ** length_penalty
+            return score / penalty
 
         past_key_values = DynamicCache()
         outputs = self.model(
@@ -858,122 +825,77 @@ class MistralForCausalLM(MistralPreTrainedModel):
             cache_position=paddle.arange(seq_len),
         )
         logits = self.lm_head(outputs[0][:, -1:, :])[:, 0, :]
-        logits = logits / max(temperature, 1e-8)
-
-        if _suppress_token_id is not None:
-            logits[:, _suppress_token_id] = float("-inf")
-
-        log_probs = F.log_softmax(logits, axis=-1)
-        topk_scores, topk_ids = paddle.topk(log_probs[0], num_beams)
-
-        beam_tokens = topk_ids.unsqueeze(1)
-        beam_scores = topk_scores
-
-        # Expand KV cache from batch=1 to batch=num_beams
-        # repeat_interleave has no float16 GPU kernel; cast through float32.
-        for layer_idx in range(len(past_key_values.key_cache)):
-            k_cache = past_key_values.key_cache[layer_idx]
-            v_cache = past_key_values.value_cache[layer_idx]
-            past_key_values.key_cache[layer_idx] = paddle.repeat_interleave(
-                k_cache.cast(paddle.float32), num_beams, axis=0
-            ).cast(k_cache.dtype)
-            past_key_values.value_cache[layer_idx] = paddle.repeat_interleave(
-                v_cache.cast(paddle.float32), num_beams, axis=0
-            ).cast(v_cache.dtype)
-
-        attention_mask = paddle.repeat_interleave(attention_mask, num_beams, axis=0)
-
+        beam_tokens = paddle.empty([1, 0], dtype="int64")
+        beam_scores = paddle.zeros([1], dtype="float32")
         finished_hypos = []
-        max_new_tokens = max_length - seq_len
 
-        for step in range(1, max_new_tokens):
-            num_active = beam_tokens.shape[0]
-
-            attention_mask = paddle.concat(
-                [
-                    attention_mask,
-                    paddle.ones([num_active, 1], dtype=paddle.int64),
-                ],
-                axis=-1,
-            )
-
-            cache_position = paddle.arange(seq_len + step - 1, seq_len + step)
-
-            step_outputs = self.model(
-                input_ids=beam_tokens[:, -1:],
-                attention_mask=attention_mask,
-                past_key_values=past_key_values,
-                use_cache=True,
-                cache_position=cache_position,
-            )
-
-            logits = self.lm_head(step_outputs[0][:, -1:, :])[:, 0, :]
-            logits = logits / max(temperature, 1e-8)
-
+        for step in range(max_new_tokens):
+            logits = logits / temperature
             if _suppress_token_id is not None:
                 logits[:, _suppress_token_id] = float("-inf")
-
-            # Per-beam repetition penalty
-            if repetition_penalty != 1.0:
-                for bi in range(num_active):
-                    ids = paddle.unique(beam_tokens[bi])
-                    gathered = logits[bi, ids]
-                    penalized = paddle.where(
-                        gathered > 0,
-                        gathered / repetition_penalty,
-                        gathered * repetition_penalty,
-                    )
-                    logits[bi] = logits[bi].clone()
-                    logits[bi, ids] = penalized
-
-            next_log_probs = F.log_softmax(logits, axis=-1)
-            candidate_scores = beam_scores.unsqueeze(-1) + next_log_probs
-
-            # Suppress EOS below min_length
+            if repetition_penalty != 1.0 and step:
+                logits = paddle.concat(
+                    [
+                        _apply_repetition_penalty(
+                            logits[index : index + 1], tokens, repetition_penalty
+                        )
+                        for index, tokens in enumerate(beam_tokens)
+                    ],
+                    axis=0,
+                )
             if step < min_length:
-                candidate_scores[:, eos_token_id] = float("-inf")
+                logits[:, eos_token_id] = float("-inf")
 
-            n_select = num_beams + len(finished_hypos)
+            candidate_scores = beam_scores.unsqueeze(-1) + F.log_softmax(
+                logits, axis=-1
+            )
             flat_scores = candidate_scores.reshape([-1])
             topk_scores, topk_indices = paddle.topk(
-                flat_scores, min(n_select, flat_scores.shape[0])
+                flat_scores, min(2 * num_beams, flat_scores.shape[0])
             )
-
             beam_indices = topk_indices // vocab_size
             token_indices = topk_indices % vocab_size
-
-            new_tokens_list = []
-            new_scores_list = []
-            new_beam_map = []
-
-            for i in range(topk_scores.shape[0]):
-                bi = beam_indices[i].item()
-                ti = token_indices[i].item()
-                sc = topk_scores[i].item()
-
-                if ti == eos_token_id:
-                    seq = paddle.concat([beam_tokens[bi], token_indices[i : i + 1]])
-                    length = seq.shape[0]
-                    lp = ((5.0 + length) / (5.0 + 1.0)) ** length_penalty
-                    finished_hypos.append((sc / lp, seq))
+            new_tokens, new_scores, beam_map = [], [], []
+            for rank in range(topk_scores.shape[0]):
+                score = float(topk_scores[rank])
+                if not math.isfinite(score):
                     continue
-
-                new_seq = paddle.concat([beam_tokens[bi], token_indices[i : i + 1]])
-                new_tokens_list.append(new_seq)
-                new_scores_list.append(sc)
-                new_beam_map.append(bi)
-
-                if len(new_tokens_list) >= num_beams:
+                parent = int(beam_indices[rank])
+                token = int(token_indices[rank])
+                sequence = paddle.concat(
+                    [beam_tokens[parent], token_indices[rank : rank + 1]]
+                )
+                if token == eos_token_id:
+                    if rank < num_beams:
+                        finished_hypos.append(
+                            (normalized_score(score, step + 1), sequence)
+                        )
+                    continue
+                new_tokens.append(sequence)
+                new_scores.append(score)
+                beam_map.append(parent)
+                if len(new_tokens) == num_beams:
                     break
 
-            if not new_tokens_list:
+            finished_hypos.sort(key=lambda item: item[0], reverse=True)
+            finished_hypos = finished_hypos[:num_beams]
+            if not new_tokens:
+                beam_tokens = None
+                break
+            beam_tokens = paddle.stack(new_tokens)
+            beam_scores = paddle.to_tensor(new_scores, dtype="float32")
+            bound_length = max_new_tokens if length_penalty > 0 else step + 1
+            best_possible_score = normalized_score(max(new_scores), bound_length)
+            if (
+                len(finished_hypos) == num_beams
+                and finished_hypos[-1][0] >= best_possible_score
+            ):
+                beam_tokens = None
+                break
+            if step + 1 == max_new_tokens:
                 break
 
-            beam_tokens = paddle.stack(new_tokens_list)
-            beam_scores = paddle.to_tensor(new_scores_list, dtype="float32")
-
-            # Reorder KV cache to match new beam assignment
-            reorder_idx = paddle.to_tensor(new_beam_map, dtype="int64")
+            reorder_idx = paddle.to_tensor(beam_map, dtype="int64")
             for layer_idx in range(len(past_key_values.key_cache)):
                 past_key_values.key_cache[layer_idx] = paddle.index_select(
                     past_key_values.key_cache[layer_idx], reorder_idx, axis=0
@@ -981,17 +903,31 @@ class MistralForCausalLM(MistralPreTrainedModel):
                 past_key_values.value_cache[layer_idx] = paddle.index_select(
                     past_key_values.value_cache[layer_idx], reorder_idx, axis=0
                 )
-
             attention_mask = paddle.index_select(attention_mask, reorder_idx, axis=0)
+            attention_mask = paddle.concat(
+                [
+                    attention_mask,
+                    paddle.ones([len(new_tokens), 1], dtype="int64"),
+                ],
+                axis=-1,
+            )
+            outputs = self.model(
+                input_ids=beam_tokens[:, -1:],
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                use_cache=True,
+                cache_position=paddle.arange(seq_len + step, seq_len + step + 1),
+            )
+            logits = self.lm_head(outputs[0][:, -1:, :])[:, 0, :]
 
-        if finished_hypos:
-            finished_hypos.sort(key=lambda x: x[0], reverse=True)
-            best_seq = finished_hypos[0][1]
-        else:
-            best_idx = int(paddle.argmax(beam_scores).item())
-            best_seq = beam_tokens[best_idx]
-
-        return best_seq.unsqueeze(0)
+        if beam_tokens is not None:
+            finished_hypos.extend(
+                (normalized_score(float(score), tokens.shape[0]), tokens)
+                for score, tokens in zip(beam_scores, beam_tokens)
+            )
+        if not finished_hypos:
+            raise ValueError("No finite beam-search candidates remain.")
+        return max(finished_hypos, key=lambda item: item[0])[1].unsqueeze(0)
 
     @staticmethod
     def _next_token(logits, do_sample, top_p):

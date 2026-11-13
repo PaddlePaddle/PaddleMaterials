@@ -1144,13 +1144,29 @@ class Blip2Base(nn.Layer):
     """Base class for Blip2 models."""
 
     @classmethod
-    def init_Qformer(cls, num_query_token, vision_width, cross_attention_freq=2):
-        config = BertConfig(
-            encoder_width=vision_width,
-            add_cross_attention=True,
-            cross_attention_freq=cross_attention_freq,
-            query_length=num_query_token,
-        )
+    def init_Qformer(cls, num_query_token, vision_width, qformer_config=None):
+        settings = {} if qformer_config is None else dict(qformer_config)
+        derived = {
+            "encoder_width": vision_width,
+            "query_length": num_query_token,
+            "add_cross_attention": True,
+        }
+        for name, value in derived.items():
+            if name in settings and settings[name] != value:
+                raise ValueError(f"{name} must match the model-derived value {value}.")
+        config = BertConfig(**dict(settings, **derived))
+        if config.num_hidden_layers < 1 or config.cross_attention_freq < 1:
+            raise ValueError(
+                "Q-Former depth and cross-attention frequency must be positive."
+            )
+        if config.num_attention_heads < 1 or config.hidden_size < 1:
+            raise ValueError(
+                "Q-Former hidden size and attention heads must be positive."
+            )
+        if config.hidden_size % config.num_attention_heads:
+            raise ValueError(
+                "Q-Former hidden size must be divisible by attention heads."
+            )
 
         Qformer = BertLMHeadModel(config)
 
@@ -1163,9 +1179,9 @@ class Blip2Base(nn.Layer):
         )
         return Qformer, query_tokens
 
-    def init_material_encoder(self):
+    def init_material_encoder(self, config=None):
         """Initialize CHGNet material encoder without pretrained weights."""
-        return MatterChatEncoder()
+        return MatterChatEncoder(config)
 
     def maybe_autocast(self, dtype=paddle.float16):
         """Context manager for mixed precision."""

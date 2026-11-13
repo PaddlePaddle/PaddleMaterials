@@ -9,6 +9,8 @@ Execution:
 Model:
   __class_name__: Blip2MistralInstruct
   __init_params__:
+    material_encoder_config: null
+    qformer_config: null
     tokenizer_path: ./data/matterchat/tokenizer.json
 
 Dataset:

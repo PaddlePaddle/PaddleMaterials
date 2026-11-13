@@ -44,11 +44,15 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
         llm_model=None,
         tokenizer_path=None,
         llm_config=None,
+        material_encoder_config=None,
+        qformer_config=None,
         pretrained_package=None,
         execution_backend="eager",
         runtime_options=None,
     ):
         super().__init__()
+        if num_query_token < 1:
+            raise ValueError("num_query_token must be positive.")
         if qformer_text_input:
             raise ValueError(
                 "Only qformer_text_input=False is supported by MatterChat."
@@ -66,11 +70,13 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
             _resolved = os.path.expanduser(tokenizer_path)
             llm_tokenizer = MistralTokenizerWrapper(_resolved)
 
-        self.material_encoder = self.init_material_encoder()
+        self.material_encoder = self.init_material_encoder(material_encoder_config)
         for param in self.material_encoder.parameters():
             param.stop_gradient = True
 
-        self.Qformer, self.query_tokens = self.init_Qformer(num_query_token, 64)
+        self.Qformer, self.query_tokens = self.init_Qformer(
+            num_query_token, self.material_encoder.atom_fea_dim, qformer_config
+        )
 
         self.Qformer.bert.embeddings.word_embeddings = None
         self.Qformer.bert.embeddings.position_embeddings = None
@@ -297,6 +303,13 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
             raise ValueError("Training requires a tokenizer_path or llm_tokenizer.")
         num_atoms = samples["num_atoms"].tolist()
         embeddings = samples["material_embedding"]
+        if (
+            embeddings.ndim != 2
+            or embeddings.shape[1] != self.material_encoder.atom_fea_dim
+        ):
+            raise ValueError(
+                "material_embedding width must match the material encoder."
+            )
         embedding_list = paddle.split(embeddings, num_atoms, axis=0)
         max_atoms = max(num_atoms)
         material_embeds = paddle.stack(

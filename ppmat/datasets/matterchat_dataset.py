@@ -23,8 +23,10 @@ from ppmat.datasets.custom_data_type import ConcatData
 class MatterChatDataset(Dataset):
     """Read packed per-atom embeddings and text from an explicit NPZ file."""
 
-    def __init__(self, path):
+    def __init__(self, path, embedding_dim=64):
         super().__init__()
+        if not isinstance(embedding_dim, int) or embedding_dim < 1:
+            raise ValueError("embedding_dim must be a positive integer.")
         with np.load(path, allow_pickle=False) as data:
             self.embeddings = data["material_embedding"].astype("float32")
             self.num_atoms = data["num_atoms"]
@@ -34,8 +36,10 @@ class MatterChatDataset(Dataset):
             raise ValueError("num_atoms must be a one-dimensional integer array.")
         if len(self.num_atoms) == 0 or np.any(self.num_atoms <= 0):
             raise ValueError("Every record must contain at least one atom.")
-        if self.embeddings.shape != (int(self.num_atoms.sum()), 64):
-            raise ValueError("material_embedding must have shape [sum(num_atoms), 64].")
+        if self.embeddings.shape != (int(self.num_atoms.sum()), embedding_dim):
+            raise ValueError(
+                "material_embedding must have shape [sum(num_atoms), embedding_dim]."
+            )
         if not np.isfinite(self.embeddings).all():
             raise ValueError("material_embedding must contain finite values.")
         for name, values in (("text_input", self.questions), ("text", self.answers)):

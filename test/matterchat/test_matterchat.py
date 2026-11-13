@@ -25,6 +25,8 @@ from pymatgen.core import Lattice
 from pymatgen.core import Structure
 
 from ppmat.models import MODEL_REGISTRY
+from ppmat.models.matterchat.mistral.configuration_mistral import MistralConfig
+from ppmat.models.matterchat.mistral.modeling_mistral import MistralForCausalLM
 from ppmat.models.matterchat.q_former.q_former_complete import Blip2MistralInstruct
 
 # Tiny Mistral config; the default 7B setting does not fit on one GPU.
@@ -86,7 +88,7 @@ def _write_tokenizer_json(path):
     path.write_text(json.dumps(_TOK_JSON))
 
 
-def _build_tiny_model(tokenizer_path=None):
+def _build_tiny_model(tokenizer_path=None, **settings):
     paddle.seed(0)
     return Blip2MistralInstruct(
         num_query_token=4,
@@ -98,10 +100,11 @@ def _build_tiny_model(tokenizer_path=None):
         llm_model=None,
         tokenizer_path=tokenizer_path or "",
         llm_config=dict(_SMALL_LLM_CONFIG),
+        **settings,
     )
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def small_model():
     """Build a tiny Blip2MistralInstruct without an LLM tokenizer."""
     model = _build_tiny_model()
@@ -109,7 +112,7 @@ def small_model():
     return model
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def chat_model(tmp_path_factory):
     """Tiny Blip2MistralInstruct with a generated tokenizer for chat()."""
     tok_dir = tmp_path_factory.mktemp("tokenizer")
@@ -174,17 +177,37 @@ def test_model_configuration_and_structure_encoding(
         assert projected.shape == [1, 4, _SMALL_LLM_CONFIG["hidden_size"]]
         assert bool(paddle.isfinite(projected).all())
     assert not paddle.allclose(embeddings[0], embeddings[1])
+    params = config.Model.__init_params__
+    configured = _build_tiny_model(
+        material_encoder_config=OmegaConf.to_container(params.material_encoder_config),
+        qformer_config=OmegaConf.to_container(params.qformer_config),
+    )
+    assert configured.state_dict().keys() == small_model.state_dict().keys()
+    for name, value in small_model.state_dict().items():
+        np.testing.assert_array_equal(
+            value.numpy(), configured.state_dict()[name].numpy()
+        )
+    configured.eval()
+    with paddle.no_grad():
+        actual = configured.material_encoder.predict_structure_embedding(si_structure)
+    np.testing.assert_array_equal(actual.numpy(), embeddings[0].numpy())
+    with pytest.raises(ValueError, match="encoder_width"):
+        _build_tiny_model(qformer_config={"encoder_width": 32})
+    with pytest.raises(TypeError, match="hidden_szie"):
+        _build_tiny_model(qformer_config={"hidden_szie": 32})
     assert "matterchat_full" not in MODEL_REGISTRY
     assert Blip2MistralInstruct.pretrained_url.startswith("https://")
 
 
-def test_chat_and_generation_workflows(chat_model, si_structure, gan_structure):
+def test_chat_and_generation_workflows(
+    chat_model, si_structure, gan_structure, monkeypatch
+):
     for structure in (si_structure, gan_structure):
         answer = chat_model.chat(structure, "a b", max_new_tokens=4)
         assert isinstance(answer, str)
     samples = {"material_sample": si_structure, "prompt": "a b"}
-    generated = chat_model.generate(samples, num_beams=1, max_length=8)
-    followup = chat_model.generate_followup(samples, num_beams=1, max_length=8)
+    generated = chat_model.generate(samples, max_length=8)
+    followup = chat_model.generate_followup(samples, max_length=8)
     sampled = chat_model.generate(
         samples, num_beams=1, max_length=8, use_nucleus_sampling=True, top_p=0.3
     )
@@ -195,6 +218,155 @@ def test_chat_and_generation_workflows(chat_model, si_structure, gan_structure):
         chat_model.generate(samples, num_beams=1, max_length=8, num_captions=2)
     for layer in (chat_model.material_encoder, chat_model.llm_model):
         assert all(parameter.stop_gradient for parameter in layer.parameters())
+
+    def prefer_eos(hidden_states):
+        logits = paddle.full(
+            [*hidden_states.shape[:-1], _SMALL_LLM_CONFIG["vocab_size"]], -20.0
+        )
+        logits[..., 2] = 10.0
+        logits[..., 3] = 9.0
+        logits[..., 4] = 8.0
+        return logits
+
+    llm = chat_model.llm_model
+    prefix = paddle.to_tensor([[1, 5]], dtype="int64")
+    with monkeypatch.context() as patch:
+        patch.setattr(llm.lm_head, "forward", prefer_eos)
+        for beams in (1, 5):
+            for minimum, expected in (
+                (0, [2]),
+                (1, [3, 2]),
+                (2, [3, 3, 2]),
+            ):
+                for budget in (max(1, minimum), minimum + 2):
+                    tokens = llm.generate(
+                        input_ids=prefix,
+                        num_beams=beams,
+                        min_length=minimum,
+                        max_length=prefix.shape[1] + budget,
+                        repetition_penalty=1.0,
+                    )
+                    assert tokens.tolist() == [expected[:budget]]
+
+        head_calls = 0
+
+        def prefer_continuation(hidden_states):
+            nonlocal head_calls
+            logits = paddle.full(
+                [*hidden_states.shape[:-1], _SMALL_LLM_CONFIG["vocab_size"]], -20.0
+            )
+            if head_calls == 0:
+                logits[..., 3] = 10.0
+                logits[..., 2] = 8.0
+            else:
+                logits[..., 4] = 10.0
+            head_calls += 1
+            return logits
+
+        patch.setattr(llm.lm_head, "forward", prefer_continuation)
+        tokens = llm.generate(
+            input_ids=prefix,
+            num_beams=5,
+            min_length=0,
+            max_length=prefix.shape[1] + 2,
+            repetition_penalty=1.0,
+        )
+        assert tokens.tolist() == [[3, 4]]
+
+
+@pytest.mark.parametrize(
+    "use_gpu",
+    [
+        pytest.param(False, id="cpu"),
+        pytest.param(True, marks=requires_gpu_cinn, id="gpu"),
+    ],
+)
+def test_attention_backends_training_and_cached_generation(use_gpu):
+    if use_gpu:
+        gpu_cinn_or_skip()
+    paddle.seed(2026)
+    settings = dict(
+        _SMALL_LLM_CONFIG,
+        hidden_size=256,
+        intermediate_size=512,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+    )
+    eager = MistralForCausalLM(MistralConfig(**settings))
+    sdpa = MistralForCausalLM(MistralConfig(**settings, attn_implementation="sdpa"))
+    sdpa.set_state_dict(eager.state_dict())
+    assert eager.state_dict().keys() == sdpa.state_dict().keys()
+    inputs = paddle.to_tensor(
+        [[1, 3, 4, 5, 6, 7, 8, 9], [1, 4, 5, 3, 4, 6, 7, 8]], dtype="int64"
+    )
+    mask = paddle.to_tensor(
+        [[1, 1, 1, 1, 1, 0, 0, 0], [1, 0, 1, 1, 0, 1, 1, 1]], dtype="int64"
+    )
+    labels = inputs.masked_fill(mask == 0, -100)
+    outputs = []
+    for model in (eager, sdpa):
+        model.train()
+        output = model(
+            input_ids=inputs,
+            attention_mask=mask,
+            labels=labels,
+            use_cache=False,
+        )
+        output.loss.backward()
+        for name, parameter in model.named_parameters():
+            assert parameter.grad is not None, name
+            assert bool(paddle.isfinite(parameter.grad).all()), name
+        outputs.append(output)
+    np.testing.assert_allclose(
+        outputs[0].logits.numpy(), outputs[1].logits.numpy(), rtol=1e-5, atol=1e-6
+    )
+    np.testing.assert_allclose(
+        outputs[0].loss.numpy(), outputs[1].loss.numpy(), rtol=1e-5, atol=1e-6
+    )
+    for name, parameter in eager.named_parameters():
+        np.testing.assert_allclose(
+            parameter.grad.numpy(),
+            sdpa.state_dict()[name].grad.numpy(),
+            rtol=1e-4,
+            atol=1e-6,
+        )
+
+    for model, output in zip((eager, sdpa), outputs):
+        model.eval()
+        with paddle.no_grad():
+            changed = inputs.masked_fill(mask == 0, 9)
+            masked = model(input_ids=changed, attention_mask=mask, use_cache=False)
+            np.testing.assert_allclose(
+                masked.logits.numpy()[mask.numpy().astype(bool)],
+                output.logits.numpy()[mask.numpy().astype(bool)],
+                rtol=1e-5,
+                atol=1e-6,
+            )
+            prefill = model(
+                input_ids=inputs[:, :3], attention_mask=mask[:, :3], use_cache=True
+            )
+            decoded = model(
+                input_ids=inputs[:, 3:],
+                attention_mask=mask,
+                past_key_values=prefill.past_key_values,
+                use_cache=True,
+            )
+            np.testing.assert_allclose(
+                decoded.logits.numpy(),
+                output.logits[:, 3:].numpy(),
+                rtol=1e-5,
+                atol=1e-6,
+            )
+            inspected = model(
+                input_ids=inputs,
+                attention_mask=mask,
+                output_attentions=True,
+                use_cache=False,
+            )
+            assert len(inspected.attentions) == _SMALL_LLM_CONFIG["num_hidden_layers"]
+            np.testing.assert_allclose(
+                inspected.logits.numpy(), output.logits.numpy(), rtol=1e-5, atol=1e-6
+            )
 
 
 def _registry_layout(tmp_path, model):
@@ -358,6 +530,14 @@ def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatc
     llm_config = dict(_SMALL_LLM_CONFIG, vocab_size=32769)
     config.Model.__init_params__.llm_config = llm_config
     config.Model.__init_params__.num_query_token = 4
+    config.Model.__init_params__.material_encoder_config = {"atom_fea_dim": 32}
+    config.Dataset.train.dataset.__init_params__.embedding_dim = 32
+    config.Model.__init_params__.qformer_config = {
+        "hidden_size": 32,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "intermediate_size": 64,
+    }
     model_config = OmegaConf.to_container(config.Model, resolve=True)
     paddle.seed(2026)
     with paddle.utils.unique_name.guard():
@@ -385,8 +565,10 @@ def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatc
     )
     batch = next(iter(loader))
     assert batch["num_atoms"].tolist() == [2, 4]
-    assert batch["material_embedding"].shape == [6, 64]
+    assert batch["material_embedding"].shape == [6, 32]
     model.train()
+    with pytest.raises(ValueError, match="width must match"):
+        model(dict(batch, material_embedding=batch["material_embedding"][:, :-1]))
     captured_labels = []
     llm_forward = model.llm_model.forward
 
@@ -416,6 +598,16 @@ def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatc
     initial_projection = model.llm_proj.weight.numpy().copy()
     frozen_embedding = model.llm_model.model.embed_tokens.weight.numpy().copy()
     optimizer_config = OmegaConf.to_container(config.Optimizer, resolve=True)
+    optimizer_config["__init_params__"]["lr"] = {
+        "__class_name__": "ExponentialDecay",
+        "__init_params__": {
+            "learning_rate": 0.0001,
+            "gamma": 0.5,
+            "decay_steps": 1,
+            "by_epoch": False,
+        },
+    }
+    initial_state = {name: value.clone() for name, value in model.state_dict().items()}
     optimizer, scheduler = build_optimizer(optimizer_config, model, 2, len(loader))
     trainer = BaseTrainer(
         trainer_config(tmp_path / "first", 1),
@@ -460,10 +652,47 @@ def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatc
     assert resumed.state.global_step == 1
     assert tuple(restored.state_dict()) == expected_keys
     assert_state_dict_close(restored.state_dict(), model.state_dict(), 0)
-    assert_state_dict_close(restored_optimizer.state_dict(), optimizer.state_dict(), 0)
+    expected_optimizer = optimizer.state_dict()
+    actual_optimizer = restored_optimizer.state_dict()
+    assert actual_optimizer.pop("LR_Scheduler") == expected_optimizer.pop(
+        "LR_Scheduler"
+    )
+    assert_state_dict_close(actual_optimizer, expected_optimizer, 0)
+    assert restored_scheduler.state_dict() == scheduler.state_dict()
+    assert restored_optimizer.get_lr() == optimizer.get_lr() == 0.00005
+    assert resumed.state.epoch == trainer.state.epoch == 1
     resumed.max_epochs = 2
     with paddle.utils.unique_name.guard():
         resumed.train(resume_from_checkpoint=str(checkpoint))
     assert resumed.state.global_step == 2
     for name, parameter in restored.named_parameters():
         assert bool(paddle.isfinite(parameter).all()), name
+
+    with paddle.utils.unique_name.guard():
+        straight_model = build_model(model_config)
+        straight_model.set_state_dict(initial_state)
+        straight_optimizer, straight_scheduler = build_optimizer(
+            optimizer_config, straight_model, 2, len(loader)
+        )
+    straight = BaseTrainer(
+        trainer_config(tmp_path / "straight", 2),
+        straight_model,
+        train_dataloader=loader,
+        val_dataloader=loader,
+        optimizer=straight_optimizer,
+        lr_scheduler=straight_scheduler,
+        execution_config={"backend": "eager"},
+    )
+    with paddle.utils.unique_name.guard():
+        straight.train()
+    assert resumed.state.epoch == straight.state.epoch == 2
+    assert resumed.state.global_step == straight.state.global_step == 2
+    assert restored_scheduler.state_dict() == straight_scheduler.state_dict()
+    assert restored_optimizer.get_lr() == straight_optimizer.get_lr() == 0.000025
+    assert restored.state_dict().keys() == straight_model.state_dict().keys()
+    resumed_state = restored_optimizer.state_dict()
+    straight_state = straight_optimizer.state_dict()
+    assert resumed_state.keys() == straight_state.keys()
+    assert resumed_state.pop("LR_Scheduler") == straight_state.pop("LR_Scheduler")
+    for name in resumed_state:
+        assert resumed_state[name].shape == straight_state[name].shape

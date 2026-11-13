@@ -8,6 +8,12 @@ MatterChat is a multimodal large language model for crystal materials. It adopts
 
 ![MatterChat Overview](MatterChat_overview.png)
 
+## Environment
+
+Use the repository's PaddlePaddle environment with Python 3.10 or newer.
+The repository requirements include `tokenizers==0.23.1`, the tokenizer runtime
+used to read the checkpoint's `tokenizer.json` for training and dialogue.
+
 ---
 
 ## Model Description
@@ -100,9 +106,22 @@ attention dimensions raise errors instead of silently accepting unused options.
 Unused external configuration fields (`head_dim`, `sliding_window`,
 `tie_word_embeddings`, `num_labels`, `model_type`) are not supported; the previous
 implementation accepted them without applying them to the model. Attention is
-selected explicitly using `attn_implementation: eager` or `sdpa`. The published
-query-only Q-Former requires `qformer_text_input: false`; unsupported text-input
+selected explicitly using `attn_implementation: eager` or `sdpa`.
+The SDPA path selects Paddle's flash-attention or math backend. The memory-efficient
+backend is excluded because its FP32 kernels reject valid input shapes on the
+tested GPU. Both attention paths preserve causal and padding masks.
+The published query-only Q-Former requires `qformer_text_input: false`; unsupported text-input
 Q-Former configurations raise an error before constructing model weights.
+
+`material_encoder_config` and `qformer_config` accept dictionaries of typed
+settings. Missing dictionaries or fields use `MaterialEncoderConfig` and
+`BertConfig` defaults; the training YAML uses these defaults explicitly via
+`null`. The inference YAML lists the encoder settings and Q-Former dimensions.
+The default architecture preserves the published checkpoint layout. Custom
+architectures need matching weights. Unknown fields raise `TypeError`.
+Q-Former encoder width and query length come from the material encoder and
+`num_query_token`; conflicting overrides raise `ValueError`. Cross-attention
+must remain enabled. Other omitted Q-Former fields use `BertConfig` defaults.
 
 ---
 
@@ -134,7 +153,10 @@ Set the loaded model to `eval()` and call
 `paddle.no_grad()`. Concatenate those arrays with `numpy.concatenate`, and save
 all four fields using `numpy.savez`. This is a caller-provided dataset, so missing
 files raise an error rather than downloading an unrelated corpus. Split training
-and validation records before saving separate archives.
+and validation records before saving separate archives. The released encoder
+produces 64 features per atom. For a custom encoder, set the dataset's
+`embedding_dim` to `Model.__init_params__.material_encoder_config.atom_fea_dim`
+and regenerate features with the matching encoder weights.
 
 `MatterChatDataset` returns plain dictionaries. `ConcatData` packs variable atom
 counts through `DefaultCollator`; the model pads features and masks padded atoms
