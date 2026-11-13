@@ -1,4 +1,4 @@
-# Copyright (c) 2025 PaddlePaddle Authors. All Rights Reserved.
+# Copyright (c) 2026 PaddlePaddle Authors. All Rights Reserved.
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,6 +30,7 @@ from ppmat.models.common.graph_converter import FindPointsInSpheres
 from ppmat.models.common.graph_converter import MolecularGraphConverter
 from ppmat.models.common.graph_converter import RadiusGraphConverter
 from ppmat.models.diffcsp.diffcsp import DiffCSP
+from ppmat.models.diffcsp.diffcsp import DiffCSPWithType
 from ppmat.models.diffnmr.diffnmr import DiffNMR
 from ppmat.models.diffnmr.diffnmr import DiffPrior
 from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
@@ -56,6 +57,7 @@ __all__ = [
     "iComformer",
     "ComformerGraphConverter",
     "DiffCSP",
+    "DiffCSPWithType",
     "FindPointsInSpheres",
     "MEGNetPlus",
     "MatterGen",
@@ -118,7 +120,9 @@ MODEL_REGISTRY = {
     "propmolflow_qm9_homo_concatenate_sum_ood": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_homo_concatenate_sum_ood.zip",
     "propmolflow_qm9_lumo_concatenate_multiply_ood": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_lumo_concatenate_multiply_ood.zip",
     "propmolflow_qm9_mu_sum_ood": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_mu_sum_ood.zip",
+    "diffcsp_mp20_ab_initio": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/diffcsp/diffcsp_mp20_ab_initio.zip",
     "mattergen_mp20": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_mp20.zip",
+    "mattergen_mp20_csp": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/mattergen/mattergen_mp20_csp.zip",
     "mattergen_mp20_chemical_system": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_mp20_chemical_system.zip",
     "mattergen_mp20_dft_band_gap": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_mp20_dft_band_gap.zip",
     "mattergen_mp20_dft_bulk_modulus": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_mp20_dft_bulk_modulus.zip",
@@ -136,6 +140,18 @@ MODEL_REGISTRY = {
     "dimenetpp_mp2018_train_60k_band_gap": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_mp2018_train_60k_band_gap.zip",
     "dimenetpp_mp2018_train_60k_G": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_mp2018_train_60k_G.zip",
     "dimenetpp_mp2018_train_60k_K": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_mp2018_train_60k_K.zip",
+    "dimenetpp_qm9_mu": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_mu.zip",
+    "dimenetpp_qm9_alpha": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_alpha.zip",
+    "dimenetpp_qm9_homo": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_homo.zip",
+    "dimenetpp_qm9_lumo": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_lumo.zip",
+    "dimenetpp_qm9_gap": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_gap.zip",
+    "dimenetpp_qm9_r2": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_r2.zip",
+    "dimenetpp_qm9_zpve": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_zpve.zip",
+    "dimenetpp_qm9_U0": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_U0.zip",
+    "dimenetpp_qm9_U": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_U.zip",
+    "dimenetpp_qm9_H": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_H.zip",
+    "dimenetpp_qm9_G": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_G.zip",
+    "dimenetpp_qm9_Cv": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/dimenet++/dimenetpp_qm9_Cv.zip",
     "mattersim_1M": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/interatomic_potentials/mattersim/mattersim_1M.zip",
     "mattersim_5M": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/interatomic_potentials/mattersim/mattersim_5M.zip",
     "mattergen_ml2ddb": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/MatterGen/mattergen_ml2ddb.zip",

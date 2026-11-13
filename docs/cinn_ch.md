@@ -19,7 +19,8 @@ Execution:
 
 - `full_graph: false` 使用 SOT 捕获，允许断图；
 - `full_graph: true` 使用 AST 转换，要求整个边界成为一个静态程序，只适用于
-  下表标记为 **AST** 的模型。
+  下表标记为 **AST** 的模型。算力和应力模型需要它，因为 SOT 捕获可能在
+  `paddle.grad` 和它的输入之间断开，具体设置见模型 README。
 
 CINN 要求 CUDA 设备以及启用 CINN 的 Paddle。当前运行时不支持 AMP 和分布式
 执行。

@@ -19,7 +19,7 @@
 
 **PaddleMaterials** 是一款基于 **PaddlePaddle** 深度学习框架构建的端到端 AI4Materials 工具包。作为面向材料科学基础模型开发与部署的数据—机理双驱动平台，**PPMat** 帮助研究人员高效构建 AI 模型，并利用预训练模型加速材料发现。
 
-<p align="left"><img src="docs/overview_en.png" align="middle" width="1000"/></p>
+<p align="left"><img src="docs/overview_ch.png" align="middle" width="1000"/></p>
 
 ### 🧩 核心能力
 
@@ -200,11 +200,14 @@ PaddleMaterials 基于 [Apache License 2.0](LICENSE) 许可。
 ## 🎓 引用
 
 ```bibtex
-@misc{paddlematerials2025,
-  title={PaddleMaterials, a deep learning toolkit based on PaddlePaddle for material science.},
-  author={PaddleMaterials Contributors},
-  howpublished = {\url{https://github.com/PaddlePaddle/PaddleMaterials}},
-  year={2025}
+@misc{liu2026paddlematerialsendtoenddeeplearning,
+  title={PaddleMaterials: An End-to-End Deep Learning Toolkit for Materials Science},
+  author={Xuwei Liu and Zhimin Zhang and Xiaoguang Hu and Zhongwei Liu and Yuanhui Sun and Jun Huo and Hua Wu and Haifeng Wang},
+  year={2026},
+  eprint={2611.03154},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2611.03154},
 }
 ```
 

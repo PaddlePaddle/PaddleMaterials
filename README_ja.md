@@ -200,11 +200,14 @@ PaddleMaterials は [Apache License 2.0](LICENSE) の下で提供されていま
 ## 🎓 引用
 
 ```bibtex
-@misc{paddlematerials2025,
-  title={PaddleMaterials, a deep learning toolkit based on PaddlePaddle for material science.},
-  author={PaddleMaterials Contributors},
-  howpublished = {\url{https://github.com/PaddlePaddle/PaddleMaterials}},
-  year={2025}
+@misc{liu2026paddlematerialsendtoenddeeplearning,
+  title={PaddleMaterials: An End-to-End Deep Learning Toolkit for Materials Science},
+  author={Xuwei Liu and Zhimin Zhang and Xiaoguang Hu and Zhongwei Liu and Yuanhui Sun and Jun Huo and Hua Wu and Haifeng Wang},
+  year={2026},
+  eprint={2611.03154},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2611.03154},
 }
 ```
 
