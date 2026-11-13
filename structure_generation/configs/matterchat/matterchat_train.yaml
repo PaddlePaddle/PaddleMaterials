@@ -1,0 +1,54 @@
+Global:
+  do_train: true
+  do_eval: false
+  do_test: false
+
+Execution:
+  backend: eager
+
+Model:
+  __class_name__: Blip2MistralInstruct
+  __init_params__:
+    material_encoder_config: null
+    qformer_config: null
+    tokenizer_path: ./data/matterchat/tokenizer.json
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MatterChatDataset
+      __init_params__:
+        path: ./data/matterchat/train.npz
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 2
+        shuffle: true
+        drop_last: false
+    loader:
+      num_workers: 0
+      collate_fn: DefaultCollator
+
+Optimizer:
+  __class_name__: AdamW
+  __init_params__:
+    lr: 0.0001
+    weight_decay: 0.01
+
+Trainer:
+  max_epochs: 1
+  seed: 2026
+  output_dir: ./output/matterchat_train
+  save_freq: 1
+  log_freq: 1
+  eval_freq: 1
+  start_eval_epoch: 1
+  pretrained_model_path: null
+  resume_from_checkpoint: null
+  use_amp: false
+  eval_with_no_grad: true
+  gradient_accumulation_steps: 1
+  compute_metric_during_train: false
+  best_metric_indicator: train_loss
+  name_for_best_metric: loss
+  greater_is_better: false

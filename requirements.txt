@@ -33,6 +33,7 @@ setuptools-scm==8.3.1
 SMACT==2.5.5
 sympy==1.12.1
 tensorboardX==2.6.2.2
+tokenizers==0.23.1
 tqdm==4.66.4
 typing_extensions==4.14.0
 visualdl==2.5.3
