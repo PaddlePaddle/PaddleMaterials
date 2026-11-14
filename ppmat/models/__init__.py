@@ -1,4 +1,4 @@
-# Copyright (c) 2025 PaddlePaddle Authors. All Rights Reserved.
+# Copyright (c) 2026 PaddlePaddle Authors. All Rights Reserved.
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -42,6 +42,8 @@ from ppmat.models.mattergen.mattergen import MatterGenWithCondition
 from ppmat.models.mattersim.m3gnet import M3GNet
 from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
 from ppmat.models.megnet.megnet import MEGNetPlus
+from ppmat.models.propmolflow.propmolflow import PropMolFlow
+from ppmat.models.propmolflow.propmolflow import PropMolFlowVectorField
 from ppmat.models.sfin.sfin import SFIN
 from ppmat.models.spherenet.spherenet import SphereNet
 from ppmat.utils import download
@@ -75,6 +77,8 @@ __all__ = [
     "InfGCN",
     "SFIN",
     "SphereNet",
+    "PropMolFlow",
+    "PropMolFlowVectorField",
 ]
 
 # Warning:
@@ -106,6 +110,16 @@ MODEL_REGISTRY = {
     "megnet_jarvis_dft_3d_e_form": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/megnet/megnet_jarvis_dft_3d_e_form.zip",
     "megnet_jarvis_alex_pbe_2d_all_e_form": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/megnet/megnet_jarvis_alex_pbe_2d_all_e_form.zip",
     "diffcsp_mp20": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/diffcsp/diffcsp_mp20.zip",
+    "propmolflow_qm9_alpha_sum": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_alpha_sum.zip",
+    "propmolflow_qm9_Cv_sum": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_Cv_sum.zip",
+    "propmolflow_qm9_gap_concatenate_sum": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_gap_concatenate_sum.zip",
+    "propmolflow_qm9_homo_concatenate": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_homo_concatenate.zip",
+    "propmolflow_qm9_lumo_concatenate_sum": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_lumo_concatenate_sum.zip",
+    "propmolflow_qm9_mu_multiply": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_mu_multiply.zip",
+    "propmolflow_qm9_gap_concatenate_ood": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_gap_concatenate_ood.zip",
+    "propmolflow_qm9_homo_concatenate_sum_ood": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_homo_concatenate_sum_ood.zip",
+    "propmolflow_qm9_lumo_concatenate_multiply_ood": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_lumo_concatenate_multiply_ood.zip",
+    "propmolflow_qm9_mu_sum_ood": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_mu_sum_ood.zip",
     "diffcsp_mp20_ab_initio": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/diffcsp/diffcsp_mp20_ab_initio.zip",
     "mattergen_mp20": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_mp20.zip",
     "mattergen_mp20_csp": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/mattergen/mattergen_mp20_csp.zip",

@@ -1,0 +1,206 @@
+Global:
+  # Whether to train, evaluate or test
+  do_train: True
+  do_eval: True
+  do_test: False
+  # Property used for conditional generation
+  property_name: gap
+  # Number of integration steps used during sampling
+  num_inference_steps: 100
+
+Trainer:
+  # Max epochs to train
+  max_epochs: 2000
+  # Random seed
+  seed: 42
+  # Save path for checkpoints and logs
+  output_dir: ./output/propmolflow_qm9_gap_concatenate_ood
+  # Save frequency [epoch], for example, save_freq=10 means save checkpoints every 10 epochs
+  save_freq: 50 # set 0 to disable saving during training
+  # Logging frequency [step], for example, log_freq=10 means log every 10 steps
+  log_freq: 10 # log frequency [step]
+
+  # Start evaluation epoch, for example, start_eval_epoch=10 means start evaluation from epoch 10
+  start_eval_epoch: 1
+  # Evaluation frequency [epoch], for example, eval_freq=1 means evaluate every 1 epoch
+  eval_freq: 1 # set 0 to disable evaluation during training
+  # Pretrained model path, if null, no pretrained model will be loaded
+  pretrained_model_path: null
+  # Resume from checkpoint path, useful for resuming training
+  resume_from_checkpoint: null
+  # whether use automatic mixed precision
+  use_amp: False
+  # automatic mixed precision level
+  amp_level: 'O1'
+  # whether run a model on no_grad mode during evaluation, useful for saving memory
+  eval_with_no_grad: True
+  # gradient accumulation steps
+  gradient_accumulation_steps: 1
+
+  # best metric indicator, you can choose from "train_loss", "eval_loss", "train_metric", "eval_metric"
+  best_metric_indicator: 'eval_loss'
+  # The name of the best metric
+  name_for_best_metric: "loss"
+  # The metric whether is better when it is greater
+  greater_is_better: False
+
+  # compute metric during training or evaluation
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'epoch'
+
+  # whether use visualdl, wandb, tensorboard to log
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: PropMolFlow
+  __init_params__:
+    atom_type_map: ["C", "H", "N", "O", "F"]
+    total_loss_weights:
+      positions: 3.0
+      atom_types: 0.4
+      atom_charges: 1.0
+      bond_types: 2.0
+    interpolant_scheduler_config:
+      __class_name__: InterpolantScheduler
+      __init_params__:
+        schedule_type:
+          positions: linear
+          atom_types: linear
+          atom_charges: linear
+          bond_types: linear
+        cosine_params:
+          positions: 1
+          atom_types: 2
+          atom_charges: 2
+          bond_types: 1.5
+    vector_field_config:
+      n_charges: 6
+      n_bond_types: 5
+      charge_offset: 2
+      n_hidden_scalars: 256
+      n_hidden_edge_feats: 128
+      n_vec_channels: 16
+      n_cp_feats: 4
+      n_message_gvps: 3
+      n_update_gvps: 3
+      n_position_update_gvps: 3
+      n_molecule_updates: 8
+      convs_per_update: 1
+      n_recycles: 1
+      rbf_dim: 32
+      rbf_dmax: 14
+      message_norm: 100
+      separate_mol_updaters: True
+      update_edge_w_distance: True
+      stochasticity: 10.0
+      high_confidence_threshold: 0.0
+      cat_temperature: 0.05
+    prior_config:
+      positions: {type: centered-normal, align: True, kwargs: {std: 1.0}}
+      atom_types: {type: ctmc}
+      atom_charges: {type: ctmc}
+      bond_types: {type: ctmc}
+    property_embedding_dim: 256
+    properties_handle_method: concatenate
+    gaussian_expansion: False
+    n_gaussians: 5
+    gaussian_start: null
+    gaussian_stop: null
+    execution_backend: eager
+    runtime_options: null
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr: 0.00025
+    weight_decay: 1.0e-12
+  clip_value: 1.0
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: PropMolFlowDataset
+      __init_params__:
+        path: "./data/qm9/train.csv"
+        atom_map: ["C", "H", "N", "O", "F"]
+        conditioning_cfg:
+          enabled: True
+          property: ${Global.property_name}
+          normalize: True
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: False
+        batch_size: 128
+  val:
+    dataset:
+      __class_name__: PropMolFlowDataset
+      __init_params__:
+        path: "./data/qm9/val.csv"
+        atom_map: ["C", "H", "N", "O", "F"]
+        conditioning_cfg:
+          enabled: True
+          property: ${Global.property_name}
+          normalize: True
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 256
+  test:
+    dataset:
+      __class_name__: PropMolFlowDataset
+      __init_params__:
+        path: "./data/qm9/test.csv"
+        atom_map: ["C", "H", "N", "O", "F"]
+        conditioning_cfg:
+          enabled: True
+          property: ${Global.property_name}
+          normalize: True
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 256
+
+Sampler:
+  data:
+    dataset:
+      __class_name__: PropMolFlowSamplingDataset
+      __init_params__:
+        path: "./data/qm9/train.csv"
+        property_name: ${Global.property_name}
+        mode: in_distribution
+        total_num: 64
+        seed: 42
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 64
+  model_sample_params:
+    num_inference_steps: ${Global.num_inference_steps}
