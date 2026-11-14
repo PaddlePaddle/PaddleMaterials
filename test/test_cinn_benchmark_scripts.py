@@ -34,11 +34,9 @@ def test_supported_models_cover_every_qualified_registered_weight():
     runner = load_script("run_registry_matrix")
     models = runner.supported_models()
 
-    assert len(MODEL_REGISTRY) == 76
-    assert len(models) == 67
-    assert set(MODEL_REGISTRY) - set(models) == {
-        name for name in MODEL_REGISTRY if name.startswith("infgcn_")
-    }
+    assert models == sorted(
+        name for name in MODEL_REGISTRY if not name.startswith("infgcn_")
+    )
 
 
 def test_valid_result_requires_matching_success_record(tmp_path):
