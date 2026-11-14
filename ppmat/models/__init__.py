@@ -42,8 +42,8 @@ from ppmat.models.mattergen.mattergen import MatterGenWithCondition
 from ppmat.models.mattersim.m3gnet import M3GNet
 from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
 from ppmat.models.megnet.megnet import MEGNetPlus
-from ppmat.models.propmolflow.propmolflow import CTMCVectorField
 from ppmat.models.propmolflow.propmolflow import PropMolFlow
+from ppmat.models.propmolflow.propmolflow import PropMolFlowVectorField
 from ppmat.models.sfin.sfin import SFIN
 from ppmat.models.spherenet.spherenet import SphereNet
 from ppmat.utils import download
@@ -78,7 +78,7 @@ __all__ = [
     "SFIN",
     "SphereNet",
     "PropMolFlow",
-    "CTMCVectorField",
+    "PropMolFlowVectorField",
 ]
 
 # Warning:

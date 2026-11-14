@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ppmat.models.propmolflow.propmolflow import CTMCVectorField
 from ppmat.models.propmolflow.propmolflow import PropMolFlow
+from ppmat.models.propmolflow.propmolflow import PropMolFlowVectorField
 
-__all__ = ["PropMolFlow", "CTMCVectorField"]
+__all__ = ["PropMolFlow", "PropMolFlowVectorField"]

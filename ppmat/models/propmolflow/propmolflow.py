@@ -16,7 +16,7 @@
 
 Reference: https://www.nature.com/articles/s43588-025-00946-y
 
-The model owns the numerical runtime (see ``CTMCVectorField.forward``) and
+The model owns the numerical runtime (see ``PropMolFlowVectorField.forward``) and
 follows the ``forward``/``sample`` contracts of PaddleMaterials: the training
 forward returns ``{"loss_dict": ...}`` and sampling returns ``{"pred": [...]}``
 consumed by ``MolecularSampler``.
@@ -297,7 +297,7 @@ def _purity_sampling(
     return paddle.rand(xt.shape) < node_unmask_prob
 
 
-class CTMCVectorField(RuntimeMixin, nn.Layer):
+class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
     """Continuous-time Markov chain vector field for molecular flow matching.
 
     Categorical features (atom types, charges, bond types) follow CTMC
@@ -866,7 +866,7 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
 class PropMolFlow(RuntimeMixin, nn.Layer):
     """Property-guided molecule generation with geometry-complete flow matching.
 
-    The numerical runtime is owned by :class:`CTMCVectorField`; this class
+    The numerical runtime is owned by :class:`PropMolFlowVectorField`; this class
     forwards the execution backend to it and keeps the dataset-level contracts.
     """
 
@@ -936,7 +936,7 @@ class PropMolFlow(RuntimeMixin, nn.Layer):
         scheduler_cfg["__init_params__"]["feature_names"] = self.feature_names
         self.interpolant_scheduler = build_scheduler(scheduler_cfg)
 
-        self.vector_field = CTMCVectorField(
+        self.vector_field = PropMolFlowVectorField(
             n_atom_types=self.n_atom_types,
             feature_names=self.feature_names,
             interpolant_scheduler=self.interpolant_scheduler,

@@ -34,7 +34,7 @@ from ppmat.datasets.propmolflow_dataset import PropMolFlowDataset
 from ppmat.datasets.propmolflow_dataset import PropMolFlowSamplingDataset
 from ppmat.datasets.qm9_dataset import QM9Dataset
 from ppmat.metrics import PropMolFlowMoleculeMetric
-from ppmat.models import CTMCVectorField
+from ppmat.models import PropMolFlowVectorField
 from ppmat.models import build_model
 from ppmat.optimizer import build_optimizer
 from ppmat.sampler import MolecularSampler
@@ -675,10 +675,12 @@ def test_metric_one_shot_matches_streaming():
 
 def test_trainer_checkpoint_resume_restores_training_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        CTMCVectorField, "validate_execution_backend", lambda self, **kwargs: None
+        PropMolFlowVectorField,
+        "validate_execution_backend",
+        lambda self, **kwargs: None,
     )
     monkeypatch.setattr(
-        CTMCVectorField,
+        PropMolFlowVectorField,
         "_run_runtime",
         lambda self, name, function, *args, **kwargs: function(*args, **kwargs),
     )
@@ -782,7 +784,9 @@ def test_cinn_dispatch_boundary_and_eager_equivalence(monkeypatch):
     """CINN orchestration: boundary dispatch and eager equivalence of the
     full training forward (fixed seed keeps the stochastic path deterministic)."""
     monkeypatch.setattr(
-        CTMCVectorField, "validate_execution_backend", lambda self, **kwargs: None
+        PropMolFlowVectorField,
+        "validate_execution_backend",
+        lambda self, **kwargs: None,
     )
     boundary_names = []
 
@@ -790,7 +794,7 @@ def test_cinn_dispatch_boundary_and_eager_equivalence(monkeypatch):
         boundary_names.append(name)
         return function(*args, **kwargs)
 
-    monkeypatch.setattr(CTMCVectorField, "_run_runtime", spy)
+    monkeypatch.setattr(PropMolFlowVectorField, "_run_runtime", spy)
 
     batch = _build_batch([4, 5])
 
