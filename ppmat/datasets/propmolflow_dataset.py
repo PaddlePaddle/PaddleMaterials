@@ -12,16 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""PropMolFlow datasets built directly from the official QM9 release.
-
-The official QM9 package ships split CSVs with XYZ coordinates and property
-tables only. Bond orders and formal charges are perceived from the geometry
-and cached under the shared dataset cache, so training and sampling never
-depend on a preprocessed data package.
-
-The split download/parsing is reused from :class:`QM9Dataset`; only the
-featurization is PropMolFlow-specific.
-"""
+"""QM9 adapters for PropMolFlow training and conditional sampling."""
 
 from __future__ import annotations
 
@@ -29,10 +20,13 @@ import hashlib
 import json
 import os
 import os.path as osp
+import subprocess
+import sys
 import tempfile
 import zipfile
 from datetime import datetime
 from functools import partial
+from importlib import resources
 from typing import Dict
 
 import numpy as np
@@ -47,37 +41,59 @@ from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.datasets.qm9_dataset import QM9Dataset
 from ppmat.utils import download
 from ppmat.utils import logger
+from ppmat.utils.ext_rdkit import bond_types_from_vocab
 
-CACHE_VERSION = "v2"
+CACHE_VERSION = "v3"
 _HASH_CHUNK_SIZE = 1024 * 1024
 N_CHARGES = 6
 CHARGE_OFFSET = 2
 N_BOND_TYPES = 5
-BOND_TYPE_INDEX = {
-    Chem.rdchem.BondType.SINGLE: 1,
-    Chem.rdchem.BondType.DOUBLE: 2,
-    Chem.rdchem.BondType.TRIPLE: 3,
-    Chem.rdchem.BondType.AROMATIC: 4,
-}
+BOND_TYPE_INDEX = {bond: index for index, bond in bond_types_from_vocab().items()}
 _PERCEPTION_OPTIONS = (
     {"charge": 0},
     {"charge": 0, "allowChargedFragments": False},
-    {"charge": 0, "useHueckel": True},
+)
+_HUECKEL_SCRIPT = (
+    "import sys\n"
+    "from pathlib import Path\n"
+    "from rdkit import Chem\n"
+    "from rdkit.Chem import rdDetermineBonds\n"
+    "mol = Chem.Mol(sys.stdin.buffer.read())\n"
+    "rdDetermineBonds.DetermineBonds(mol, charge=0, useHueckel=True)\n"
+    "Path(sys.argv[1]).write_bytes("
+    "mol.ToBinary(Chem.PropertyPickleOptions.AllProps))\n"
 )
 
 
-def _perceive_molecule(xyz_block: str):
+def _perceive_molecule(molecule, work_dir):
+    if molecule is None:
+        return None
     for kwargs in _PERCEPTION_OPTIONS:
-        mol = Chem.MolFromXYZBlock(xyz_block)
-        if mol is None:
-            return None
+        mol = Chem.Mol(molecule)
         try:
             with rdBase.BlockLogs():
                 rdDetermineBonds.DetermineBonds(mol, **kwargs)
             return mol
         except (RuntimeError, ValueError):
             continue
-    return None
+    # Extended Hueckel writes fixed filenames; isolate its working directory.
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    with tempfile.TemporaryDirectory(
+        prefix=f"perception_{stamp}_", dir=work_dir
+    ) as tmp:
+        filename = f"molecule_{stamp}.bin"
+        result = subprocess.run(
+            [sys.executable, "-c", _HUECKEL_SCRIPT, filename],
+            input=molecule.ToBinary(),
+            cwd=tmp,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        with open(osp.join(tmp, filename), "rb") as stream:
+            return Chem.Mol(stream.read())
 
 
 def _featurize_molecule(mol, atom_map: list):
@@ -122,31 +138,17 @@ def _one_hot(indices: np.ndarray, num_classes: int) -> np.ndarray:
     return out
 
 
-def _featurize_one(xyz_block: str, atom_map: list) -> dict:
+def _featurize_one(molecule, atom_map: list, work_dir: str) -> dict:
     """Module-level worker so the featurization stays process-picklable."""
-    return _featurize_molecule(_perceive_molecule(xyz_block), atom_map)
+    return _featurize_molecule(_perceive_molecule(molecule, work_dir), atom_map)
 
 
-class _QM9Split(Dataset):
-    """Load an official QM9 split, reusing :class:`QM9Dataset` download/parsing.
-
-    Only the split CSV (XYZ geometries and the property tables) is touched; the
-    perceived bond/charge features are added by :class:`_QM9FeaturizedSplit`.
-    """
+class _QM9Properties:
+    """Shared split resolution and conditioning statistics."""
 
     name = QM9Dataset.name
     url = QM9Dataset.url
     md5 = QM9Dataset.md5
-
-    def __init__(self, path: str = "./data/qm9/train.csv"):
-        super().__init__()
-        path = self._resolve_split_path(path)
-        self.path = path
-        self.raw_data, self.num_samples = QM9Dataset.read_data(self, path)
-        if "num_atoms" not in self.raw_data:
-            self.raw_data["num_atoms"] = [
-                int(xyz.splitlines()[0]) for xyz in self.raw_data["molecule"]
-            ]
 
     def _resolve_split_path(self, path: str) -> str:
         """Resolve a split path, downloading the official package when missing."""
@@ -156,81 +158,105 @@ class _QM9Split(Dataset):
         root_path = download.get_datasets_path_from_url(self.url, self.md5)
         return osp.join(root_path, self.name, osp.basename(path))
 
-    def _read_property_column(self, path: str, property_name: str) -> np.ndarray:
-        """Read one property column, reusing the current parse when possible."""
-        if osp.abspath(path) == osp.abspath(self.path):
-            return np.asarray(self.raw_data[property_name], dtype="float64")
-        frame = pd.read_csv(path, usecols=[property_name])
-        return frame[property_name].to_numpy(dtype="float64")
+    def _trim_raw_data(self) -> None:
+        """Release CSV geometries and unused columns after feature extraction."""
+        self.raw_data = {}
 
-    def _trim_raw_data(self, keep_names: tuple = ()) -> None:
-        """Release the parsed CSV columns that are no longer needed.
-
-        The official package ships large text columns (raw file contents,
-        Mulliken XYZ, vibrational frequencies, InChI); they are only read to
-        featurize the molecules and to extract the conditioning property, so the
-        parsed copy is dropped once a dataset has built its arrays.
-        """
-        self.raw_data = {
-            key: value for key, value in self.raw_data.items() if key in keep_names
-        }
-
-    def _resolve_normalization_source(self, normalization_source: str) -> str:
-        """Resolve the normalization split, defaulting to the sibling train CSV.
-
-        All official QM9 splits share the train-split statistics, so when no
-        source is given the ``train.csv`` next to the split file is used.
-        """
-        if normalization_source is not None:
+    def _normalization_statistics(self, normalization_source, property_name):
+        if normalization_source is None:
+            resource = resources.files("ppmat.models.propmolflow").joinpath(
+                "qm9_normalization.json"
+            )
+            with resource.open(encoding="utf-8") as stream:
+                reference = json.load(stream)["properties"]
+            if property_name not in reference:
+                raise ValueError(
+                    f"No checkpoint statistics for property {property_name}; "
+                    "provide normalization_source for a custom training split"
+                )
+            mean = reference[property_name]["mean"]
+            std = reference[property_name]["std"]
+        else:
             if not osp.isfile(normalization_source):
                 raise FileNotFoundError(
                     f"normalization_source does not exist: {normalization_source}"
                 )
-            return normalization_source
-        sibling = osp.join(osp.dirname(self.path), "train.csv")
-        if not osp.isfile(sibling):
-            raise FileNotFoundError(
-                "Training statistics require train.csv or an explicit "
-                "normalization_source; the current split is not a fallback"
-            )
-        return sibling
-
-    def _normalization_statistics(self, normalization_source, property_name):
-        source = self._resolve_normalization_source(normalization_source)
-        values = self._read_property_column(source, property_name)
-        if values.size == 0 or not np.isfinite(values).all():
-            raise ValueError("Normalization properties must be nonempty and finite")
-        mean = float(values.mean())
-        std = float(values.std())
-        if std <= 0:
-            raise ValueError("Normalization properties must have positive variance")
+            frame = pd.read_csv(normalization_source, usecols=[property_name])
+            values = frame[property_name].to_numpy(dtype="float64")
+            if values.size == 0 or not np.isfinite(values).all():
+                raise ValueError("Normalization properties must be nonempty and finite")
+            mean = float(values.mean())
+            std = float(values.std())
+        if not np.isfinite([mean, std]).all() or std <= 0:
+            raise ValueError("Normalization statistics require positive variance")
         return mean, std
 
 
-class _QM9FeaturizedSplit(_QM9Split):
-    """An official QM9 split featurized into PropMolFlow molecule arrays.
+class _QM9Split(_QM9Properties, Dataset):
+    """Read conditioning data without constructing training molecules."""
 
-    The cache key includes the CSV content, atom map, feature version and RDKit
-    version. An explicit ``cache_dir`` overrides the shared dataset cache.
+    def __init__(self, path: str):
+        super().__init__()
+        self.path = self._resolve_split_path(path)
+        self.raw_data, self.num_samples = QM9Dataset.read_data(self, self.path)
+        if "num_atoms" not in self.raw_data:
+            self.raw_data["num_atoms"] = [
+                int(xyz.splitlines()[0]) for xyz in self.raw_data["molecule"]
+            ]
+
+
+class PropMolFlowDataset(_QM9Properties, QM9Dataset):
+    """Adapt cached QM9 molecules to complete-graph flow-matching features.
+
+    ``normalization_source=None`` preserves the released checkpoint statistics.
+    An explicit CSV supplies custom training statistics. ``property_range``
+    optionally retains the half-open interval [lower, upper) before molecule
+    construction; it never changes the normalization reference implicitly.
     """
 
     def __init__(
         self,
         path: str = "./data/qm9/train.csv",
         atom_map: list = None,
+        conditioning_cfg: Dict = None,
+        normalization_source: str = None,
         cache_dir: str = None,
         num_cpus: int = 1,
         rebuild: bool = False,
+        property_range: list = None,
     ):
         if atom_map is None:
             raise ValueError("atom_map must be provided")
+        if conditioning_cfg is None:
+            raise ValueError("conditioning_cfg must be provided")
         self.atom_map = list(atom_map)
-        super().__init__(path=path)
+        self.conditioning = conditioning_cfg
+        self.property_name = conditioning_cfg.get("property")
+        if conditioning_cfg.get("enabled", False) and self.property_name is None:
+            raise ValueError("property must be provided when conditioning is enabled")
+        self.property_range = property_range
+        if property_range is not None:
+            if (
+                self.property_name is None
+                or len(property_range) != 2
+                or not np.isfinite(property_range).all()
+                or property_range[0] >= property_range[1]
+            ):
+                raise ValueError(
+                    "property_range requires a property and finite lower < upper bounds"
+                )
+        if self.conditioning.get("enabled", False) and self.conditioning.get(
+            "normalize", False
+        ):
+            self.property_mean, self.property_std = self._normalization_statistics(
+                normalization_source, self.property_name
+            )
 
+        path = self._resolve_split_path(path)
         if cache_dir is None:
             cache_dir = osp.join(download.DATASETS_HOME, "propmolflow")
         source_hash = hashlib.sha256()
-        with open(self.path, "rb") as stream:
+        with open(path, "rb") as stream:
             for chunk in iter(lambda: stream.read(_HASH_CHUNK_SIZE), b""):
                 source_hash.update(chunk)
         self.cache_metadata = {
@@ -238,15 +264,79 @@ class _QM9FeaturizedSplit(_QM9Split):
             "source_sha256": source_hash.hexdigest(),
             "atom_map": self.atom_map,
             "rdkit_version": rdBase.rdkitVersion,
+            "property_range": property_range,
+            "selection_property": self.property_name if property_range else None,
         }
         cache_key = hashlib.sha256(
             json.dumps(self.cache_metadata, sort_keys=True).encode("utf-8")
         ).hexdigest()
-        self.cache_path = osp.join(
-            cache_dir, f"{osp.basename(self.path)}.{cache_key}.npz"
+        cache_stem = osp.join(cache_dir, f"{osp.basename(path)}.{cache_key}")
+        molecule_config = {
+            "format": "xyz_block",
+            "sanitize": False,
+            "add_hs": False,
+            "remove_hs": False,
+            "kekulize": False,
+            "num_cpus": num_cpus,
+        }
+        self.cache_path = cache_stem + ".npz"
+        self._validate_distributed_cache(cache_stem, molecule_config, rebuild)
+        super().__init__(
+            path=path,
+            property_names=[self.property_name] if self.property_name else [],
+            build_molecule_cfg=molecule_config,
+            build_graph_cfg=None,
+            cache_path=cache_stem,
+            overwrite=rebuild,
+            filter_unvalid=False,
+        )
+        self.cache_path = cache_stem + ".npz"
+        self._load_or_build_cache(num_cpus, rebuild)
+
+        if self.conditioning.get("enabled", False):
+            self.property_values = np.asarray(
+                self.raw_data[self.property_name], dtype="float64"
+            )[self.valid_indices]
+            if not np.isfinite(self.property_values).all():
+                raise ValueError("Conditioning properties must be finite")
+        self._trim_raw_data()
+
+    def read_data(self, path: str):
+        data, num_samples = super().read_data(path)
+        if self.property_range is None:
+            return data, num_samples
+        values = np.asarray(data[self.property_name], dtype="float64")
+        lower, upper = self.property_range
+        indices = np.flatnonzero((values >= lower) & (values < upper))
+        if not indices.size:
+            raise ValueError("No QM9 samples fall within the requested property_range")
+        return (
+            {key: [value[index] for index in indices] for key, value in data.items()},
+            len(indices),
         )
 
-        self._load_or_build_cache(num_cpus, rebuild)
+    def _validate_distributed_cache(self, cache_stem, molecule_config, rebuild):
+        if not dist.is_initialized():
+            return
+        status = [None]
+        if dist.get_rank() == 0:
+            try:
+                if rebuild or not self._cache_is_valid():
+                    raise ValueError("Prewarm this dataset in a single process first")
+                cached_config = self.load_from_cache(
+                    osp.join(cache_stem, "build_molecule_cfg.pkl")
+                )
+                if cached_config != molecule_config:
+                    raise ValueError("Prewarm with the same num_cpus setting")
+                if not osp.isdir(osp.join(cache_stem, "molecules")):
+                    raise FileNotFoundError("The QM9 molecule cache is missing")
+            except Exception as error:
+                status[0] = f"{type(error).__name__}: {error}"
+        dist.broadcast_object_list(status, src=0)
+        if status[0] is not None:
+            raise RuntimeError(
+                f"PropMolFlow distributed cache validation failed: {status[0]}"
+            )
 
     def _cache_is_valid(self) -> bool:
         if not osp.exists(self.cache_path):
@@ -287,16 +377,20 @@ class _QM9FeaturizedSplit(_QM9Split):
             self.valid_indices = cache["valid_indices"]
 
     def _build_cache(self, num_cpus: int) -> None:
-        xyz_list = self.raw_data["molecule"]
-        logger.info(f"Featurizing {len(xyz_list)} molecules from {self.path}")
+        molecules = [self.load_from_cache(path) for path in self.molecules]
+        logger.info(f"Featurizing {len(molecules)} molecules from {self.path}")
+        worker = partial(
+            _featurize_one,
+            atom_map=self.atom_map,
+            work_dir=osp.dirname(self.cache_path),
+        )
         with rdBase.BlockLogs():
             if num_cpus and num_cpus > 1:
                 from p_tqdm import p_map
 
-                worker = partial(_featurize_one, atom_map=self.atom_map)
-                features = p_map(worker, xyz_list, num_cpus=num_cpus)
+                features = p_map(worker, molecules, num_cpus=num_cpus)
             else:
-                features = [_featurize_one(xyz, self.atom_map) for xyz in xyz_list]
+                features = [worker(mol) for mol in molecules]
 
         positions, atom_types, charges, bond_types = [], [], [], []
         node_idx_array, edge_idx_array, valid_indices = [], [], []
@@ -319,7 +413,7 @@ class _QM9FeaturizedSplit(_QM9Split):
 
         if not valid_indices:
             raise ValueError(f"No molecule could be featurized from {self.path}")
-        skipped = len(xyz_list) - len(valid_indices)
+        skipped = len(molecules) - len(valid_indices)
         if skipped:
             logger.warning(f"Skipped {skipped} molecules during bond perception")
 
@@ -353,51 +447,6 @@ class _QM9FeaturizedSplit(_QM9Split):
 
     def __len__(self):
         return self.node_idx_array.shape[0]
-
-
-class PropMolFlowDataset(_QM9FeaturizedSplit):
-    """PropMolFlow training/validation molecules from the official QM9 splits.
-
-    Every sample provides the model-ready ``structure_array`` (positions, one-hot
-    atom types, one-hot formal charges and upper-triangle one-hot bond types) and,
-    when conditioning is enabled, the normalized property value.
-    """
-
-    def __init__(
-        self,
-        path: str = "./data/qm9/train.csv",
-        atom_map: list = None,
-        conditioning_cfg: Dict = None,
-        normalization_source: str = None,
-        cache_dir: str = None,
-        num_cpus: int = 1,
-        rebuild: bool = False,
-    ):
-        if conditioning_cfg is None:
-            raise ValueError("conditioning_cfg must be provided")
-        self.conditioning = conditioning_cfg
-        super().__init__(
-            path=path,
-            atom_map=atom_map,
-            cache_dir=cache_dir,
-            num_cpus=num_cpus,
-            rebuild=rebuild,
-        )
-
-        self.property_name = self.conditioning.get("property")
-        if self.conditioning.get("enabled", False) and self.property_name is None:
-            raise ValueError("property must be provided when conditioning is enabled")
-
-        if self.conditioning.get("enabled", False):
-            self.property_values = np.asarray(
-                self.raw_data[self.property_name], dtype="float64"
-            )[self.valid_indices]
-            if self.conditioning.get("normalize", False):
-                self.property_mean, self.property_std = self._normalization_statistics(
-                    normalization_source, self.property_name
-                )
-
-        self._trim_raw_data()
 
     def __getitem__(self, idx: int):
         node_start, node_end = self.node_idx_array[idx]

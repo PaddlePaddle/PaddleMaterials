@@ -73,9 +73,11 @@ Sampling integrates the learned vector field from $t = 0$ to $t = 1$. At every s
 
 ## Dataset Description
 
-- **QM9 (official release)**: 130,831 small molecules with elements C, H, N, O and F, split into 110,000 / 10,000 / 10,831 for train / val / test. The official package ships the XYZ geometries and the property tables (A, B, C, mu, alpha, homo, lumo, gap, r2, zpve, U0, U, H, G, Cv) only.
-- **Bonds and charges**: the five bond types over the complete atom graph and the formal atom charges supervised by the generation model are perceived from the geometry with RDKit (`DetermineBonds`). Perception and encoding remain in the dataset adapter. Derived features default to `~/.paddlemat/datasets/propmolflow/`; an explicit `cache_dir` can override that location. Cache keys include the CSV content, atom map, feature version and RDKit version. Cache files are published atomically, and failed molecule perception is reported.
-- **Normalization**: every property is normalized with population mean/std from the train split. All splits use the sibling `train.csv` or an explicit `normalization_source`. Missing training statistics, nonfinite properties and zero variance raise errors instead of falling back to evaluation data. Custom split names require an explicit `normalization_source` when no sibling `train.csv` exists.
+- **QM9 (official release)**: 130,831 small molecules with elements C, H, N, O and F, split into 110,000 / 10,000 / 10,831 for train / val / test. This adapter consumes the XYZ geometries and property columns from the existing QM9 CSV package.
+- **Dataset reuse**: `PropMolFlowDataset` inherits `QM9Dataset` and calls its initializer to reuse CSV parsing, property loading, `BuildMolecule` construction and molecule caching. The adapter adds bond perception, complete-graph feature encoding and conditioning. Sampling reads the property tables without constructing unused training molecules.
+- **Bonds and charges**: the five bond types over the complete atom graph and the formal atom charges are perceived with RDKit (`DetermineBonds`) while preserving the XYZ atom order. Molecule and feature caches default to `~/.paddlemat/datasets/propmolflow/`; an explicit `cache_dir` can override that location. Cache identities include the CSV content, atom map, feature version, RDKit version and any property-range selection. Feature archives are published atomically, and failed molecule perception is reported.
+- **Checkpoint normalization**: the default mean/std come from the released model's rQM9 training statistics, stored with source SHA256 in `ppmat/models/propmolflow/qm9_normalization.json`. The original preprocessing uses the full 100,000-molecule training split and sample standard deviation (`ddof=1`). Training, validation and sampling share these fixed statistics without changing package YAML or checkpoint tensors.
+- **Custom normalization**: an explicit `normalization_source` CSV replaces the checkpoint statistics with that file's population mean/std (`ddof=0`). Use the same training-only source for every split and sampler. Its values are read independently of `property_range`; supply a CSV containing exactly the intended training population. Missing files, nonfinite values and zero variance raise errors. The default checkpoint statistics do not constitute statistics fitted to a new custom split.
 
 Recommended data fields for each sample:
 - `atom_types`: length-$N$ atom types (C, H, N, O, F)
@@ -96,30 +98,67 @@ samples always include `structure_array.num_atoms`.
 
 ## Results
 
-The registered weights were trained using the upstream rQM9 preprocessing.
-The table below records earlier sampling runs. The official-QM9 geometries,
-perceived labels, split statistics and sampling distribution used here differ
-from that pipeline; these reference results must be re-evaluated rather than
-treated as numerical equivalence guarantees for the new data pipeline.
+The following compatibility smoke was re-evaluated on 2026-11-14 using the
+current adapter: CPU FP32, 16 samples per checkpoint, batch size 8, seed 42
+and 100 integration points. Every row uses in-distribution sampling, including
+checkpoints whose names contain `_ood`. All 160 SDF records can be read;
+158 pass RDKit sanitization. These small samples do not estimate population
+quality or establish target-property accuracy.
 
-| Model | Dataset | Property | Property Handling | Distribution | RDKit Valid | Valid & Unique | GPUs | Training Time | Config | Checkpoint / Log |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| propmolflow_qm9_alpha_sum | qm9 | alpha | sum | in-distribution | 0.9844 | 0.9844 | - | - | [propmolflow_qm9_alpha_sum.yaml](propmolflow_qm9_alpha_sum.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_alpha_sum.zip) |
-| propmolflow_qm9_Cv_sum | qm9 | Cv | sum | in-distribution | 0.9844 | 0.9844 | - | - | [propmolflow_qm9_Cv_sum.yaml](propmolflow_qm9_Cv_sum.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_Cv_sum.zip) |
-| propmolflow_qm9_gap_concatenate_sum | qm9 | gap | concatenate_sum | in-distribution | 1.0000 | 1.0000 | - | - | [propmolflow_qm9_gap_concatenate_sum.yaml](propmolflow_qm9_gap_concatenate_sum.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_gap_concatenate_sum.zip) |
-| propmolflow_qm9_homo_concatenate | qm9 | homo | concatenate | in-distribution | 1.0000 | 1.0000 | - | - | [propmolflow_qm9_homo_concatenate.yaml](propmolflow_qm9_homo_concatenate.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_homo_concatenate.zip) |
-| propmolflow_qm9_lumo_concatenate_sum | qm9 | lumo | concatenate_sum | in-distribution | 0.9688 | 0.9688 | - | - | [propmolflow_qm9_lumo_concatenate_sum.yaml](propmolflow_qm9_lumo_concatenate_sum.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_lumo_concatenate_sum.zip) |
-| propmolflow_qm9_mu_multiply | qm9 | mu | multiply | in-distribution | 0.9844 | 0.9844 | - | - | [propmolflow_qm9_mu_multiply.yaml](propmolflow_qm9_mu_multiply.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_mu_multiply.zip) |
-| propmolflow_qm9_gap_concatenate_ood | qm9 | gap | concatenate | out-of-distribution | 0.9688 | 0.9688 | - | - | [propmolflow_qm9_gap_concatenate_ood.yaml](propmolflow_qm9_gap_concatenate_ood.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_gap_concatenate_ood.zip) |
-| propmolflow_qm9_homo_concatenate_sum_ood | qm9 | homo | concatenate_sum | out-of-distribution | 1.0000 | 1.0000 | - | - | [propmolflow_qm9_homo_concatenate_sum_ood.yaml](propmolflow_qm9_homo_concatenate_sum_ood.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_homo_concatenate_sum_ood.zip) |
-| propmolflow_qm9_lumo_concatenate_multiply_ood | qm9 | lumo | concatenate_multiply | out-of-distribution | 1.0000 | 1.0000 | - | - | [propmolflow_qm9_lumo_concatenate_multiply_ood.yaml](propmolflow_qm9_lumo_concatenate_multiply_ood.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_lumo_concatenate_multiply_ood.zip) |
-| propmolflow_qm9_mu_sum_ood | qm9 | mu | sum | out-of-distribution | 0.9844 | 0.9844 | - | - | [propmolflow_qm9_mu_sum_ood.yaml](propmolflow_qm9_mu_sum_ood.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_mu_sum_ood.zip) |
+All ten current online archives were downloaded and loaded separately. Their
+checkpoint bytes and Model/Sampler settings match the cached packages used
+in this run. This refactor edits neither archive contents nor package YAML.
+The weights were trained with rQM9 preprocessing; official-QM9 geometries,
+perceived labels and split populations remain a different data protocol.
+
+| Model | Property | Handling | RDKit Valid | Valid & Unique | Config | Weights |
+| --- | --- | --- | --- | --- | --- | --- |
+| propmolflow_qm9_Cv_sum | Cv | sum | 1.0000 | 1.0000 | [config](propmolflow_qm9_Cv_sum.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_Cv_sum.zip) |
+| propmolflow_qm9_alpha_sum | alpha | sum | 1.0000 | 1.0000 | [config](propmolflow_qm9_alpha_sum.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_alpha_sum.zip) |
+| propmolflow_qm9_gap_concatenate_ood | gap | concatenate | 1.0000 | 1.0000 | [config](propmolflow_qm9_gap_concatenate_ood.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_gap_concatenate_ood.zip) |
+| propmolflow_qm9_gap_concatenate_sum | gap | concatenate_sum | 1.0000 | 1.0000 | [config](propmolflow_qm9_gap_concatenate_sum.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_gap_concatenate_sum.zip) |
+| propmolflow_qm9_homo_concatenate | homo | concatenate | 1.0000 | 1.0000 | [config](propmolflow_qm9_homo_concatenate.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_homo_concatenate.zip) |
+| propmolflow_qm9_homo_concatenate_sum_ood | homo | concatenate_sum | 0.9375 | 0.9375 | [config](propmolflow_qm9_homo_concatenate_sum_ood.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_homo_concatenate_sum_ood.zip) |
+| propmolflow_qm9_lumo_concatenate_multiply_ood | lumo | concatenate_multiply | 1.0000 | 1.0000 | [config](propmolflow_qm9_lumo_concatenate_multiply_ood.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_lumo_concatenate_multiply_ood.zip) |
+| propmolflow_qm9_lumo_concatenate_sum | lumo | concatenate_sum | 1.0000 | 1.0000 | [config](propmolflow_qm9_lumo_concatenate_sum.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_lumo_concatenate_sum.zip) |
+| propmolflow_qm9_mu_multiply | mu | multiply | 0.9375 | 0.9375 | [config](propmolflow_qm9_mu_multiply.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_mu_multiply.zip) |
+| propmolflow_qm9_mu_sum_ood | mu | sum | 1.0000 | 1.0000 | [config](propmolflow_qm9_mu_sum_ood.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_mu_sum_ood.zip) |
 
 ---
 
 ## Command
 
 ### Training
+
+Eager execution remains the default. GPU CINN forward, registered alpha
+sampling and a paired one-epoch training smoke have been checked on Paddle
+3.3.0 / RTX 5090 D. Each training backend performed two updates over eight real
+molecules, with four validation molecules. All 620 checkpoint tensors pass
+`atol=5e-5, rtol=2e-5`; the maximum absolute difference is
+`3.328174352645874e-5`. The absolute tolerance was increased from `2e-5` for
+this review; the original comparison exceeded it in two elements. Losses,
+gradients and parameters remained finite. This small run does not establish
+long-run convergence or qualify other devices and training configurations.
+
+Before multi-GPU training, construct the caches once in a single process:
+
+```python
+from omegaconf import OmegaConf
+from ppmat.datasets import build_dataloader
+
+config = OmegaConf.load(
+    "structure_generation/configs/propmolflow/propmolflow_qm9_alpha_sum.yaml"
+)
+config = OmegaConf.to_container(config, resolve=True)
+for stage in ("train", "val"):
+    build_dataloader(config["Dataset"][stage])
+```
+
+The adapter checks cache readiness collectively before entering the QM9 parent.
+Missing or incompatible caches fail on every rank with a prewarm instruction.
+Use the same `num_cpus` setting for prewarming and distributed training;
+`rebuild=True` requires single-process construction.
+
 ```bash
 # multi-gpu training (example with 4 GPUs)
 python -m paddle.distributed.launch --gpus="0,1,2,3" structure_generation/train.py -c structure_generation/configs/propmolflow/propmolflow_qm9_alpha_sum.yaml
@@ -144,8 +183,13 @@ python structure_generation/train.py -c structure_generation/configs/propmolflow
 
 You can replace `model_name` with other model names from the Results table.
 The generated molecules are saved to `Sampler.output_dir`.
-When upgrading previously downloaded PropMolFlow packages, remove their cached
-ZIPs and extracted directories under `~/.paddlemat/weights/` before sampling.
+Existing downloaded packages remain compatible with the sampling recipe below.
+
+This adapter refactor keeps the existing package schema and weights. Older
+packages can still name `PropMolFlowCollator` in their training loaders; the
+sampling recipe disables that unused loader with `Dataset.train=null`.
+For training or resume, use the repository configuration and the downloaded
+checkpoint rather than the package's legacy loader configuration.
 
 ```python
 from ppmat.sampler import MolecularSampler
@@ -173,9 +217,25 @@ To sample out-of-distribution molecules at a single target value, add
 `config_overrides`. To use a fixed number of atoms, add
 `Sampler.data.dataset.__init_params__.n_atoms=18`.
 
-`num_inference_steps` must be at least 2. An explicit `normalization_source`
-must point to an existing CSV; a missing path raises an error instead of
-downloading a replacement statistics file.
+`num_inference_steps` must be at least 2. Without `normalization_source`, the
+sampler uses the bundled checkpoint statistics, including when the input CSV
+has a custom name or no sibling `train.csv`.
+
+### OOD experiment scope
+
+The `_ood` model names identify released checkpoints; their default sampling
+mode remains `in_distribution`. Setting an explicit target value exercises
+conditional generation and does not establish that the target lies outside
+the checkpoint's training distribution.
+
+The repository's official-QM9 configs do not reproduce the original rQM9 OOD
+training split. A new OOD experiment must specify disjoint training/evaluation
+populations, the held-out property interval and its normalization source.
+`PropMolFlowDataset.property_range=[lower, upper]` optionally selects the
+half-open interval `[lower, upper)` before molecular preprocessing, with its
+selection included in the cache identity. Set an explicit training-only
+`normalization_source` for a custom experiment. Do not interpret the released
+checkpoint sampling table as validation of newly trained OOD checkpoints.
 
 ---
 

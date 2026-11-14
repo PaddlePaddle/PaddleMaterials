@@ -17,15 +17,9 @@ from __future__ import annotations
 from typing import Dict
 
 from rdkit import Chem
-from rdkit.Geometry import Point3D
 
-BOND_TYPE_MAP = [
-    None,
-    Chem.rdchem.BondType.SINGLE,
-    Chem.rdchem.BondType.DOUBLE,
-    Chem.rdchem.BondType.TRIPLE,
-    Chem.rdchem.BondType.AROMATIC,
-]
+from ppmat.datasets.build_molecule import BuildMolecule
+from ppmat.utils.ext_rdkit import bond_types_from_vocab
 
 
 def build_rdkit_mol(molecule: Dict) -> Chem.Mol:
@@ -35,21 +29,27 @@ def build_rdkit_mol(molecule: Dict) -> Chem.Mol:
     placeholder), ``positions``, ``charges`` and ``bonds`` (source, destination,
     bond type index).
     """
-    mol = Chem.RWMol()
-    for symbol, charge in zip(molecule["atom_types"], molecule["charges"]):
-        atom = Chem.Atom(symbol)
-        if charge != 0:
-            atom.SetFormalCharge(int(charge))
-        mol.AddAtom(atom)
+    atomic_numbers = [
+        Chem.GetPeriodicTable().GetAtomicNumber(symbol)
+        for symbol in molecule["atom_types"]
+    ]
+    mol = Chem.RWMol(
+        BuildMolecule.build_one(
+            {"atomic_numbers": atomic_numbers, "positions": molecule["positions"]},
+            "dict",
+            sanitize=False,
+            add_hs=False,
+            remove_hs=False,
+            kekulize=False,
+        )
+    )
+    for atom, charge in zip(mol.GetAtoms(), molecule["charges"]):
+        atom.SetFormalCharge(int(charge))
 
+    bond_types = bond_types_from_vocab()
     for src, dst, bond_type in molecule["bonds"]:
         bond_type = int(bond_type)
-        if not 0 < bond_type < len(BOND_TYPE_MAP):
+        if bond_type not in bond_types:
             raise ValueError(f"unsupported bond type index: {bond_type}")
-        mol.AddBond(int(src), int(dst), BOND_TYPE_MAP[bond_type])
-
-    conformer = Chem.Conformer(mol.GetNumAtoms())
-    for index, (x, y, z) in enumerate(molecule["positions"]):
-        conformer.SetAtomPosition(index, Point3D(float(x), float(y), float(z)))
-    mol.AddConformer(conformer)
+        mol.AddBond(int(src), int(dst), bond_types[bond_type])
     return mol.GetMol()

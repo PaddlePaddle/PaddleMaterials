@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import os
 import os.path as osp
+from pathlib import Path
 
 import numpy as np
 import paddle
@@ -31,6 +32,7 @@ from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.datasets.propmolflow_dataset import PropMolFlowDataset
 from ppmat.datasets.propmolflow_dataset import PropMolFlowSamplingDataset
+from ppmat.datasets.qm9_dataset import QM9Dataset
 from ppmat.metrics import PropMolFlowMoleculeMetric
 from ppmat.models import CTMCVectorField
 from ppmat.models import build_model
@@ -210,6 +212,7 @@ def _sampling_dataset(tmp_path, **kwargs):
     path, _ = _write_synthetic_qm9(tmp_path)
     dataset_kwargs = {
         "path": path,
+        "normalization_source": path,
         "property_name": "alpha",
         "mode": "in_distribution",
         "total_num": 2,
@@ -330,10 +333,16 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
 
     config = OmegaConf.to_container(OmegaConf.load(CONFIG_PATH), resolve=True)
     dataset_params = config["Dataset"]["train"]["dataset"]["__init_params__"]
-    dataset_params.update(path=path, cache_dir=str(tmp_path / "cache"))
+    dataset_params.update(
+        path=path,
+        cache_dir=str(tmp_path / "cache"),
+        normalization_source=path,
+    )
     config["Dataset"]["train"]["sampler"]["__init_params__"]["shuffle"] = False
     data_loader = build_dataloader(config["Dataset"]["train"])
     batch = next(iter(data_loader))
+    assert isinstance(data_loader.dataset, QM9Dataset)
+    assert all(osp.isfile(path) for path in data_loader.dataset.molecules)
 
     atom_counts = batch["structure_array"]["num_atoms"].numpy()
     assert len(atom_counts) == 6
@@ -374,6 +383,46 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
     assert not cached_loader.dataset.raw_data
     assert len(list((tmp_path / "cache").glob("*.npz"))) == 2
 
+    side_effects = {
+        name: Path(name).read_bytes() if osp.isfile(name) else None
+        for name in ("run.out", "nul")
+    }
+    with monkeypatch.context() as context:
+
+        def require_hueckel(*args, **kwargs):
+            raise ValueError("Exercise isolated Hueckel perception")
+
+        context.setattr(
+            "ppmat.datasets.propmolflow_dataset.rdDetermineBonds.DetermineBonds",
+            require_hueckel,
+        )
+        fallback = PropMolFlowDataset(**dict(dataset_params, rebuild=True))
+        fallback_batch = DefaultCollator()([fallback[i] for i in range(len(fallback))])
+        assert np.isfinite(float(model(fallback_batch)["loss_dict"]["loss"]))
+        np.testing.assert_array_equal(
+            fallback.bond_types, cached_loader.dataset.bond_types
+        )
+    for name, previous in side_effects.items():
+        actual = Path(name).read_bytes() if osp.isfile(name) else None
+        assert actual == previous
+    assert not list((tmp_path / "cache").glob("perception_*"))
+
+    alpha_values = frame["alpha"].to_numpy()
+    ordered = np.sort(alpha_values)
+    interval = [float(ordered[1]), float(ordered[4])]
+    selected = PropMolFlowDataset(**dict(dataset_params, property_range=interval))
+    expected = alpha_values[
+        (alpha_values >= interval[0]) & (alpha_values < interval[1])
+    ]
+    np.testing.assert_array_equal(selected.property_values, expected)
+    assert selected.cache_path != cached_loader.dataset.cache_path
+    selected_batch = DefaultCollator()([selected[i] for i in range(len(selected))])
+    assert np.isfinite(float(model(selected_batch)["loss_dict"]["loss"]))
+    with pytest.raises(ValueError, match="No QM9 samples"):
+        PropMolFlowDataset(
+            **dict(dataset_params, property_range=[float(ordered[-1]) + 1, 100.0])
+        )
+
     with monkeypatch.context() as context:
         context.setattr(
             "ppmat.datasets.propmolflow_dataset.dist.is_initialized", lambda: True
@@ -399,16 +448,16 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
             distributed_loader = build_dataloader(config["Dataset"]["train"])
             distributed_batch = next(iter(distributed_loader))
             assert np.isfinite(float(model(distributed_batch)["loss_dict"]["loss"]))
-        assert broadcasts == [None]
+        assert broadcasts == [None, None]
 
         broken_path = tmp_path / "broken.csv"
         broken_frame = frame.copy()
         broken_frame["standard_xyz"] = "1\ninvalid\nX 0 0 0"
         broken_frame.to_csv(broken_path, index=False)
         for rank[0] in (0, 1):
-            with pytest.raises(RuntimeError, match="construction failed on rank 0"):
+            with pytest.raises(RuntimeError, match="Prewarm this dataset"):
                 PropMolFlowDataset(**dict(dataset_params, path=str(broken_path)))
-        assert "No molecule could be featurized" in broadcasts[-1]
+        assert "Prewarm this dataset" in broadcasts[-1]
 
     val_path = tmp_path / "val.csv"
     frame.iloc[:2].to_csv(val_path, index=False)
@@ -427,8 +476,14 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
         total_num=2,
         seed=42,
     )
-    with pytest.raises(FileNotFoundError, match="normalization_source"):
-        PropMolFlowSamplingDataset(**sampling_params)
+    checkpoint_dataset = PropMolFlowSamplingDataset(**sampling_params)
+    assert checkpoint_dataset.property_mean == 75.19867706298828
+    assert checkpoint_dataset.property_std == 8.181739807128906
+    reference_training = PropMolFlowDataset(
+        **dict(dataset_params, path=str(isolated_path), normalization_source=None)
+    )
+    assert reference_training.property_mean == checkpoint_dataset.property_mean
+    assert reference_training.property_std == checkpoint_dataset.property_std
     sampling_dataset = PropMolFlowSamplingDataset(
         **sampling_params, normalization_source=path
     )
@@ -452,7 +507,9 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
     frame["alpha"] = 7.0
     frame.to_csv(isolated_dir / "train.csv", index=False)
     with pytest.raises(ValueError, match="positive variance"):
-        PropMolFlowSamplingDataset(**sampling_params)
+        PropMolFlowSamplingDataset(
+            **sampling_params, normalization_source=str(isolated_dir / "train.csv")
+        )
 
 
 # ----------------------------- sampling chain -----------------------------
