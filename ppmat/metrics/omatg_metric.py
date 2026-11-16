@@ -23,9 +23,9 @@ from typing import Tuple
 
 import numpy as np
 
+from ppmat.datasets.build_structure import BuildStructure
 from ppmat.metrics.streaming_base import StreamingMetricBase
 from ppmat.metrics.utils import Crystal
-from ppmat.metrics.utils import get_crys_from_cif
 from ppmat.utils import logger
 
 _COV_CUTOFFS = {
@@ -335,7 +335,7 @@ def _mean_coordination_number(structure) -> float:
     distances = atoms.get_all_distances(mic=True)
     radii = np.array([covalent_radii[number] for number in atoms.numbers])
     radii_sum = radii[:, None] + radii[None, :]
-    np.fill_diagonal(radii_sum, np.inf)
+    np.fill_diagonal(distances, np.inf)
     coordination_numbers = (distances <= radii_sum * 1.25).sum(axis=1)
     return float(np.mean(coordination_numbers))
 
@@ -463,12 +463,6 @@ def metre_rmsds(
 ) -> Tuple[float, float, float, float, float, float]:
     """Match-everyone-to-reference rate: best RMSD per reference crystal kept."""
 
-    if len(crystal_list) > len(ref_list):
-        raise ValueError(
-            "The number of generated crystals is greater than the number of "
-            "reference crystals."
-        )
-
     rmsds_ref: List[Optional[float]] = [None for _ in range(len(ref_list))]
     valid_rmsds_ref: List[Optional[float]] = [None for _ in range(len(ref_list))]
     for gen in crystal_list:
@@ -532,6 +526,8 @@ def get_cov(
 
     if num_gen_crystals is None:
         num_gen_crystals = len(gen_crystals)
+    if not filtered_gen_comp_fps or num_gen_crystals == 0:
+        return 0.0, 0.0
 
     scaler = _StandardScaler(_COMP_FP_MEANS, _COMP_FP_STDS)
     ref_comp_fps = scaler.transform(ref_comp_fps)
@@ -566,9 +562,54 @@ def get_cov(
     return cov_recall, cov_precision
 
 
-def _parse_crystals(data: Sequence[dict]) -> List[Crystal]:
-    """Parse result dicts into crystals."""
-    return [Crystal(item) for item in data]
+class _OMatGCrystal(Crystal):
+    """Reuse crystal fingerprints with shared parsing and failed-sample accounting."""
+
+    def __init__(self, data):
+        self.constructed = False
+        self.valid = False
+        self.comp_fp = None
+        self.struct_fp = None
+        try:
+            if isinstance(data, str):
+                structure = BuildStructure.build_one(
+                    data, "cif_str", niggli=False, canocial=False
+                )
+                data = {
+                    "frac_coords": structure.frac_coords,
+                    "atom_types": structure.atomic_numbers,
+                    "lengths": list(structure.lattice.abc),
+                    "angles": list(structure.lattice.angles),
+                }
+            super().__init__(data)
+        except (KeyError, TypeError, ValueError, IndexError, RuntimeError) as error:
+            self.constructed = False
+            self.valid = False
+            self.comp_fp = None
+            self.struct_fp = None
+            logger.warning(f"[OMatGMetric] Invalid structure: {error}")
+
+    def get_structure(self):
+        if (
+            not np.isfinite(self.lengths).all()
+            or not np.isfinite(self.angles).all()
+            or not np.isfinite(self.frac_coords).all()
+            or np.any(self.lengths <= 0)
+        ):
+            return
+        self.structure = BuildStructure.build_one(
+            self.dict, "array", niggli=False, canocial=False
+        )
+        self.constructed = self.structure.volume >= 0.1
+
+    def get_fingerprints(self):
+        if self.constructed:
+            super().get_fingerprints()
+
+
+def _parse_crystals(data: Sequence) -> List[Crystal]:
+    """Parse every input, preserving failed entries in metric denominators."""
+    return [_OMatGCrystal(item) for item in data]
 
 
 def _constructible(crystals: Sequence[Crystal], label: str) -> List[Crystal]:
@@ -624,22 +665,16 @@ class OMatGMetric(StreamingMetricBase):
 
     def _load_reference(self, gt_data: Optional[Sequence]) -> List[Crystal]:
         if gt_data is not None:
-            return [
-                Crystal(item) if isinstance(item, dict) else get_crys_from_cif(item)
-                for item in gt_data
-            ]
+            return _parse_crystals(gt_data)
         if self._gt_crystals is None:
             if self._gt_file_path is None:
                 raise ValueError(
                     "gt_data is None, but no gt_file_path was provided to OMatGMetric."
                 )
             import pandas as pd
-            from p_tqdm import p_map
 
             csv = pd.read_csv(self._gt_file_path)
-            self._gt_crystals = p_map(
-                get_crys_from_cif, csv["cif"], desc="Loading ground truth"
-            )
+            self._gt_crystals = _parse_crystals(csv["cif"])
         return self._gt_crystals
 
     def _match_metrics(

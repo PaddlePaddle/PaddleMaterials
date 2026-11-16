@@ -20,7 +20,9 @@ import numpy as np
 import paddle
 
 from ppmat.models.omatg.model import OMATGCSPNetFull
+from ppmat.models.omatg.si.core import BIG_TIME
 from ppmat.models.omatg.si.core import DEFAULT_MAX_ATOMS
+from ppmat.models.omatg.si.core import SMALL_TIME
 
 
 def _make_batch(batch_size=2, atoms_per_struct=(3, 4), max_z=10):
@@ -64,6 +66,27 @@ def _make_concat_sample(n):
         "pos": ConcatData(pos),
         "pos_is_fractional": ConcatData(np.array([True], dtype="bool")),
     }
+
+
+def _train_step(model, batch):
+    optimizer = paddle.optimizer.Adam(learning_rate=1e-4, parameters=model.parameters())
+    output = model(batch)
+    assert bool(paddle.isfinite(output["loss_dict"]["loss"]))
+    output["loss_dict"]["loss"].backward()
+    frozen = {}
+    for name, parameter in model.named_parameters():
+        if parameter.stop_gradient:
+            frozen[name] = parameter.numpy().copy()
+        else:
+            assert parameter.grad is not None, name
+            assert bool(paddle.isfinite(parameter.grad).all()), name
+    optimizer.step()
+    optimizer.clear_grad()
+    for name, parameter in model.named_parameters():
+        assert bool(paddle.isfinite(parameter).all()), name
+        if name in frozen:
+            np.testing.assert_array_equal(parameter.numpy(), frozen[name])
+    return output
 
 
 def _csp_si_scheduler_cfg(integration_time_steps=210):
@@ -210,7 +233,7 @@ class TestSITrainingPath(unittest.TestCase):
 
     def _build_csp_si_model(self):
         """Build a small CSP model with SI (Linear-ODE)."""
-        cfg = _csp_si_scheduler_cfg(integration_time_steps=210)
+        cfg = _csp_si_scheduler_cfg(integration_time_steps=10)
         return OMATGCSPNetFull(
             hidden_dim=32,
             num_layers=1,
@@ -225,18 +248,20 @@ class TestSITrainingPath(unittest.TestCase):
     def test_csp_si_training_and_sampling(self):
         """CSP SI path trains (velocity matching) and samples via si.integrate."""
         model = self._build_csp_si_model()
+        bias = model.csp_layer_0.edge_mlp[0].bias
+        bias.set_value(paddle.full_like(bias, -100.0))
         batch = _make_batch()
-        out = model(batch)
+        out = _train_step(model, batch)
         self.assertIn("loss", out["loss_dict"])
         loss_val = float(out["loss_dict"]["loss"])
         self.assertFalse(loss_val != loss_val, "SI loss is NaN")
 
-        result = model.sample(batch, num_inference_steps=10)
+        result = model.sample(batch)
         self.assertEqual(len(result["result"]), 2)
         self.assertIn("frac_coords", result["result"][0])
 
-    def test_dng_si_forward_loss(self):
-        """DNG SI training path (SDE + gamma + DFM mask) stays finite."""
+    def test_dng_si_training_and_sampling(self):
+        """DNG trains every active head and samples synchronously from masks."""
         cfg = _dng_si_scheduler_cfg(integration_time_steps=710)
         model = OMATGCSPNetFull(
             hidden_dim=32,
@@ -252,10 +277,67 @@ class TestSITrainingPath(unittest.TestCase):
                 "mirror_species": False,
             },
         )
-        out = model(_make_batch())
+        batch = _make_batch()
+        out = _train_step(model, batch)
         self.assertIn("loss", out["loss_dict"])
         loss_val = float(out["loss_dict"]["loss"])
         self.assertFalse(loss_val != loss_val, "DNG SDE loss is NaN")
+        states = []
+        predictions = []
+        noises = []
+        original_forward = model.forward_dict
+        original_randn = paddle.randn
+
+        def record_state(**kwargs):
+            states.append(
+                {
+                    key: kwargs[key].numpy().copy()
+                    for key in ("atom_types", "frac_coords", "lattices")
+                }
+            )
+            output = original_forward(**kwargs)
+            predictions.append(
+                {key: value.numpy().copy() for key, value in output.items()}
+            )
+            return output
+
+        def record_noise(*args, **kwargs):
+            value = original_randn(*args, **kwargs)
+            if tuple(value.shape) == (int(batch["n_atoms"].sum()), 3):
+                noises.append(value.numpy().copy())
+            return value
+
+        paddle.seed(42)
+        with mock.patch.object(
+            model, "forward_dict", side_effect=record_state
+        ), mock.patch.object(paddle, "randn", side_effect=record_noise):
+            result = model.sample(batch, num_inference_steps=10)
+        for start in range(0, len(states), 3):
+            for state in states[start + 1 : start + 3]:
+                for key, value in states[start].items():
+                    np.testing.assert_allclose(state[key], value, atol=1e-7)
+        self.assertTrue(np.any(states[3]["atom_types"] == 0))
+        pos_params = cfg["pos"]["__init_params__"]
+        epsilon_params = pos_params["epsilon"]["__init_params__"]
+        time = float(np.float32(SMALL_TIME))
+        dt = (BIG_TIME - SMALL_TIME) / 9
+        epsilon = epsilon_params["c"] / (
+            (1 + np.exp(-(time - epsilon_params["mu"]) / epsilon_params["sigma"]))
+            * (1 + np.exp(-(1 - epsilon_params["mu"] - time) / epsilon_params["sigma"]))
+        )
+        gamma = np.sqrt(pos_params["gamma"]["__init_params__"]["a"] * time * (1 - time))
+        expected_pos = (
+            states[0]["frac_coords"]
+            + (1 + pos_params["velocity_annealing_factor"] * time)
+            * predictions[1]["pos_b"]
+            * dt
+            - epsilon / gamma * predictions[1]["pos_eta"] * dt
+            + np.sqrt(2 * epsilon * dt) * noises[0]
+        ) % 1.0
+        np.testing.assert_allclose(states[3]["frac_coords"], expected_pos, atol=1e-6)
+        for item in result["result"]:
+            self.assertTrue(all(number > 0 for number in item["atom_types"]))
+            self.assertTrue(np.isfinite(item["frac_coords"]).all())
 
 
 class TestSIFactory(unittest.TestCase):
@@ -300,9 +382,11 @@ class TestSIFactory(unittest.TestCase):
 
     def test_csv_dataset_to_model_pipeline(self):
         """CSV -> OMATGStructureDataset -> DefaultCollator -> SI forward."""
+        import pickle
         import tempfile
         from pathlib import Path
 
+        import lmdb
         import pandas as pd
         from pymatgen.core import Lattice
         from pymatgen.core import Structure
@@ -328,6 +412,41 @@ class TestSIFactory(unittest.TestCase):
             pd.DataFrame({"cif": cifs}).to_csv(csv_path, index=False)
             dataset = OMATGStructureDataset(file_path=str(csv_path), lazy_storage=False)
             samples = [dataset[i] for i in range(len(dataset))]
+            records = []
+            for cif in cifs:
+                structure = Structure.from_str(cif, fmt="cif")
+                records.append(
+                    {
+                        "cell": structure.lattice.matrix,
+                        "atomic_numbers": structure.atomic_numbers,
+                        "pos": structure.cart_coords,
+                    }
+                )
+            lmdb_path = Path(tmp) / "train.lmdb"
+            with lmdb.open(str(lmdb_path), map_size=1024 * 1024) as env:
+                with env.begin(write=True) as transaction:
+                    for index, record in enumerate(records):
+                        transaction.put(str(index).encode(), pickle.dumps(record))
+            parquet_path = Path(tmp) / "train.parquet"
+            pd.DataFrame(
+                [
+                    {
+                        "cell": record["cell"].tolist(),
+                        "atomic_numbers": record["atomic_numbers"],
+                        "positions": record["pos"].tolist(),
+                    }
+                    for record in records
+                ]
+            ).to_parquet(parquet_path)
+            for path in (lmdb_path, parquet_path):
+                dataset = OMATGStructureDataset(path=str(path))
+                for index, expected in enumerate(samples):
+                    actual = dataset[index]
+                    for key in expected:
+                        np.testing.assert_allclose(
+                            actual[key].data, expected[key].data, atol=1e-6
+                        )
+                del dataset
 
         # CSV samples carry fractional coords; convert_to_fractional must be
         # a no-op on them (regression guard against double conversion).
@@ -425,7 +544,14 @@ def _trainer_config(output_dir, max_epochs):
 def _build_trainer(model, output_dir, max_epochs, backend):
     from ppmat.trainer.base_trainer import BaseTrainer
 
-    optimizer = paddle.optimizer.Adam(learning_rate=1e-3, parameters=model.parameters())
+    with paddle.utils.unique_name.guard():
+        scheduler = paddle.optimizer.lr.StepDecay(
+            learning_rate=1e-3, step_size=1, gamma=0.5
+        )
+        scheduler.by_epoch = False
+        optimizer = paddle.optimizer.Adam(
+            learning_rate=scheduler, parameters=model.parameters()
+        )
     loader = _make_loader()
     trainer = BaseTrainer(
         _trainer_config(output_dir, max_epochs),
@@ -433,6 +559,7 @@ def _build_trainer(model, output_dir, max_epochs, backend):
         train_dataloader=loader,
         val_dataloader=loader,
         optimizer=optimizer,
+        lr_scheduler=scheduler,
         execution_config={"backend": backend},
     )
     return trainer, optimizer
@@ -516,10 +643,36 @@ class TestCINNTrainerOrchestration(unittest.TestCase):
             resumed_trainer, resumed_optimizer = _build_trainer(
                 resumed_model, tmp_path / "resumed", 2, "cinn"
             )
-            with paddle.utils.unique_name.guard():
+            optimizer_state = paddle.load(str(checkpoint_dir / "latest.pdopt"))
+            restored = []
+            original_train_epoch = resumed_trainer.train_epoch
+
+            def verify_restored(*args, **kwargs):
+                self.assertEqual(resumed_trainer.state.global_step, 1)
+                for key, value in checkpoint_state.items():
+                    np.testing.assert_array_equal(
+                        resumed_model.state_dict()[key].numpy(), value.numpy()
+                    )
+                current = resumed_optimizer.state_dict()
+                self.assertEqual(current.keys(), optimizer_state.keys())
+                for key, value in optimizer_state.items():
+                    if isinstance(value, dict):
+                        self.assertEqual(current[key], value)
+                    else:
+                        np.testing.assert_array_equal(
+                            current[key].numpy(), value.numpy()
+                        )
+                self.assertEqual(resumed_optimizer.get_lr(), 5e-4)
+                restored.append(True)
+                return original_train_epoch(*args, **kwargs)
+
+            with paddle.utils.unique_name.guard(), mock.patch.object(
+                resumed_trainer, "train_epoch", side_effect=verify_restored
+            ):
                 resumed_trainer.train(
                     resume_from_checkpoint=str(checkpoint_dir / "latest")
                 )
+            self.assertEqual(restored, [True])
 
             straight_model = _make_cinn_model("cinn")
             straight_model.set_state_dict(initial_state)
@@ -533,6 +686,13 @@ class TestCINNTrainerOrchestration(unittest.TestCase):
             self.assertEqual(resumed_trainer.state.global_step, 2)
             self.assertEqual(resumed_trainer.state.epoch, 2)
             self.assertEqual(resumed_optimizer.get_lr(), straight_optimizer.get_lr())
+            self.assertEqual(
+                resumed_trainer.lr_scheduler.state_dict(),
+                straight_trainer.lr_scheduler.state_dict(),
+            )
+            self.assertEqual(
+                resumed_model.state_dict().keys(), straight_model.state_dict().keys()
+            )
             self.assertEqual(
                 resumed_optimizer.state_dict().keys(),
                 straight_optimizer.state_dict().keys(),
@@ -663,10 +823,27 @@ class TestOMatGMetric(unittest.TestCase):
 
     def test_dng_metrics_smoke(self):
         """DNG mode reports validity, distribution, METRe and COV metrics."""
+        import tempfile
+        from pathlib import Path
+
         from ppmat.metrics.omatg_metric import OMatGMetric
 
-        ref = [_metric_sample(3, 0), _metric_sample(4, 1), _metric_sample(5, 2)]
-        gen = [_metric_sample(3, 0), _metric_sample(4, 1), _metric_sample(5, 3)]
+        ref = [
+            {
+                "lengths": [5.0, 5.0, 5.0],
+                "angles": [90.0, 90.0, 90.0],
+                "atom_types": [11, 17],
+                "frac_coords": [[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]],
+            },
+            {
+                "lengths": [5.0, 5.0, 5.0],
+                "angles": [90.0, 90.0, 90.0],
+                "atom_types": [3, 9],
+                "frac_coords": [[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]],
+            },
+        ]
+        invalid = dict(ref[0], lengths=[0.0, 0.0, 0.0])
+        gen = [ref[0], invalid, ref[0]]
         metrics = OMatGMetric(metric_type="dng", dataset_name="mp_20")(gen, gt_data=ref)
         expected_keys = {
             "valid_rate",
@@ -686,6 +863,28 @@ class TestOMatGMetric(unittest.TestCase):
         self.assertTrue(expected_keys <= set(metrics))
         for value in metrics.values():
             self.assertFalse(value != value, "metric value is NaN")
+        self.assertAlmostEqual(metrics["valid_rate"], 2.0 / 3.0)
+        self.assertAlmostEqual(metrics["metre_rate"], 0.5)
+        self.assertAlmostEqual(metrics["wdist_coordination_numbers"], 0.5)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "gt.csv"
+            self._write_gt_csv(csv_path, ref)
+            streaming = OMatGMetric(
+                metric_type="dng", dataset_name="mp_20", gt_file_path=str(csv_path)
+            )
+            streaming.update_step(
+                result={"result": gen[:2]}, batch=None, stage="sample"
+            )
+            streaming.update_step(
+                result={"result": gen[2:]}, batch=None, stage="sample"
+            )
+            for key, value in streaming.compute_epoch(stage="sample").items():
+                self.assertAlmostEqual(metrics[key], value)
+        self.assertEqual(
+            OMatGMetric(metric_type="dng", dataset_name="mp_20")([invalid], ref),
+            {"valid_rate": 0.0},
+        )
 
 
 if __name__ == "__main__":

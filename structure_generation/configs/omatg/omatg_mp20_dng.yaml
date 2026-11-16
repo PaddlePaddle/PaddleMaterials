@@ -117,7 +117,7 @@ Dataset:
     dataset:
       __class_name__: OMATGStructureDataset
       __init_params__:
-        file_path: "./data/mp_20/train.lmdb"
+        path: "./data/mp_20/train.lmdb"
         lazy_storage: True
         convert_to_fractional: True
         niggli_reduce: False
@@ -135,7 +135,7 @@ Dataset:
     dataset:
       __class_name__: OMATGStructureDataset
       __init_params__:
-        file_path: "./data/mp_20/val.lmdb"
+        path: "./data/mp_20/val.lmdb"
         lazy_storage: True
         convert_to_fractional: True
         niggli_reduce: False
@@ -153,7 +153,7 @@ Dataset:
     dataset:
       __class_name__: OMATGStructureDataset
       __init_params__:
-        file_path: "./data/mp_20/test.lmdb"
+        path: "./data/mp_20/test.lmdb"
         lazy_storage: True
         convert_to_fractional: True
         niggli_reduce: False
@@ -191,7 +191,7 @@ Sample:
     niggli: False
 
   model_sample_params:
-    num_inference_steps: 100
+    num_inference_steps: ${Model.__init_params__.si_scheduler_cfg.integration_time_steps}
 
   metrics:
     __class_name__: OMatGMetric

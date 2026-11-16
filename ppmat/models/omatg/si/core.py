@@ -47,9 +47,8 @@ DEFAULT_MAX_ATOMS: int = 100
 SMALL_TIME: float = 1.0e-3
 BIG_TIME: float = 1.0 - 1.0e-3
 
-# Lattice matrices are clipped elementwise during integration for numerical
-# stability; |a_ij| = 100 A is far beyond any physical cell entry.
-_CELL_CLIP_BOUND: float = 100.0
+# Final-step mask tolerance in the original OMatG masked-species integrator.
+_FINAL_UNMASK_TOLERANCE: float = 5.0e-3
 
 
 def _clone_dict(data: Dict[str, paddle.Tensor]) -> Dict[str, paddle.Tensor]:
@@ -81,6 +80,8 @@ class SingleStochasticInterpolant(StochasticInterpolant):
     ) -> None:
         """Construct stochastic interpolant."""
         super().__init__()
+        if integrator_kwargs and integrator_kwargs != {"method": "euler"}:
+            raise ValueError("Only the Euler integrator without substeps is supported.")
         self._interpolant = interpolant
         self._gamma = gamma
         if self._gamma is not None:
@@ -270,8 +271,8 @@ class SingleStochasticInterpolant(StochasticInterpolant):
         time_step: paddle.Tensor,
         batch_indices: paddle.Tensor,
     ) -> paddle.Tensor:
-        dt = time_step.item() if hasattr(time_step, "item") else float(time_step)
-        t_val = time.item() if time.numel() == 1 else float(time[0])
+        dt = float(time_step)
+        t_val = float(time)
         model_result = model_function(time, self._corrector.correct(x_t))
         velocity = model_result[0]
         annealing_factor = 1.0 + self._velocity_annealing_factor * t_val
@@ -286,26 +287,25 @@ class SingleStochasticInterpolant(StochasticInterpolant):
         time_step: paddle.Tensor,
         batch_indices: paddle.Tensor,
     ) -> paddle.Tensor:
-        dt = time_step.item() if hasattr(time_step, "item") else float(time_step)
-        t_val = time.item() if time.numel() == 1 else float(time[0])
+        dt = float(time_step)
+        t_val = float(time)
 
         model_result = model_function(time, self._corrector.correct(x_t))
-        drift = model_result[0]
-        eta = model_result[1] if len(model_result) > 1 else paddle.zeros_like(drift)
+        drift, eta = model_result
 
-        epsilon_t = (
-            self._epsilon.epsilon(paddle.to_tensor([t_val])).item()
-            if self._epsilon
-            else 0.0
-        )
-        gamma_t = (
-            self._gamma.gamma(paddle.to_tensor([t_val])).item() if self._gamma else 1.0
-        )
+        epsilon_t = float(self._epsilon.epsilon(time))
+        gamma_t = float(self._gamma.gamma(time))
 
         diffusion = paddle.sqrt(paddle.to_tensor(2.0 * epsilon_t * dt)) * paddle.randn(
             x_t.shape
         )
-        x_new = x_t + drift * dt - (epsilon_t / gamma_t) * eta * dt + diffusion
+        annealing_factor = 1.0 + self._velocity_annealing_factor * t_val
+        x_new = (
+            x_t
+            + annealing_factor * drift * dt
+            - (epsilon_t / gamma_t) * eta * dt
+            + diffusion
+        )
         return self._corrector.correct(x_new)
 
     def get_corrector(self) -> Corrector:
@@ -417,7 +417,8 @@ class DiscreteFlowMatchingMask(StochasticInterpolantSpecies):
                 "mask index 0; species are 1-based atomic numbers."
             )
         pred = model_function(x_t)[0]
-        assert pred.shape == (x_0.shape[0], DEFAULT_MAX_ATOMS)
+        if pred.ndim != 2 or pred.shape[0] != x_0.shape[0]:
+            raise ValueError("Species logits must have one row per atom.")
         return {"loss": paddle.nn.functional.cross_entropy(input=pred, label=x_1 - 1)}
 
     def integrate(
@@ -428,47 +429,26 @@ class DiscreteFlowMatchingMask(StochasticInterpolantSpecies):
         time_step: paddle.Tensor,
         batch_indices: paddle.Tensor,
     ) -> paddle.Tensor:
-        """Advance masked species by one discretised CTMC step."""
-        eps = paddle.finfo(paddle.float64).eps
+        """Advance the masked base distribution with the original OMatG rates."""
         x_1_probs = paddle.nn.functional.softmax(model_function(time, x_t)[0], axis=-1)
-        x_1_probs = x_1_probs.reshape((-1, DEFAULT_MAX_ATOMS))
-        shifted_x_1 = paddle.multinomial(
-            x_1_probs, num_samples=1, replacement=True
-        ).squeeze(-1)
-        shifted_x_t = x_t - 1
-        assert shifted_x_1.shape == x_t.shape == shifted_x_t.shape
-        shifted_x_1_hot = paddle.nn.functional.one_hot(
-            shifted_x_1, num_classes=DEFAULT_MAX_ATOMS
-        )
-        dpt = shifted_x_1_hot - 1.0 / DEFAULT_MAX_ATOMS
-        dpt_xt = dpt.gather(-1, shifted_x_t[:, None]).squeeze(-1)
-        pt = time * shifted_x_1_hot + (1.0 - time) * (1.0 / DEFAULT_MAX_ATOMS)
-        pt_xt = pt.gather(-1, shifted_x_t[:, None]).squeeze(-1)
-        S = paddle.count_nonzero(x=pt, axis=-1).cast(pt.dtype)
-        denom = paddle.where(pt_xt == 0.0, paddle.ones_like(pt_xt), S * pt_xt)
-        rate = paddle.nn.functional.relu(x=dpt - dpt_xt[:, None]) / denom[:, None]
-        rate[(pt_xt == 0.0)[:, None].expand([-1, DEFAULT_MAX_ATOMS])] = 0.0
-        rate[pt == 0.0] = 0.0
-        rate_db = paddle.zeros_like(rate)
-        if self._noise > 0.0:
-            rate_db[shifted_x_t == shifted_x_1] = 1.0
-            rate_db[shifted_x_1 != shifted_x_t] = (
-                DEFAULT_MAX_ATOMS * time + 1.0 - time
-            ) / (1.0 - time + eps)
-            rate_db *= self._noise
-        rate = rate + rate_db
-        step_probs = (rate * time_step).clip(max=1.0)
-        step_probs[paddle.arange(len(shifted_x_t)), shifted_x_t] = 0.0
-        step_probs[paddle.arange(len(shifted_x_t)), shifted_x_t] = (
-            (1.0 - step_probs.sum(axis=-1, keepdim=True)).clip(min=0.0)
-        ).squeeze(-1)
-        step_probs = paddle.nan_to_num(step_probs, nan=0.0, posinf=1.0, neginf=0.0)
-        step_probs = step_probs.clip(min=0.0, max=1.0)
-        x_t = (
-            paddle.multinomial(step_probs, num_samples=1, replacement=True).squeeze(-1)
+        x_1 = (
+            paddle.multinomial(x_1_probs, num_samples=1, replacement=True).squeeze(-1)
             + 1
         )
-        return x_t
+        will_unmask = paddle.rand(x_t.shape) < (
+            time_step * (1.0 + self._noise * time) / (1.0 - time)
+        )
+        will_unmask = will_unmask & (x_t == self._mask_index)
+        final_step = abs(float(time + time_step) - BIG_TIME) < _FINAL_UNMASK_TOLERANCE
+        if final_step:
+            will_unmask = x_t == self._mask_index
+        will_mask = (paddle.rand(x_t.shape) < time_step * self._noise) & (
+            x_t != self._mask_index
+        )
+        result = paddle.where(will_unmask, x_1, x_t)
+        if abs(float(time + time_step)) < BIG_TIME - _FINAL_UNMASK_TOLERANCE:
+            result = paddle.where(will_mask, paddle.zeros_like(result), result)
+        return result
 
 
 class DataField(Enum):
@@ -680,15 +660,13 @@ class StochasticInterpolants:
                 ):
                     field_name = data_field.value
 
-                    def model_prediction_fn(
-                        time, x, _field_name=field_name, _x_t=x_t, _new_x_t=new_x_t
-                    ):
-                        t_val = time.item() if time.numel() == 1 else float(time[0])
+                    def model_prediction_fn(time, x, _field_name=field_name, _x_t=x_t):
+                        t_val = float(time)
                         time = paddle.full_like(
                             _x_t["n_atoms"].cast("float32"),
                             t_val,
                         )
-                        x_int = _clone_dict(_new_x_t)
+                        x_int = _clone_dict(_x_t)
                         x_int[_field_name] = x
                         model_result = model_function(x_int, time)
                         return (
@@ -709,10 +687,6 @@ class StochasticInterpolants:
                         batch_indices,
                     )
 
-                    if data_field == DataField.cell:
-                        new_value = paddle.clip(
-                            new_value, -_CELL_CLIP_BOUND, _CELL_CLIP_BOUND
-                        )
                     new_x_t[field_name] = new_value
 
                 x_t = _clone_dict(new_x_t)

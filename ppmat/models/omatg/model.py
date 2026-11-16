@@ -19,6 +19,7 @@ not diffusion noise schedulers, so ppmat.schedulers (DDPMScheduler etc.) do
 not apply.
 """
 
+import math
 from typing import Dict
 from typing import Optional
 
@@ -26,6 +27,7 @@ import paddle
 import paddle.nn as nn
 
 from ppmat.losses import MSELoss
+from ppmat.models.common.activation import swish
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
 from ppmat.models.diffcsp.diffcsp import CSPNet
@@ -142,8 +144,12 @@ def _validate_relative_si_costs(relative_si_costs, loss_keys) -> dict:
             "si_scheduler_cfg requires 'relative_si_costs' mapping every loss key "
             f"to its weight; expected keys are {sorted(loss_keys)}."
         )
-    if not all(cost >= 0.0 for cost in relative_si_costs.values()):
-        raise ValueError("All relative_si_costs weights must be non-negative.")
+    if not all(
+        math.isfinite(cost) and cost >= 0.0 for cost in relative_si_costs.values()
+    ):
+        raise ValueError(
+            "All relative_si_costs weights must be finite and non-negative."
+        )
 
     total = sum(relative_si_costs.values())
     if abs(total - 1.0) >= 1e-10:
@@ -155,6 +161,11 @@ def _validate_relative_si_costs(relative_si_costs, loss_keys) -> dict:
             f"{sorted(loss_keys)}."
         )
     return dict(relative_si_costs)
+
+
+class _UnfusedSiLU(nn.Silu):
+    def forward(self, x):
+        return swish(x)
 
 
 class OMATGCSPNet(CSPNet):
@@ -183,6 +194,18 @@ class OMATGCSPNet(CSPNet):
                 "OMatG does not support pred_scalar: it always trains the "
                 "dual b/eta heads required by stochastic interpolants."
             )
+        if smooth:
+            raise ValueError(
+                "OMatG expects integer species; smooth=True is unsupported."
+            )
+        if act_fn != "silu":
+            raise ValueError("OMatG supports act_fn='silu' only.")
+        if time_embed_dim is not None and (time_embed_dim < 4 or time_embed_dim % 2):
+            raise ValueError("time_embed_dim must be an even integer of at least four.")
+        if num_layers < 1 or hidden_dim < 1 or max_atoms < 1:
+            raise ValueError("Model dimensions and num_layers must be positive.")
+        if edge_style not in ("fc", "knn"):
+            raise ValueError("edge_style must be 'fc' or 'knn'.")
         super().__init__(
             hidden_dim=hidden_dim,
             latent_dim=time_embed_dim if time_embed_dim is not None else 1,
@@ -200,8 +223,13 @@ class OMATGCSPNet(CSPNet):
             num_classes=max_atoms,
         )
         # OMatG has no property embedding; drop prop_mlp from CSPNet.
+        self.act_fn = _UnfusedSiLU()
         for i in range(num_layers):
-            getattr(self, "csp_layer_%d" % i).prop_mlp = None
+            layer = getattr(self, "csp_layer_%d" % i)
+            layer.prop_mlp = None
+            for mlp in (layer.edge_mlp, layer.node_mlp):
+                mlp[1] = self.act_fn
+                mlp[3] = self.act_fn
 
         self.hidden_dim = hidden_dim
         self.cutoff = cutoff
@@ -222,10 +250,13 @@ class OMATGCSPNet(CSPNet):
 
         self.coord_out_2 = nn.Linear(hidden_dim, 3, bias_attr=False)
         self.lattice_out_2 = nn.Linear(hidden_dim, 9, bias_attr=False)
-        if self.pred_type:
-            self.type_out_2 = nn.Linear(hidden_dim, max_atoms)
+        if not self.pred_type:
+            self.type_out = nn.Linear(hidden_dim, max_atoms)
+        self.type_out_2 = nn.Linear(hidden_dim, max_atoms)
 
     def enable_masked_species(self):
+        if self.species_shift == 0:
+            return
         self.node_embedding = nn.Embedding(self.num_classes + 1, self.hidden_dim)
         self.species_shift = 0
 
@@ -316,7 +347,7 @@ class OMATGCSPNet(CSPNet):
         if self.time_embed_dim is not None:
             t_embed = self.time_embedder(t)
         else:
-            t_embed = t
+            t_embed = t.reshape([-1, 1])
 
         t_per_atom = paddle.repeat_interleave(t_embed, num_atoms, axis=0)
         node_features = paddle.concat([node_features, t_per_atom], axis=1)
@@ -479,6 +510,25 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
             )
         if use_si:
             self._build_si(si_scheduler_cfg or {}, sampler_cfg or {})
+        self._freeze_unused_heads()
+
+    def _freeze_unused_heads(self):
+        heads = [self.type_out_2]
+        if not self.pred_type:
+            heads.append(self.type_out)
+        for field, head in (
+            ("pos", self.coord_out_2),
+            ("cell", self.lattice_out_2),
+        ):
+            if (
+                not self.use_si
+                or "loss_z"
+                not in self._si.get_stochastic_interpolant(field).loss_keys()
+            ):
+                heads.append(head)
+        for head in heads:
+            for parameter in head.parameters():
+                parameter.stop_gradient = True
 
     def forward(self, data, t=None):
         """Forward pass on a sample dict; returns loss_dict.
@@ -544,7 +594,7 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
             }
         }
 
-    def sample(self, batch_data, num_inference_steps=100, **kwargs):
+    def sample(self, batch_data, num_inference_steps=None, **kwargs):
         """Sample via SI integration; requires use_si=True (see configs)."""
         if not self.use_si:
             raise ValueError(
@@ -623,6 +673,8 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
             )
 
         self._si = build_si_from_cfg(si_scheduler_cfg)
+        for field in ("species", "pos", "cell"):
+            self._si.get_stochastic_interpolant(field)
         self._relative_si_costs = _validate_relative_si_costs(
             si_scheduler_cfg.get("relative_si_costs"), self._si.loss_keys()
         )
@@ -635,7 +687,27 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
                 f"interpolant, got {type(species_interpolant).__name__}."
             )
         if species_interpolant.uses_masked_species():
+            if not self.pred_type or not sampler_cfg.get("mask_species", False):
+                raise ValueError(
+                    "Masked-species interpolation requires pred_type=True and "
+                    "sampler_cfg.mask_species=True."
+                )
             self.enable_masked_species()
+        elif self.pred_type or sampler_cfg.get("mask_species", False):
+            raise ValueError(
+                "Fixed-species interpolation requires pred_type=False and "
+                "sampler_cfg.mask_species=False."
+            )
+        elif not sampler_cfg.get("mirror_species", True):
+            raise ValueError(
+                "Fixed-species interpolation requires mirror_species=True."
+            )
+
+        active_costs = dict(self._relative_si_costs)
+        if not self.pred_type:
+            active_costs.pop("species_loss", None)
+        if not any(cost > 0.0 for cost in active_costs.values()):
+            raise ValueError("At least one model-dependent SI loss must have weight.")
 
         if sampler_cfg:
             self._sampler = build_sampler_from_cfg(sampler_cfg)

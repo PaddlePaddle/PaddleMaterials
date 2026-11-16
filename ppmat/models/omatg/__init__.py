@@ -120,6 +120,10 @@ def build_omatg_model(
     """
     if mode not in ("csp", "dng"):
         raise ValueError(f"mode must be 'csp' or 'dng', got {mode!r}.")
+    if not dataset.endswith(f"_{mode}"):
+        raise ValueError(f"Dataset {dataset!r} does not match mode {mode!r}.")
+    if model_kwargs.get("pred_type", mode == "dng") != (mode == "dng"):
+        raise ValueError("pred_type must agree with the selected mode.")
 
     weight_url = get_omatg_model_url(dataset, variant)
 

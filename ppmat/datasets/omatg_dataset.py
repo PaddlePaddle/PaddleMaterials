@@ -14,18 +14,128 @@
 
 """OMatG structure dataset: reads LMDB/CSV/parquet into plain dict samples."""
 
+import ast
+import json
+import os
+import pickle
+import zlib
 from pathlib import Path
 from typing import Any
+from typing import Callable
 from typing import Dict
+from typing import List
+from typing import Optional
 
+import lmdb
 import numpy as np
 import paddle
 import pandas as pd
 
 from ppmat.datasets.custom_data_type import ConcatData
-from ppmat.utils.lmdb_utils import lmdb_get
-from ppmat.utils.lmdb_utils import lmdb_keys
-from ppmat.utils.lmdb_utils import open_lmdb
+
+
+def _open_lmdb(
+    file_path: str,
+    *,
+    subdir: Optional[bool] = None,
+    max_readers: int = 126,
+) -> lmdb.Environment:
+    """Open an LMDB environment read-only with memory-safe defaults.
+
+    Args:
+        file_path: Path to the LMDB file or directory.
+        subdir: Whether ``file_path`` is a directory. When None (default),
+            it is auto-detected from the path.
+        max_readers: Maximum number of concurrent readers.
+
+    Returns:
+        A read-only :class:`lmdb.Environment`.
+    """
+    if subdir is None:
+        subdir = os.path.isdir(file_path)
+    return lmdb.open(
+        file_path,
+        subdir=subdir,
+        readonly=True,
+        lock=False,
+        readahead=False,
+        meminit=False,
+        max_readers=max_readers,
+    )
+
+
+def _lmdb_keys(
+    env: lmdb.Environment,
+    *,
+    skip_meta: bool = True,
+) -> List[str]:
+    """List all keys in the environment.
+
+    Args:
+        env: An open LMDB environment.
+        skip_meta: Whether to skip metadata keys (starting with "__").
+
+    Returns:
+        List of keys (decoded to str).
+    """
+    with env.begin() as txn:
+        all_keys = [
+            k.decode("ascii") if isinstance(k, bytes) else k
+            for k in txn.cursor().iternext(values=False)
+        ]
+    if skip_meta:
+        all_keys = [k for k in all_keys if not k.startswith("__")]
+    return all_keys
+
+
+def _lmdb_get(
+    env: lmdb.Environment, key: str, *, decoder: Optional[Callable] = None
+) -> Any:
+    """Fetch the record stored under ``key``.
+
+    Args:
+        env: An open LMDB environment.
+        key: Record key.
+        decoder: Optional payload decoder; defaults to ``_decode_payload``.
+
+    Returns:
+        The deserialized object.
+
+    Raises:
+        KeyError: If ``key`` does not exist in the environment.
+    """
+    key_bytes = key.encode("ascii") if isinstance(key, str) else key
+    with env.begin() as txn:
+        value = txn.get(key_bytes)
+    if value is None:
+        raise KeyError(f"Key {key} not found in LMDB.")
+    decoder = decoder or _decode_payload
+    return decoder(value)
+
+
+def _decode_payload(payload: bytes) -> Any:
+    """Decode a raw LMDB payload with progressive formats.
+
+    Tries, in order: zlib decompress -> pickle -> json -> ast literal. Returns
+    the first successful decode; raises ``ValueError`` if all fail.
+    """
+    raw = payload
+    try:
+        raw = zlib.decompress(payload)
+    except Exception:
+        pass
+    try:
+        return pickle.loads(raw)
+    except Exception:
+        pass
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        pass
+    try:
+        return ast.literal_eval(raw.decode("utf-8"))
+    except Exception:
+        raise ValueError("Failed to decode LMDB payload with zlib/pickle/json/ast.")
 
 
 class _OMATGStructure:
@@ -96,18 +206,24 @@ class OMATGStructureDataset(paddle.io.Dataset):
 
     def __init__(
         self,
-        file_path: str,
+        path: Optional[str] = None,
         lazy_storage: bool = True,
         convert_to_fractional: bool = True,
         niggli_reduce: bool = False,
+        *,
+        file_path: Optional[str] = None,
     ) -> None:
-        self.file_path = file_path
+        self._env = None
+        if path is not None and file_path is not None:
+            raise ValueError("Specify path or the legacy file_path alias, not both.")
+        path = path if path is not None else file_path
+        if path is None:
+            raise ValueError("A dataset path must be provided.")
+        self.path = path
         self.lazy_storage = lazy_storage
         self.convert_to_fractional = convert_to_fractional
         self.niggli_reduce = niggli_reduce
-        self._env = None
-
-        file_format = Path(file_path).suffix.lower()
+        file_format = Path(path).suffix.lower()
 
         if file_format == ".lmdb":
             self._init_from_lmdb()
@@ -119,21 +235,25 @@ class OMATGStructureDataset(paddle.io.Dataset):
             raise ValueError(f"Unsupported file format: {file_format}")
 
     @property
+    def file_path(self):
+        return self.path
+
+    @property
     def env(self):
         if self._env is None:
-            self._env = open_lmdb(self.file_path)
+            self._env = _open_lmdb(self.file_path)
         return self._env
 
     def _init_from_lmdb(self) -> None:
-        temp_env = open_lmdb(self.file_path)
+        temp_env = _open_lmdb(self.file_path)
 
         try:
-            self.keys = lmdb_keys(temp_env)
+            self.keys = _lmdb_keys(temp_env)
 
             if not self.lazy_storage:
                 self.structures = []
                 for key in self.keys:
-                    data = lmdb_get(temp_env, key)
+                    data = _lmdb_get(temp_env, key)
                     self.structures.append(self._create_structure(data))
         finally:
             temp_env.close()
@@ -240,7 +360,7 @@ class OMATGStructureDataset(paddle.io.Dataset):
 
     def _get_sample(self, idx: int) -> Dict[str, Any]:
         if self.lazy_storage:
-            data = lmdb_get(self.env, self.keys[idx])
+            data = _lmdb_get(self.env, self.keys[idx])
             return self._create_structure(data)
         else:
             return self.structures[idx]
