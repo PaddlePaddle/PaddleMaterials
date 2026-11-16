@@ -25,6 +25,7 @@ from typing import Protocol
 import paddle
 
 from ppmat.models.common.cinn import CINN_BACKEND
+from ppmat.utils.execution import compiled_execution
 
 DEFAULT_BACKEND = "eager"
 RuntimeCallable = Callable[..., Any] | paddle.nn.Layer
@@ -199,7 +200,8 @@ class RuntimeMixin:
             if hasattr(runtime, "training"):
                 runtime.training = self.training
             self._runtime_cache[key] = runtime
-        return runtime(*args, **kwargs)
+        with compiled_execution():
+            return runtime(*args, **kwargs)
 
 
 register_runtime_backend(CINN_BACKEND)
