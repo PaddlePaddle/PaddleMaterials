@@ -469,8 +469,6 @@ class iComformer(RuntimeMixin, nn.Layer):
         for i in range(1, len(self.att_layers)):
             node_features = self.att_layers[i](node_features, edges, edge_features)
 
-        # Without dim_size, scatter() reads index.max() back from the device,
-        # which breaks the SOT graph.
         features = scatter(
             node_features, batch_idx, dim=0, dim_size=graph_count(graph), reduce="mean"
         )
