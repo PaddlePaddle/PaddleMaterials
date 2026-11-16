@@ -68,6 +68,7 @@ from ppmat.utils.misc import make_noise_symmetric_preserve_variance
 from ppmat.utils.misc import ragged_range
 from ppmat.utils.misc import repeat_blocks
 from ppmat.utils.paddle_aux import dim2perm
+from ppmat.utils.scatter import scatter
 
 
 def inner_product_normalized(x: paddle.Tensor, y: paddle.Tensor) -> paddle.Tensor:
@@ -76,19 +77,6 @@ def inner_product_normalized(x: paddle.Tensor, y: paddle.Tensor) -> paddle.Tenso
     giving a result between -1 and 1.
     """
     return paddle.sum(x=x * y, axis=-1).clip(min=-1, max=1)
-
-
-def _index_add_rows(
-    src: paddle.Tensor, index: paddle.Tensor, dim_size
-) -> paddle.Tensor:
-    """Sum the rows of float `src` into `dim_size` rows selected by `index`.
-
-    Same result as scatter(src, index, dim=0, dim_size=dim_size, reduce="sum"),
-    without its int(dim_size) conversion and empty-input check, which read device
-    values or dynamic dims and break the SOT graph under paddle.jit.to_static.
-    """
-    out = paddle.zeros([dim_size, *src.shape[1:]], dtype=src.dtype)
-    return paddle.index_add(x=out, index=index, axis=0, value=src)
 
 
 def get_max_neighbors_mask(
@@ -444,11 +432,13 @@ def edge_score_to_lattice_score_frac_symmetric(
     unit_edge_vectors_cart = edge_vectors / edge_vectors.norm(axis=-1, keepdim=True)
     if num_structures is None:
         num_structures = batch.max() + 1
-    score_lattice = _index_add_rows(
+    score_lattice = scatter(
         score_d[:, None, None]
         * (unit_edge_vectors_cart[:, :, None] @ unit_edge_vectors_cart[:, None, :]),
         batch_edge,
-        num_structures,
+        dim=0,
+        dim_size=num_structures,
+        reduce="add",
     )
     # Non-negative axes: CINN's fusion analysis indexes the input axes with the raw
     # perm entries and crashes on negative ones.
@@ -887,7 +877,13 @@ class EfficientInteractionBilinear(paddle.nn.Layer):
         # product of the padded [E, S, Kmax] and [E, Kmax, emb] tensors without the
         # padding. No early return for nEdges == 0 (a branch on a dynamic dim breaks
         # the SOT graph); zero edges give an empty [0, units_out] result.
-        sum_k = _index_add_rows(sph.unsqueeze(-1) * m.unsqueeze(1), id_reduce, nEdges)
+        sum_k = scatter(
+            sph.unsqueeze(-1) * m.unsqueeze(1),
+            id_reduce,
+            dim=0,
+            dim_size=nEdges,
+            reduce="sum",
+        )
         # Transposed product (rbf_W1 @ sum_k)^T = sum_k^T @ rbf_W1^T. rbf_W1 is shared
         # by all interaction blocks; as a plain first operand, CINN's
         # fuse_parallel_matmul_pass merges these matmuls across blocks although each
@@ -1032,7 +1028,7 @@ class AtomUpdateBlock(paddle.nn.Layer):
         nAtoms = tuple(h.shape)[0]
         mlp_rbf = self.dense_rbf(rbf)
         x = m * mlp_rbf
-        x2 = _index_add_rows(x, id_j, nAtoms)
+        x2 = scatter(x, id_j, dim=0, dim_size=nAtoms, reduce="sum")
         x = self.scale_sum(m, x2)
         for layer in self.layers:
             x = layer(x)
@@ -1205,8 +1201,11 @@ class RBFBasedLatticeUpdateBlockFrac(RBFBasedLatticeUpdateBlock):
         num_structures = lattice.shape[0]
         if normalize_score:
             batch_edge = batch[edge_index[0]]
-            num_edges = _index_add_rows(
-                paddle.ones_like(x=distance_vec[:, 0]), batch_edge, num_structures
+            num_edges = scatter(
+                paddle.ones_like(x=distance_vec[:, 0]),
+                batch_edge,
+                dim=0,
+                dim_size=num_structures,
             )
             edge_scores /= num_edges[batch_edge].unsqueeze(axis=-1)
         outs = []
@@ -1705,7 +1704,9 @@ class GemNetT(paddle.nn.Layer):
         # E_t = scatter(E_t, batch, dim=0, dim_size=nMolecules, reduce="sum")
         F_st_vec = F_st[:, :, None] * V_st[:, None, :]
         # Static atom count; num_atoms.sum() would be read from the device.
-        F_t = _index_add_rows(F_st_vec, idx_t, frac_coords.shape[0])
+        F_t = scatter(
+            F_st_vec, idx_t, dim=0, dim_size=frac_coords.shape[0], reduce="add"
+        )
         F_t = F_t.squeeze(axis=1)
 
         return h, F_t, lattice_update
@@ -1863,7 +1864,9 @@ class GemNetTCtrl(GemNetT):
             )
         F_st_vec = F_st[:, :, None] * V_st[:, None, :]
         # Static atom count; num_atoms.sum() would be read from the device.
-        F_t = _index_add_rows(F_st_vec, idx_t, frac_coords.shape[0])
+        F_t = scatter(
+            F_st_vec, idx_t, dim=0, dim_size=frac_coords.shape[0], reduce="add"
+        )
         F_t = F_t.squeeze(axis=1)
         return h, F_t, lattice_update
 

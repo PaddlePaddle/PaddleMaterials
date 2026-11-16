@@ -230,11 +230,7 @@ class InteractionPPBlock(paddle.nn.Layer):
         sbf = self.lin_sbf1(sbf)
         sbf = self.lin_sbf2(sbf)
         x_kj = paddle.gather(x_kj, idx_kj) * sbf
-        # scatter() branches on x_kj.shape[0] == 0. The triplet count comes from a
-        # masked selection, so SOT cannot evaluate that branch and breaks the graph.
-        x_kj = paddle.index_add(
-            paddle.zeros([x.shape[0], x_kj.shape[1]], dtype=x_kj.dtype), idx_ji, 0, x_kj
-        )
+        x_kj = scatter(x_kj, idx_ji, dim=0, dim_size=x.shape[0])
         x_kj = self.act(self.lin_up(x_kj))
         h = x_ji + x_kj
         for layer in self.layers_before_skip:
