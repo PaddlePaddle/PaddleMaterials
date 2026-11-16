@@ -18,11 +18,13 @@ import paddle  # noqa
 
 from ppmat.metrics.csp_metric import CSPMetric
 from ppmat.metrics.diffnmr_streaming_adapter import DiffNMRStreamingAdapter
+from ppmat.metrics.omatg_metric import OMatGMetric
 from ppmat.metrics.sfin_metric import SFINStreamingAdapter
 
 __all__ = [
     "build_metric",
     "CSPMetric",
+    "OMatGMetric",
     "DiffNMRStreamingAdapter",
     "SFINStreamingAdapter",
     # "DiffNMRMetric",
