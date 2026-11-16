@@ -323,10 +323,19 @@ class Contraction(nn.Layer):
             w = paddle.randn(
                 [num_elements, num_params, self.num_features], dtype=dtype
             ) / num_params
+            # ``paddle.nn.Parameter`` only exists from Paddle 3.2 onwards, while
+            # the repository still supports Paddle 3.1. ``create_parameter`` is
+            # available in every supported version and registers the tensor under
+            # the same attribute name, so the state-dict layout is unchanged.
+            param = self.create_parameter(
+                shape=w.shape,
+                dtype=w.dtype,
+                default_initializer=nn.initializer.Assign(w),
+            )
             if i == correlation:
-                self.weights_max = nn.Parameter(w)
+                self.weights_max = param
             else:
-                self.weights.append(nn.Parameter(w))
+                self.weights.append(param)
 
     def U_tensors(self, nu: int):
         return getattr(self, f"U_matrix_{nu}")

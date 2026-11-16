@@ -93,7 +93,10 @@ score = E / 17.0261 + F / 0.0614272 + S9 / 0.310582     (lower is better)
 ```
 
 where the denominators are the converted weights (step 0), so step 0 scores
-exactly 3.0. `S9` is the 9-component stress MAE; it is used only inside the
+exactly 3.0. `E`, `F` and `S9` are entered in eV/Å / meV-per-atom / GPa units
+as used by the validation script, i.e. step 0 uses `F = 0.0614272 eV/Å`
+(= 61.427 meV/Å), while the table below reports force in meV/Å.
+`S9` is the 9-component stress MAE; it is used only inside the
 score, the table below reports the 6-component value.
 
 | Checkpoint | Steps | Energy MAE (meV/atom) | Force MAE (meV/Å) | Stress MAE (GPa, 6 comp.) | score | dE / dF / dS9 vs step 0 |
@@ -104,8 +107,11 @@ score, the table below reports the 6-component value.
 | Stage 2 (continuation) | 1500 | 16.9827 | 61.222 | 0.42224 | 2.99349 | −0.255 % / −0.334 % / −0.062 % |
 | **Stage 2 (final)** | **2000** | **16.9411** | **61.174** | 0.42211 | **2.98999** | **−0.500 % / −0.413 % / −0.089 %** |
 
-Step 2000 is the lowest score, and it is also the best or joint-best value of
-each individual metric. `finetune_cont_best.pdparams` is that checkpoint; it was
+Step 2000 has the lowest score, so it was selected by that pre-registered rule.
+It is **not** the best checkpoint on every individual metric: step 1000 has the
+lower 6-component stress MAE (0.42190 vs 0.42211 GPa) and the lower relative
+9-component stress MAE change (−0.116 % vs −0.089 %), while step 2000 is better
+on energy and force. `finetune_cont_best.pdparams` is that checkpoint; it was
 **not** picked by energy alone. The `name_for_best_metric: energy_per_atom`
 entry in the YAML only configures the best-checkpoint tracking of the
 repository's trainer, which this run did not use.
@@ -157,10 +163,27 @@ python interatomic_potentials/predict.py \
   --input_path=<structures> --input_format=cif
 ```
 
-`--model_name=mace_mp0_medium` uses the same checkpoint once the archive is
-uploaded to BOS. The archive was extracted into a clean directory and the
-repository's own `predict.py` was run from it on 7 CIFs; the outputs are in §10
-of the validation report.
+`--model_name=mace_mp0_medium` downloads exactly this archive from
+`https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/interatomic_potentials/mace/mace_mp0_medium.zip`
+(the URL registered in `ppmat/models/__init__.py`), so both entry points load the
+same checkpoint. The published archive was re-downloaded on 2026-11-14 and
+verified byte-identical to the 2026-11-04 delivery (ZIP SHA256 `ef2eef76...`,
+`checkpoints/best.pdparams` SHA256 `6182192a...`); the archive was extracted
+into a clean directory and the repository's own `predict.py` was run from it on
+7 CIFs; the outputs are in §10 of the validation report.
+
+**The YAML inside the archive is older than the repository's.** The packaged
+`mace_mp0_medium.yaml` still predates the label-protocol fix, so it misses
+`energy_source: uncorrected_total_energy`, the `Scale(scale=-0.1,
+apply_keys=['stress'])` dataset transform, `canocial: False` and the stress
+`Metric` `flatten_if_same_numel` option (10 keys, all three splits). This does
+not change inference — the packaged and the repository YAML give
+byte-identical predictions on the 7 CIFs — but it does mean anyone re-running
+*training* from the archive's YAML would train with wrong stress and energy
+labels. Training uses
+[mace_mp0_medium_finetune.yaml](mace_mp0_medium_finetune.yaml), which does
+carry the full protocol. Re-packing the archive is an operational step outside
+this PR, so the discrepancy is stated here rather than silently worked around.
 
 The full evidence — per-step validation table, continuation audit, gradient and
 parameter-update record, checkpoint integrity, packaged-model run and the
