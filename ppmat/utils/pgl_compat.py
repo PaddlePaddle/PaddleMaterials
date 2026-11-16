@@ -18,14 +18,7 @@ import pgl
 
 
 def graph_count(graph: pgl.Graph) -> int:
-    """Return the number of graphs in a (batched) PGL graph as a host integer.
-
-    ``graph.num_graph`` is a device tensor once ``Graph.tensor()`` has run, and
-    reading it back with ``int()`` or ``.item()`` breaks the SOT graph under
-    ``paddle.jit.to_static``. PGL keeps per-graph node offsets with
-    ``num_graph + 1`` entries for single and batched graphs alike, and their
-    length is a static shape.
-    """
+    """Return the number of graphs in a (batched) PGL graph as a host integer."""
     return graph._graph_node_index.shape[0] - 1
 
 
