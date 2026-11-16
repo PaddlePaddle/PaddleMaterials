@@ -12,13 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""SGEquiDiff: space-group equivariant crystal diffusion model.
+"""SGEquiDiff model entry points."""
 
-Exposes ``SGEQuiDiff`` and ``EquivariantDiffusionModel``;
-all other submodules are imported via their explicit path.
-"""
-
-from ppmat.models.sgequidiff.diffusion_model import EquivariantDiffusionModel
+from ppmat.models.sgequidiff.sgequidiff import EquivariantDiffusionModel
 from ppmat.models.sgequidiff.sgequidiff import SGEQuiDiff
 
 __all__ = ["SGEQuiDiff", "EquivariantDiffusionModel"]

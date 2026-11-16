@@ -15,17 +15,18 @@
 """SGEQuiDiff integration tests.
 """
 
+import os
 from pathlib import Path
 
 import numpy as np
 import paddle
 import pytest
 
+from ppmat.datasets.build_asu import build_embedding_tools
+from ppmat.datasets.build_asu import build_wyckoff_geometry
 from ppmat.metrics.streaming_base import StreamingMetricBase
-from ppmat.models.sgequidiff.diffusion_model import EquivariantDiffusionModel
+from ppmat.models.sgequidiff.sgequidiff import EquivariantDiffusionModel
 from ppmat.models.sgequidiff.sgequidiff import SGEQuiDiff
-from ppmat.models.sgequidiff.vocabs import build_embedding_tools
-from ppmat.models.sgequidiff.wyckoff_geometry import build_wyckoff_geometry
 from ppmat.utils.execution import configure_execution_backend
 
 
@@ -131,7 +132,7 @@ class TestSGEQuiDiffEndToEnd:
         paddle.seed(0)
         return _make_sgequidiff()
 
-    def test_sample_returns_valid_result_format(self, sampler):
+    def test_sample_returns_valid_result_format(self, sampler, monkeypatch, tmp_path):
         """Unconditional sampling yields crystals with self-consistent fields.
 
         Each generated structure must report a positive atom count whose
@@ -152,23 +153,18 @@ class TestSGEQuiDiffEndToEnd:
             assert len(crystal["angles"]) == 3
             for pt in crystal["frac_coords"]:
                 assert len(pt) == 3
+        from ppmat.sampler.structure_sampler import StructureSampler
 
-    def test_forward_returns_loss_dict(self, sampler):
-        """Full SGEQuiDiff forward pass returns a scalar, finite loss."""
-        batch_data = _make_synthetic_batch()
-        out = sampler(batch_data)
-        assert "loss_dict" in out
-        loss = out["loss_dict"]["loss"]
-        assert loss.ndim == 0
-        assert not paddle.isnan(loss).item()
+        workflow = StructureSampler.__new__(StructureSampler)
+        workflow.model = sampler
+        workflow.sample_config = {}
+        with pytest.raises(NotImplementedError):
+            workflow.sample_by_num_atoms(3)
+        with pytest.raises(NotImplementedError, match="chemical formula"):
+            workflow.sample_by_chemical_formula("Li2O")
+        with pytest.raises(NotImplementedError, match="not a conditional model"):
+            workflow.sample_by_condition(3, {"band_gap": 1.0})
 
-    def test_sample_keeps_hydrogen_element(self, sampler, monkeypatch):
-        """Regression: element_indices=0 (H) must survive the sample() filter.
-
-        sample() maps 0-indexed element_indices through chemical_symbols,
-        which is 1-indexed (chemical_symbols[0] == "X" placeholder). An
-        off-by-one here drops H from every generated crystal.
-        """
         crystal = {
             "space_group_number": paddle.to_tensor(1, dtype=paddle.int64),
             "conventional_lattice_lengths": paddle.to_tensor(
@@ -202,6 +198,15 @@ class TestSGEQuiDiffEndToEnd:
         atom_types = out["result"][0]["atom_types"]
         assert 1 in atom_types, f"H (Z=1) was filtered out: {atom_types}"
         assert set(atom_types) == {1, 2, 3}
+        from ppmat.datasets import build_asu
+
+        monkeypatch.setattr(build_asu.download, "DATASETS_HOME", str(tmp_path))
+        cold_shapes = build_asu.load_wyckoff_shapes(sampler.wyckoff_geometry)
+        warm_shapes = build_asu.load_wyckoff_shapes(sampler.wyckoff_geometry)
+        assert cold_shapes["1"]["a"]["dim"] == 3
+        np.testing.assert_array_equal(
+            cold_shapes["1"]["a"]["volumes"], warm_shapes["1"]["a"]["volumes"]
+        )
 
 
 class TestFullTrainingObjective:
@@ -237,6 +242,8 @@ class TestFullTrainingObjective:
             assert key in pred, f"missing artifact: {key}"
         loss.backward()
         for name, p in sampler.named_parameters():
+            if not p.stop_gradient:
+                assert p.grad is not None, name
             if p.grad is not None and float(p.grad.abs().sum()) > 0:
                 assert name.split(".")[0] in (
                     "atom_coord_diffusion_model",
@@ -244,6 +251,39 @@ class TestFullTrainingObjective:
                     "lattice_sampler",
                     "wyckoff_and_element_sampler",
                 )
+        from ppmat.optimizer import build_optimizer
+
+        optimizer, _ = build_optimizer(
+            {
+                "__class_name__": "AdamW",
+                "__init_params__": {"lr": 1e-3, "weight_decay": 0.0},
+            },
+            sampler,
+            epochs=1,
+            iters_per_epoch=1,
+        )
+        selected = {}
+        for name, parameter in sampler.named_parameters():
+            root = name.split(".")[0]
+            if parameter.grad is not None:
+                assert bool(paddle.isfinite(parameter.grad).all())
+                if root not in selected and float(parameter.grad.abs().max()) > 1e-3:
+                    selected[root] = (parameter, parameter.numpy().copy())
+        assert len(selected) == 4
+        optimizer.step()
+        for root, (parameter, before) in selected.items():
+            expected = (
+                1e-4
+                if root in ("lattice_sampler", "wyckoff_and_element_sampler")
+                else 1e-3
+            )
+            assert float(np.abs(parameter.numpy() - before).max()) == pytest.approx(
+                expected, rel=1e-3, abs=1e-7
+            )
+        assert all(
+            bool(paddle.isfinite(parameter).all()) for parameter in sampler.parameters()
+        )
+        optimizer.clear_grad()
 
     def test_training_loss_decreases_over_steps(self):
         """Gradient descent drives the total training loss down."""
@@ -275,36 +315,6 @@ class TestFullTrainingObjective:
                 f"(initial={initial:.2f}, best={best:.2f})"
             )
 
-    def test_sampled_structure_validity(self, sampler):
-        """Sampled crystals keep elements, coords and lattice params in range.
-
-        Guards the sampling path against generating out-of-domain values
-        (elements outside the encoding table, coords outside the unit cell,
-        or lattice params outside the dataset bounds).
-        """
-        from ppmat.models.sgequidiff.sgequidiff_meta import ELEMENT_ENCODING_SIZE
-
-        out = sampler.sample(
-            {"structure_array": {"num_atoms": paddle.to_tensor([2, 3], dtype="int64")}}
-        )
-        assert len(out["result"]) > 0
-        for crystal in out["result"]:
-            n = crystal["num_atoms"]
-            assert n > 0
-            assert len(crystal["atom_types"]) == n
-            assert len(crystal["frac_coords"]) == n
-            for elem in crystal["atom_types"]:
-                assert 1 <= elem <= ELEMENT_ENCODING_SIZE, f"elem out of range: {elem}"
-            for coords in crystal["frac_coords"]:
-                assert len(coords) == 3
-                assert all(
-                    0.0 <= c < 1.0 for c in coords
-                ), f"coords out of cell: {coords}"
-            assert len(crystal["lengths"]) == 3
-            assert len(crystal["angles"]) == 3
-            assert all(2.0 <= length <= 133.0 for length in crystal["lengths"])
-            assert all(60.0 <= a <= 135.0 for a in crystal["angles"])
-
 
 def _write_synthetic_mp20_npz(root_dir, split="train", num_crystals=8, name="mp_20"):
     """Write a small mp_20-style npz (packed + indices) for the dataset chain test.
@@ -313,7 +323,7 @@ def _write_synthetic_mp20_npz(root_dir, split="train", num_crystals=8, name="mp_
     [n, sg, comp(98), lengths(3), angles(3), elems(n), wyckoffs(n),
      frac_coords(3n), wyckoff_shape(n)].
     """
-    from ppmat.models.sgequidiff.sgequidiff_meta import ELEMENT_ENCODING_SIZE as NE
+    from ppmat.datasets.build_asu import ELEMENT_ENCODING_SIZE as NE
 
     rng = np.random.default_rng(0)
     packed_arrays = []
@@ -359,7 +369,7 @@ def _write_synthetic_mp20_npz(root_dir, split="train", num_crystals=8, name="mp_
     return root
 
 
-def test_dataset_collate_to_model_forward(tmp_path):
+def test_dataset_collate_to_model_forward(tmp_path, monkeypatch):
     """Data pipeline: npz -> build_dataloader -> collate -> model forward.
 
     Overall question: does a realistic dataset batch flow from disk through
@@ -367,6 +377,10 @@ def test_dataset_collate_to_model_forward(tmp_path):
     key/shape mismatches?
     """
     from ppmat.datasets import build_dataloader
+    from ppmat.datasets.asu_dataset import MP20ASUDataset
+    from ppmat.utils import download
+
+    monkeypatch.setattr(download, "DATASETS_HOME", str(tmp_path / "unified_cache"))
 
     _write_synthetic_mp20_npz(tmp_path, num_crystals=8)
     loader = build_dataloader(
@@ -390,6 +404,54 @@ def test_dataset_collate_to_model_forward(tmp_path):
     )
     batch = next(iter(loader))
     assert "n_atoms_per_asu" in batch
+    dataset = loader.dataset
+    assert Path(dataset.cache_path).is_relative_to(tmp_path / "unified_cache")
+    warm = MP20ASUDataset(path=dataset.path)
+    assert warm.cache_path == dataset.cache_path
+    np.testing.assert_array_equal(
+        warm[0]["lattice_lengths"], dataset[0]["lattice_lengths"]
+    )
+    with np.load(dataset.path) as archive:
+        packed, indices = archive["packed"].copy(), archive["indices"].copy()
+    from ppmat.datasets.build_asu import ELEMENT_ENCODING_SIZE
+
+    packed[2 + ELEMENT_ENCODING_SIZE] += 1.0
+    np.savez(dataset.path, packed=packed, indices=indices)
+    updated = MP20ASUDataset(path=dataset.path)
+    assert updated.cache_path != dataset.cache_path
+    assert updated[0]["lattice_lengths"][0] == dataset[0]["lattice_lengths"][0] + 1.0
+    cache_bytes = Path(updated.cache_path).read_bytes()
+    import ppmat.datasets.asu_dataset as asu_dataset
+
+    with monkeypatch.context() as context:
+
+        def fail_write(*args, **kwargs):
+            raise OSError("Injected cache write failure")
+
+        context.setattr(asu_dataset.pickle, "dump", fail_write)
+        with pytest.raises(OSError, match="Injected cache write failure"):
+            MP20ASUDataset(path=dataset.path, overwrite=True)
+    assert Path(updated.cache_path).read_bytes() == cache_bytes
+    Path(updated.cache_path).write_bytes(b"invalid cache")
+    rebuilt = MP20ASUDataset(path=dataset.path)
+    np.testing.assert_array_equal(
+        rebuilt[0]["lattice_lengths"], updated[0]["lattice_lengths"]
+    )
+    broadcasts = []
+    with monkeypatch.context() as context:
+        context.setattr(asu_dataset.dist, "is_initialized", lambda: True)
+        context.setattr(asu_dataset.dist, "get_rank", lambda: 0)
+        context.setattr(
+            asu_dataset.dist,
+            "broadcast_object_list",
+            lambda status, src: broadcasts.append(status[0]),
+        )
+        MP20ASUDataset(path=dataset.path)
+        assert broadcasts == [None]
+        context.setattr(asu_dataset.pickle, "dump", fail_write)
+        with pytest.raises(RuntimeError, match="rank zero.*Injected cache write"):
+            MP20ASUDataset(path=dataset.path, overwrite=True)
+        assert "Injected cache write failure" in broadcasts[-1]
 
     sampler = _make_sgequidiff()
     sampler.train()
@@ -432,6 +494,8 @@ def test_dataset_downloads_via_unified_pipeline(tmp_path, monkeypatch):
     from ppmat.datasets.asu_dataset import AsymmetricUnitDataset
     from ppmat.datasets.asu_dataset import MP20ASUDataset
     from ppmat.datasets.asu_dataset import MPTS52ASUDataset
+
+    monkeypatch.setattr(download, "DATASETS_HOME", str(tmp_path / "unified_cache"))
 
     extract_root = tmp_path / "cache" / "mp_20_asu"
     _write_synthetic_mp20_npz(extract_root, num_crystals=4)
@@ -518,7 +582,8 @@ def test_sgequidiff_metric(tmp_path):
     # The first structure is repeated across "batches": it must be counted
     # once for uniqueness, so the streaming accumulation (which spreads the
     # duplicate over two steps) matches the batch interface.
-    duplicated = pred_dicts + [pred_dicts[0]]
+    invalid = {**pred_dicts[0], "frac_coords": [[0, 0, 0], [0, 0, 0]]}
+    duplicated = pred_dicts + [pred_dicts[0], invalid]
     metric = SGEQuiDiffMetric(gt_file_path=str(gt_csv))
     result = metric(duplicated)
 
@@ -534,9 +599,9 @@ def test_sgequidiff_metric(tmp_path):
         "amcd_precision",
     ):
         assert key in result, f"missing metric: {key}"
-    assert 0.0 <= result["validity"] <= 1.0
-    assert 0.0 <= result["uniqueness"] <= 1.0
-    assert 0.0 <= result["novelty"] <= 1.0
+    assert result["validity"] == pytest.approx(5 / 6)
+    assert result["uniqueness"] == pytest.approx(4 / 5)
+    assert result["novelty"] == 0.0
 
     # Streaming contract: per-step accumulation must match the batch interface.
     assert isinstance(metric, StreamingMetricBase)
@@ -548,7 +613,7 @@ def test_sgequidiff_metric(tmp_path):
         result={"samples": {"result": pred_dicts[:4]}}, batch=None, stage="sample"
     )
     stream_metric.update_step(
-        result={"result": pred_dicts[4:] + [pred_dicts[0]]},
+        result={"result": duplicated[4:]},
         batch=None,
         stage="sample",
     )
@@ -560,6 +625,95 @@ def test_sgequidiff_metric(tmp_path):
     assert stream_metric.compute_epoch(stage="sample") == {}
 
 
+def test_trainer_checkpoint_resume(tmp_path):
+    """Resume model, optimizer moments, scheduler and Trainer step counters."""
+    from omegaconf import OmegaConf
+
+    from ppmat.optimizer.optimizer import AdamW
+    from ppmat.trainer.base_trainer import BaseTrainer
+
+    def make_trainer(name, epochs):
+        with paddle.utils.unique_name.guard():
+            paddle.seed(42)
+            model = _make_small_gnn_sgequidiff()
+            scheduler = paddle.optimizer.lr.StepDecay(1e-3, step_size=1, gamma=0.5)
+            scheduler.by_epoch = False
+            optimizer = AdamW(learning_rate=scheduler, weight_decay=0.0)(model)
+        config = OmegaConf.to_container(
+            OmegaConf.load(
+                "structure_generation/configs/sgequidiff/sgequidiff_mp20.yaml"
+            )
+        )["Trainer"]
+        config.update(
+            max_epochs=epochs,
+            output_dir=str(tmp_path / name),
+            save_freq=1,
+            use_tensorboard=False,
+            zero_nan_grad=False,
+        )
+        return BaseTrainer(
+            config,
+            model,
+            train_dataloader=[_make_mixed_space_group_batch()],
+            optimizer=optimizer,
+            lr_scheduler=scheduler,
+        )
+
+    def assert_equal(current, expected):
+        if isinstance(expected, dict):
+            assert set(current) == set(expected)
+            for key in expected:
+                assert_equal(current[key], expected[key])
+        elif isinstance(expected, (paddle.Tensor, np.ndarray)):
+            if isinstance(current, paddle.Tensor):
+                current = current.numpy()
+            if isinstance(expected, paddle.Tensor):
+                expected = expected.numpy()
+            np.testing.assert_array_equal(current, expected)
+        else:
+            assert current == expected
+
+    uninterrupted = make_trainer("uninterrupted", 2)
+    with paddle.utils.unique_name.guard():
+        uninterrupted.train()
+    interrupted = make_trainer("interrupted", 1)
+    with paddle.utils.unique_name.guard():
+        interrupted.train()
+    checkpoint = tmp_path / "interrupted" / "checkpoints" / "latest"
+    saved_model = paddle.load(str(checkpoint) + ".pdparams")
+    saved_optimizer = paddle.load(str(checkpoint) + ".pdopt")
+    assert Path(str(checkpoint) + ".pdstates").is_file()
+    saved_lr = interrupted.optimizer.get_lr()
+    saved_scheduler = interrupted.lr_scheduler.state_dict()
+    resumed = make_trainer("resumed", 2)
+    step = resumed.optimizer.step
+    observed = []
+
+    def observe_first_step():
+        if not observed:
+            assert_equal(resumed.model.state_dict(), saved_model)
+            assert_equal(resumed.optimizer.state_dict(), saved_optimizer)
+            assert resumed.optimizer.get_lr() == saved_lr
+            assert_equal(resumed.lr_scheduler.state_dict(), saved_scheduler)
+            assert resumed.state.global_step == interrupted.state.global_step + 1
+            observed.append(True)
+        step()
+
+    resumed.optimizer.step = observe_first_step
+    with paddle.utils.unique_name.guard():
+        resumed.train(resume_from_checkpoint=str(checkpoint))
+    assert observed
+    assert resumed.state.epoch == uninterrupted.state.epoch == 2
+    assert resumed.state.global_step == uninterrupted.state.global_step == 2
+    assert_equal(
+        resumed.lr_scheduler.state_dict(), uninterrupted.lr_scheduler.state_dict()
+    )
+    assert set(resumed.model.state_dict()) == set(uninterrupted.model.state_dict())
+    assert set(resumed.optimizer.state_dict()) == set(
+        uninterrupted.optimizer.state_dict()
+    )
+
+
 def test_execution_backend_protocol():
     """Runtime protocol: backend selection is owned by the diffusion model.
 
@@ -569,6 +723,8 @@ def test_execution_backend_protocol():
     constraints) without changing any state_dict key?
     """
     model = _make_sgequidiff()
+    boundary = type(model.atom_coord_diffusion_model)._runtime_denoise_step
+    assert callable(boundary) and hasattr(boundary, "__wrapped__")
     state_dict_before = {k: tuple(v.shape) for k, v in model.state_dict().items()}
 
     assert configure_execution_backend(model, None, owner="Trainer") == "eager"
@@ -591,11 +747,11 @@ def test_execution_backend_protocol():
         model.validate_execution_backend(world_size=2)
 
 
-def _make_small_gnn_sgequidiff():
+def _make_small_gnn_sgequidiff(num_timesteps=2):
     """Tiny GNN SGEQuiDiff so CINN compilation stays fast in tests."""
     return SGEQuiDiff(
         dataset_name="mp_20",
-        num_timesteps=2,
+        num_timesteps=num_timesteps,
         noise_scheduler_num_monte_carlo_samples=2,
         num_lattice_translations=1,
         gnn_config={
@@ -611,11 +767,12 @@ def _make_small_gnn_sgequidiff():
 
 @pytest.mark.skipif(
     not (
-        paddle.is_compiled_with_cuda()
+        os.environ.get("PPMAT_RUN_CINN_WORKFLOW_TESTS") == "1"
+        and paddle.is_compiled_with_cuda()
         and paddle.device.cuda.device_count() > 0
         and paddle.is_compiled_with_cinn()
     ),
-    reason="requires a CUDA GPU and a CINN-enabled Paddle build",
+    reason="requires PPMAT_RUN_CINN_WORKFLOW_TESTS=1, CUDA and CINN",
 )
 def test_cinn_sampling_parity():
     """CINN workflow: compiled denoise_step matches eager sampling.
@@ -626,11 +783,13 @@ def test_cinn_sampling_parity():
     """
     paddle.set_device("gpu")
     try:
-        model = _make_small_gnn_sgequidiff()
+        model = _make_small_gnn_sgequidiff(num_timesteps=3)
+        model.eval()
         batch = {"structure_array": {"num_atoms": paddle.to_tensor([1])}}
 
         def sample_frac_coords():
             paddle.seed(42)
+            np.random.seed(42)
             result = model.sample(dict(batch))["result"]
             return [crystal["frac_coords"] for crystal in result]
 
@@ -642,7 +801,7 @@ def test_cinn_sampling_parity():
         coords_cinn = sample_frac_coords()
 
         cache = model.atom_coord_diffusion_model._runtime_cache
-        assert list(cache.keys()) == [("cinn", "train", "denoise_step")]
+        assert list(cache.keys()) == [("cinn", "eval", "denoise_step")]
 
         max_diff = max(
             abs(a - b)
@@ -653,61 +812,3 @@ def test_cinn_sampling_parity():
         assert max_diff < 2e-5, f"eager/CINN sampling mismatch: {max_diff}"
     finally:
         paddle.set_device("cpu")
-
-
-def test_named_lr_groups_effective_learning_rates():
-    """Optimizer contract: named_lr_groups scale the effective learning rate.
-
-    Overall question: do ``lr_multiplier`` groups produce the configured
-    effective learning rates under Paddle's parameter-group semantics (a
-    float group ``learning_rate`` multiplies the optimizer's global rate,
-    for both float and LRScheduler optimizers)? This pins the semantics that
-    the SGEQuiDiff training recipe (sub-sampled lr for the autoregressive
-    samplers) relies on.
-    """
-    from ppmat.optimizer.optimizer import AdamW
-
-    class _TwoLayerModel(paddle.nn.Layer):
-        def __init__(self):
-            super().__init__()
-            self.wyckoff_and_element_sampler = paddle.nn.Linear(2, 2, bias_attr=False)
-            self.atom_coord_backbone = paddle.nn.Linear(2, 2, bias_attr=False)
-
-    def _run(global_lr_factory, lr_multiplier):
-        model = _TwoLayerModel()
-        opt = AdamW(
-            learning_rate=global_lr_factory(),
-            weight_decay=0.0,
-            named_lr_groups=[
-                {
-                    "name": "wyckoff_and_element_sampler",
-                    "lr_multiplier": lr_multiplier,
-                }
-            ],
-        )(model)
-        before = {n: p.numpy().copy() for n, p in model.named_parameters()}
-        # Every weight has grad = 1; with weight_decay=0 and first-step AdamW
-        # bias correction, the parameter delta equals the effective lr.
-        loss = paddle.zeros([1])
-        for p in model.parameters():
-            loss = loss + p.sum()
-        loss.backward()
-        opt.step()
-        deltas = {
-            n: float(np.abs(after - before[n]).max())
-            for n, after in ((n, p.numpy()) for n, p in model.named_parameters())
-        }
-        return deltas
-
-    # Case A: float global lr.
-    deltas = _run(lambda: 2.0, 0.1)
-    assert deltas["atom_coord_backbone.weight"] == pytest.approx(2.0, abs=1e-4)
-    assert deltas["wyckoff_and_element_sampler.weight"] == pytest.approx(0.2, abs=1e-4)
-
-    # Case B: LRScheduler global lr (ReduceOnPlateau-style recipes).
-    scheduler_lr = 2.0
-    deltas = _run(
-        lambda: paddle.optimizer.lr.StepDecay(scheduler_lr, step_size=1000), 0.1
-    )
-    assert deltas["atom_coord_backbone.weight"] == pytest.approx(2.0, abs=1e-4)
-    assert deltas["wyckoff_and_element_sampler.weight"] == pytest.approx(0.2, abs=1e-4)

@@ -12,15 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Generic VE-SDE scheduler with exponentially spaced sigmas.
-
-Keeps only the standard VE-SDE mathematics (exponentially spaced sigmas,
-predictor-corrector sampling). It deliberately does not own a ``sigma_norms``
-buffer: the score-normalization table is model-specific (see
-``ppmat.models.sgequidiff.diffusion_model``), so this shared-layer module has no
-dependency on any model package and its ``__init_params__`` stay pure
-YAML-friendly primitives.
-"""
+"""Discrete VE-SDE sampling with caller-supplied projected noise."""
 
 import numpy as np
 import paddle
@@ -40,28 +32,14 @@ def build_ve_sigma_grid(
 
 
 class ASUVESDEScheduler(nn.Layer):
-    """VE-SDE scheduler for variance-exploding diffusion.
+    """VE-SDE scheduler with a checkpointed, one-based sigma grid.
+
+    Unlike ``ScoreSdeVeScheduler``, both steps consume caller-projected noise.
+    The corrector preserves coordinates whose noise is zero.
 
     Args:
         num_timesteps: Number of diffusion timesteps.
         sigma_min / sigma_max: Diffusion sigma range.
-
-    The sigma grid comes from :func:`build_ve_sigma_grid` so that consumers
-    (e.g. the SGEquiDiff sigma-norm table) share one construction instead of
-    rebuilding it. Deliberately differs from ``ScoreSdeVeScheduler`` in
-    ``scheduling_sde_ve.py`` on three points:
-
-    - this class is an ``nn.Layer`` and registers the sigma grid as a buffer,
-      so ``sigmas`` is part of the model state_dict; ``ScoreSdeVeScheduler``
-      builds its sigmas lazily from ``set_timesteps``/``set_sigmas``;
-    - ``step_pred``/``step_correct`` take an integer timestep plus a noise
-      tensor supplied by the caller (Wyckoff-projected noise), and
-      ``uniform_sample_timestep`` supplies the training timesteps;
-      ``ScoreSdeVeScheduler`` takes a normalized continuous timestep in
-      ``[sampling_eps, 1]``, draws its own noise via ``randn_tensor`` and
-      has no timestep sampler;
-    - ``step_correct`` guards the step size with an epsilon, a NaN-to-zero
-      mapping and a ``max_step_size`` clamp; ``ScoreSdeVeScheduler`` has none.
     """
 
     def __init__(

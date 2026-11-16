@@ -33,6 +33,8 @@ Model:
   __init_params__:
     dataset_name: mp_20
     diffusion_snr: 0.4
+    lattice_lr_multiplier: 0.1
+    wyckoff_element_lr_multiplier: 0.1
     temperature: 1.0
     num_timesteps: ${Global.num_train_timesteps}
     noise_scheduler_num_monte_carlo_samples: 2500
@@ -54,6 +56,9 @@ Model:
     model_type: gnn
     num_plane_wave_freqs: 96
     gnn_config:
+      graph_converter_cfg:
+        __class_name__: SGEQuiDiffGraphConverter
+        __init_params__: {}
       num_plane_wave_freqs: 96
       num_cartesian_distance_gaussians: 96
       edge_hidden_dim: 128
@@ -92,11 +97,6 @@ Optimizer:
     beta2: 0.999
     epsilon: 1.0e-8
     weight_decay: 0.0
-    named_lr_groups:
-      - name: wyckoff_and_element_sampler
-        lr_multiplier: 0.1
-      - name: lattice_sampler
-        lr_multiplier: 0.1
     lr:
       __class_name__: ReduceOnPlateau
       __init_params__:

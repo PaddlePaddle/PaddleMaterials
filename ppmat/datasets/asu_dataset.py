@@ -14,9 +14,11 @@
 
 """Asymmetric Unit (ASU) dataset. """
 
-import os
+import hashlib
+import json
 import os.path as osp
 import pickle
+from pathlib import Path
 from typing import Dict
 from typing import Optional
 
@@ -24,12 +26,12 @@ import numpy as np
 import paddle.distributed as dist
 from paddle.io import Dataset
 
+from ppmat.datasets.build_asu import ELEMENT_ENCODING_SIZE
 from ppmat.datasets.build_asu import BuildAsuCrystal
+from ppmat.datasets.build_asu import save_asu_cache
 from ppmat.datasets.custom_data_type import ConcatData
-from ppmat.models.sgequidiff.sgequidiff_meta import ELEMENT_ENCODING_SIZE
 from ppmat.utils import download
 from ppmat.utils import logger
-from ppmat.utils.misc import is_equal
 
 
 class AsymmetricUnitDataset(Dataset):
@@ -67,10 +69,8 @@ class AsymmetricUnitDataset(Dataset):
             downloaded via the class-level ``url`` and ``md5``.
         build_crystal_cfg (Dict, optional): The configs for building the
             per-crystal field dicts from packed arrays. Defaults to None.
-        cache_path (Optional[str], optional): If a cache_path is set, the
-            built crystals will be read directly from this path; if the cache
-            does not exist, the built crystals will be saved to this path.
-            Defaults to None.
+        cache_path (Optional[str], optional): Directory for derived crystal
+            caches. Defaults to the unified SGEquiDiff dataset cache.
         overwrite (bool, optional): Overwrite the existing cache file at the
             given path if it already exists. Defaults to False.
     """
@@ -85,7 +85,6 @@ class AsymmetricUnitDataset(Dataset):
         build_crystal_cfg: Dict = None,
         cache_path: Optional[str] = None,
         overwrite: bool = False,
-        **kwargs,  # for compatibility
     ):
         super().__init__()
 
@@ -106,113 +105,81 @@ class AsymmetricUnitDataset(Dataset):
 
         self.path = path
 
-        if build_crystal_cfg is None:
-            build_crystal_cfg = {
-                "element_encoding_size": ELEMENT_ENCODING_SIZE,
-                "num_cpus": 1,
-            }
-            logger.message(
-                "The build_crystal_cfg is not set, will use the default "
-                f"configs: {build_crystal_cfg}"
-            )
+        build_crystal_cfg = {
+            "element_encoding_size": ELEMENT_ENCODING_SIZE,
+            **(build_crystal_cfg or {}),
+        }
         self.build_crystal_cfg = build_crystal_cfg
-
-        if cache_path is not None:
-            self.cache_path = cache_path
-        else:
-            # for example:
-            # path = ./data/mp_20/train.npz
-            # cache_path = ./data/mp_20_cache/train
-            self.cache_path = osp.join(
-                osp.split(path)[0] + "_cache", osp.splitext(osp.basename(path))[0]
-            )
-        logger.info(f"Cache path: {self.cache_path}")
-
         self.overwrite = overwrite
-        self.cache_exists = True if osp.exists(self.cache_path) else False
-
         flat_crystals, self.num_samples = self.read_data(path)
         logger.info(f"Load {self.num_samples} samples from {path}")
-
-        if self.cache_exists and not overwrite:
+        source_digest = hashlib.sha256()
+        for crystal in flat_crystals:
+            source_digest.update(str((crystal.shape, crystal.dtype.str)).encode())
+            source_digest.update(crystal.tobytes())
+        identity = {
+            "source": source_digest.hexdigest(),
+            "preprocessing": BuildAsuCrystal.cache_version,
+            "build": build_crystal_cfg,
+            "numpy": np.__version__,
+        }
+        digest = hashlib.sha256(
+            json.dumps(identity, sort_keys=True).encode()
+        ).hexdigest()
+        cache_root = cache_path or osp.join(download.DATASETS_HOME, "sgequidiff", "asu")
+        self.cache_path = osp.join(cache_root, f"{Path(path).stem}-{digest}.pkl")
+        builder = BuildAsuCrystal(**build_crystal_cfg)
+        distributed = dist.is_initialized()
+        status = [None]
+        if not distributed or dist.get_rank() == 0:
             try:
-                build_crystal_cfg_cache = self.load_from_cache(
-                    osp.join(self.cache_path, "build_crystal_cfg.pkl")
-                )
-                if is_equal(build_crystal_cfg_cache, build_crystal_cfg):
-                    logger.info(
-                        "The cached build_crystal_cfg configuration matches "
-                        "the current settings. Reusing previously generated "
-                        "crystal data to optimize performance."
-                    )
-                else:
-                    logger.warning(
-                        "build_crystal_cfg is different from "
-                        "build_crystal_cfg_cache. Will rebuild the crystals."
-                    )
-                    logger.warning(
-                        "If you want to use the cached crystals, please "
-                        "ensure that the settings used in match your "
-                        "current settings."
-                    )
-                    overwrite = True
-            except Exception as e:
-                logger.warning(e)
-                logger.warning(
-                    "Failed to load build_crystal_cfg.pkl from cache. "
-                    "Will rebuild the crystals."
-                )
-                overwrite = True
+                self._prepare_cache(builder, flat_crystals, identity, overwrite)
+            except Exception as error:
+                if not distributed:
+                    raise
+                status[0] = f"{type(error).__name__}: {error}"
+        if distributed:
+            dist.broadcast_object_list(status, src=0)
+        if status[0] is not None:
+            raise RuntimeError(
+                f"ASU cache construction failed on rank zero: {status[0]}"
+            )
+        self.crystals = self.load_from_cache(self.cache_path)["crystals"]
 
-        crystal_cache_path = osp.join(self.cache_path, "crystals")
-        if overwrite or not self.cache_exists:
-            # convert crystals
-            # only rank 0 process do the conversion
-            if dist.get_rank() == 0:
-                # save build_crystal_cfg to cache file
-                os.makedirs(self.cache_path, exist_ok=True)
-                self.save_to_cache(
-                    osp.join(self.cache_path, "build_crystal_cfg.pkl"),
-                    build_crystal_cfg,
-                )
-                # convert crystals
-                crystals = BuildAsuCrystal(**build_crystal_cfg)(flat_crystals)
-                # save crystals to cache file
-                os.makedirs(crystal_cache_path, exist_ok=True)
-                for i in range(self.num_samples):
-                    self.save_to_cache(
-                        osp.join(crystal_cache_path, f"{i:010d}.pkl"), crystals[i]
-                    )
-                logger.info(f"Save {self.num_samples} crystals to {crystal_cache_path}")
-
-            # sync all processes
-            if dist.is_initialized():
-                dist.barrier()
-        self.crystals = [
-            osp.join(crystal_cache_path, f"{i:010d}.pkl")
-            for i in range(self.num_samples)
-        ]
+    def _prepare_cache(self, builder, flat_crystals, identity, overwrite):
+        if not overwrite and osp.isfile(self.cache_path):
+            try:
+                payload = self.load_from_cache(self.cache_path)
+                if (
+                    payload["identity"] == identity
+                    and len(payload["crystals"]) == self.num_samples
+                ):
+                    return
+            except (EOFError, KeyError, OSError, pickle.UnpicklingError, TypeError):
+                logger.warning(f"Rebuilding invalid ASU cache: {self.cache_path}")
+        self.save_to_cache(
+            self.cache_path,
+            {"identity": identity, "crystals": builder(flat_crystals)},
+        )
 
     def read_data(self, path: str):
         """Read the packed NPZ archive and split it into per-crystal arrays."""
-        npz = np.load(path)
-        flat_crystals = np.split(npz["packed"], npz["indices"])
+        with np.load(path) as npz:
+            flat_crystals = np.split(npz["packed"], npz["indices"])
         return flat_crystals, len(flat_crystals)
 
     def save_to_cache(self, cache_path: str, data):
-        with open(cache_path, "wb") as f:
-            pickle.dump(data, f)
+        save_asu_cache(cache_path, data)
 
     def load_from_cache(self, cache_path: str):
-        if osp.exists(cache_path):
-            with open(cache_path, "rb") as f:
-                data = pickle.load(f)
-            return data
-        else:
-            raise FileNotFoundError(f"No such file or directory: {cache_path}")
+        with open(cache_path, "rb") as file_obj:
+            return pickle.load(file_obj)
 
     def __getitem__(self, index: int) -> dict:
-        crystal = self.load_from_cache(self.crystals[index])
+        crystal = {
+            key: value.copy() if isinstance(value, np.ndarray) else value
+            for key, value in self.crystals[index].items()
+        }
         # Variable-length fields are wrapped for the default collator.
         for key in (
             "element_indices",

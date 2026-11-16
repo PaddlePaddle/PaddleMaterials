@@ -64,7 +64,7 @@ and timings.
 | `NMRNetCLIP` | `graph_encoder`, `spectrum_encoder` | SOT | no standalone registered workflow |
 | `DiffPrior` | `denoise_step` | SOT | no standalone registered workflow |
 | `DiffNMR` | `spectrum_encoder`, `denoise_step` | SOT | reverse diffusion |
-| `SGEQuiDiff` | `denoise_step` | SOT | structure sampling and training |
+| `SGEQuiDiff` | `denoise_step` | SOT | MP20/MPTS-52 structure sampling; MP20 training |
 | `InfGCN` | none | eager only | CINN unavailable |
 
 ## Adding CINN support

@@ -43,8 +43,8 @@ from ppmat.models.mattersim.m3gnet import M3GNet
 from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
 from ppmat.models.megnet.megnet import MEGNetPlus
 from ppmat.models.sfin.sfin import SFIN
-from ppmat.models.sgequidiff.diffusion_model import EquivariantDiffusionModel
 from ppmat.models.sgequidiff.sgequidiff import SGEQuiDiff
+from ppmat.models.sgequidiff.sgequidiff import SGEQuiDiffGraphConverter
 from ppmat.models.spherenet.spherenet import SphereNet
 from ppmat.utils import download
 from ppmat.utils import logger
@@ -78,7 +78,7 @@ __all__ = [
     "SFIN",
     "SphereNet",
     "SGEQuiDiff",
-    "EquivariantDiffusionModel",
+    "SGEQuiDiffGraphConverter",
 ]
 
 # Warning:

@@ -56,7 +56,7 @@ Three backbone architectures are supported for $f_\theta$, selected via `model_t
 - **MP-20**: 45,231 inorganic crystals from the Materials Project with at most 20 atoms per unit cell; widely used for crystal generation benchmarking.
 - **MPTS-52 (Materials Project Time Split)**: 40,476 crystals with up to 52 atoms per cell; chronological split for evaluating temporal generalization.
 
-Each sample stores the ASU fields consumed by `AsymmetricUnitDataset`: `space_group_number`, `conventional_lattice_lengths` $(3,)$, `conventional_lattice_angles` $(3,)$, `element_indices` $(N,)$, `wyckoff_indices` $(N,)$, and `conventional_frac_coords` $(N, 3)$.
+Each sample stores the ASU fields consumed by the model: `space_group_indices`, `lattice_lengths` $(3,)$, `lattice_angles` $(3,)$, `n_atoms_per_asu`, `element_indices` $(N,)$, `wyckoff_indices` $(N,)$, `wyckoff_shape_indices` $(N,)$, and `frac_coords` $(N, 3)$.
 
 #### Dataset preparation
 
@@ -103,9 +103,8 @@ python structure_generation/sample.py --config_path=structure_generation/configs
 ```
 
 Note: SGEQuiDiff is an unconditional generator and only supports
-`--mode=by_dataloader`. The requested condition in `--mode=by_num_atoms` and
-`--mode=by_condition` is rejected with a `NotImplementedError`; the formula
-passed to `--mode=by_chemical_formula` is ignored, so do not use it.
+`--mode=by_dataloader`. Atom-count, chemical-formula, and property-conditioned
+sampling modes raise `NotImplementedError`.
 
 ### Generation-Quality Evaluation
 ```bash
