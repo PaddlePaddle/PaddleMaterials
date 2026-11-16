@@ -2,6 +2,7 @@ Global:
   do_train: True
   do_eval: False
   do_test: False
+  num_train_timesteps: 1000
 
 Trainer:
   max_epochs: 2
@@ -45,20 +46,20 @@ Model:
       pred_type: true
     diffusion_cfg:
       cont_time: false
-      num_steps: 1000
+      num_steps: ${Global.num_train_timesteps}
       eps: 1e-3
       lat_diffusion:
         scheduler_cfg:
           __class_name__: DDPMScheduler
           __init_params__:
-            num_train_timesteps: 1000
+            num_train_timesteps: ${Global.num_train_timesteps}
             beta_schedule: clipped_cosine
       frac_diffusion:
         step_lr: 0.00001
         scheduler_cfg:
           __class_name__: ScoreSdeVeSchedulerWrapped
           __init_params__:
-            num_train_timesteps: 1000
+            num_train_timesteps: ${Global.num_train_timesteps}
             sigma_min: 0.005
             sigma_max: 0.5
             sampling_eps: 0.001
@@ -69,7 +70,7 @@ Model:
           scheduler_cfg:
             __class_name__: D3PMUniformScheduler
             __init_params__:
-              num_train_timesteps: 1000
+              num_train_timesteps: ${Global.num_train_timesteps}
               num_types: 100
 
 Optimizer:
@@ -165,4 +166,4 @@ Sample:
       # Official MiAD semantics: novelty references the training split.
       reference_file_path: "./data/mp_20/train.csv"
   model_sample_params:
-    num_inference_steps: 1000
+    num_inference_steps: ${Global.num_train_timesteps}

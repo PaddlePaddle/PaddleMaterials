@@ -38,13 +38,15 @@ def setUpModule():
     paddle.seed(42)
 
 
-def _load_miad_yaml():
+def _load_miad_yaml(num_steps=None):
     config = OmegaConf.load(_MIAD_YAML)
+    if num_steps is not None:
+        config.Global.num_train_timesteps = num_steps
     return OmegaConf.to_container(config, resolve=True)
 
 
-def _make_model_from_yaml():
-    return build_model(_load_miad_yaml()["Model"])
+def _make_model_from_yaml(num_steps=None):
+    return build_model(_load_miad_yaml(num_steps)["Model"])
 
 
 TINY_MODEL_CFG = {
@@ -124,7 +126,6 @@ def _make_synthetic_batch(batch_size=2, atoms_per_crystal=5):
 
 
 _SAMPLE_NUM_ATOMS = (5, 7)
-_SAMPLE_INFERENCE_STEPS = 5
 
 
 def _make_tiny_model(execution_backend="eager"):
@@ -200,19 +201,25 @@ def _trainer_config(output_dir, max_epochs):
 
 
 def _build_trainer(model, output_dir, max_epochs, backend="cinn"):
-    optimizer = paddle.optimizer.Adam(learning_rate=1e-3, parameters=model.parameters())
+    scheduler = paddle.optimizer.lr.ExponentialDecay(learning_rate=1e-3, gamma=0.9)
+    scheduler.by_epoch = False
+    with paddle.utils.unique_name.guard():
+        optimizer = paddle.optimizer.Adam(
+            learning_rate=scheduler, parameters=model.parameters()
+        )
     trainer = BaseTrainer(
         _trainer_config(output_dir, max_epochs),
         model,
         train_dataloader=_make_structure_loader(),
         val_dataloader=_make_structure_loader(),
         optimizer=optimizer,
+        lr_scheduler=scheduler,
         execution_config={"backend": backend},
     )
     return trainer, optimizer
 
 
-def _sample_small_batch(model, num_inference_steps=_SAMPLE_INFERENCE_STEPS):
+def _sample_small_batch(model, num_inference_steps=None):
     return model.sample(
         {"num_atoms": paddle.to_tensor(_SAMPLE_NUM_ATOMS, dtype="int64")},
         num_inference_steps=num_inference_steps,
@@ -241,7 +248,18 @@ class MiADSmokeTest(unittest.TestCase):
     def test_sample_output_format(self):
         model = _make_tiny_model()
         model.eval()
+        for steps in (0, -1, 5, 11, 10.0, True):
+            with self.subTest(steps=steps):
+                with self.assertRaisesRegex(ValueError, "trained diffusion schedules"):
+                    _sample_small_batch(model, num_inference_steps=steps)
+                self.assertEqual(model.num_steps, TINY_DIFFUSION_CFG["num_steps"])
+        paddle.seed(123)
         result = _sample_small_batch(model)
+        paddle.seed(123)
+        explicit = _sample_small_batch(model, num_inference_steps=model.num_steps)
+        for default_entry, explicit_entry in zip(result, explicit):
+            for key in ("atom_types", "frac_coords", "lattice"):
+                np.testing.assert_array_equal(default_entry[key], explicit_entry[key])
         self.assertEqual(len(result), 2)
         for entry in result:
             for key in ("num_atoms", "atom_types", "frac_coords", "lattice"):
@@ -255,7 +273,15 @@ class MiADConfigTest(unittest.TestCase):
     """End-to-end flow driven by the released YAML config."""
 
     def test_forward_and_sample_from_yaml(self):
-        model = _make_model_from_yaml()
+        config = _load_miad_yaml(num_steps=TINY_DIFFUSION_CFG["num_steps"])["Model"]
+        config["__init_params__"]["model_cfg"]["hidden_dims"] = 64
+        with self.assertRaisesRegex(TypeError, "Unknown MiAD model parameters"):
+            build_model(config)
+        del config["__init_params__"]["model_cfg"]["hidden_dims"]
+        config["__init_params__"]["diffusion_cfg"]["num_steps"] += 1
+        with self.assertRaisesRegex(ValueError, "schedules must match num_steps"):
+            build_model(config)
+        model = _make_model_from_yaml(num_steps=TINY_DIFFUSION_CFG["num_steps"])
         model.eval()
         with paddle.no_grad():
             output = model(_make_synthetic_batch())
@@ -329,31 +355,123 @@ class MiADSUNMetricTest(unittest.TestCase):
     """S.U.N. evaluation driven by the YAML metric config."""
 
     def test_sun_metric_from_yaml(self):
+        import pandas as pd
+        from pymatgen.core import Lattice
+        from pymatgen.core import Structure
+
         from ppmat.metrics import build_metric
 
-        metrics_fn = build_metric(_load_miad_yaml()["Sample"]["metrics"])
-        model = _make_tiny_model()
-        model.eval()
-        structures = _sample_small_batch(model)
-        results = metrics_fn(structures)
-        for key in (
-            "total",
-            "valid",
-            "non_trivial",
-            "stability_rate",
-            "uniqueness_rate",
-            "novelty_rate",
-            "sun_rate",
-            "sun_count",
-        ):
-            self.assertIn(key, results)
-        for key in (
-            "stability_rate",
-            "uniqueness_rate",
-            "novelty_rate",
-            "sun_rate",
-        ):
-            self.assertTrue(np.isfinite(results[key]), f"{key} must be finite")
+        reference = Structure(Lattice.cubic(4), ["Na", "Cl"], [[0, 0, 0], [0.5] * 3])
+        novel = Structure(Lattice.cubic(4), ["Li", "F"], [[0, 0, 0], [0.5] * 3])
+        generated = [novel.to(fmt="cif"), reference.to(fmt="cif")]
+        generated += [generated[0], "invalid cif"]
+        energies = [None, -0.1, -0.1, -0.1]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            reference_path = Path(tmp_dir) / "reference.csv"
+            pd.DataFrame({"cif": [reference.to(fmt="cif")]}).to_csv(
+                reference_path, index=False
+            )
+            config = _load_miad_yaml()["Sample"]["metrics"]
+            config["__init_params__"].update(
+                reference_file_path=str(reference_path), cache_dir=tmp_dir
+            )
+            metrics_fn = build_metric(config)
+            results = metrics_fn(generated, energy_above_hull=energies)
+            self.assertEqual(
+                results,
+                {
+                    "total": 4,
+                    "valid": 3,
+                    "non_trivial": 3,
+                    "stability_rate": 75.0,
+                    "uniqueness_rate": 50.0,
+                    "novelty_rate": 50.0,
+                    "sun_rate": 0.0,
+                    "sun_count": 0,
+                    "metastable_rate": 75.0,
+                    "msun_rate": 0.0,
+                    "msun_count": 0,
+                },
+            )
+            metrics_fn.reset()
+            metrics_fn.update_step(
+                result={"result": generated[:1]}, batch=None, stage="sample"
+            )
+            metrics_fn.update_step(
+                result={"result": generated[1:], "energy_above_hull": energies[1:]},
+                batch=None,
+                stage="sample",
+            )
+            self.assertEqual(metrics_fn.compute_epoch(stage="sample"), results)
+            with self.assertRaisesRegex(ValueError, "one entry per structure"):
+                metrics_fn.update_step(
+                    result={"result": generated, "energy_above_hull": [-0.1]},
+                    batch=None,
+                    stage="sample",
+                )
+            self.assertEqual(metrics_fn.compute_epoch(stage="sample"), results)
+            model = _make_tiny_model()
+            model.eval()
+            sampled_results = metrics_fn(_sample_small_batch(model))
+            self.assertEqual(sampled_results["total"], len(_SAMPLE_NUM_ATOMS))
+            for key in (
+                "stability_rate",
+                "uniqueness_rate",
+                "novelty_rate",
+                "sun_rate",
+            ):
+                self.assertTrue(np.isfinite(sampled_results[key]))
+
+    def test_novelty_reference_lifecycle(self):
+        import pandas as pd
+        from pymatgen.core import Lattice
+        from pymatgen.core import Structure
+
+        from ppmat.metrics import build_metric
+
+        structure = Structure(Lattice.cubic(4), ["Na", "Cl"], [[0, 0, 0], [0.5] * 3])
+        generated = [structure.to(fmt="cif")]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            reference_path = Path(tmp_dir) / "reference.csv"
+            cache_dir = Path(tmp_dir) / "cache"
+            config = _load_miad_yaml()["Sample"]["metrics"]
+            config["__init_params__"].update(
+                reference_file_path=str(reference_path), cache_dir=str(cache_dir)
+            )
+            metric = build_metric(config)
+            with self.assertRaises(FileNotFoundError):
+                metric(generated)
+            for content in ("", "formula\nNaCl\n", "cif\ninvalid\n"):
+                reference_path.write_text(content)
+                with self.assertRaises(ValueError):
+                    metric(generated)
+
+            pd.DataFrame({"cif": generated}).to_csv(reference_path, index=False)
+            self.assertEqual(metric(generated)["novelty_rate"], 0.0)
+            with mock.patch(
+                "pandas.read_csv", side_effect=AssertionError("cache miss")
+            ):
+                self.assertEqual(build_metric(config)(generated)["novelty_rate"], 0.0)
+            changed = Structure(Lattice.cubic(4), ["Li", "F"], [[0, 0, 0], [0.5] * 3])
+            pd.DataFrame({"cif": [changed.to(fmt="cif")]}).to_csv(
+                reference_path, index=False
+            )
+            self.assertEqual(metric(generated)["novelty_rate"], 100.0)
+            self.assertEqual(build_metric(config)(generated)["novelty_rate"], 100.0)
+            self.assertEqual(len(list(cache_dir.glob("*.pkl"))), 2)
+            for cache_path in cache_dir.glob("*.pkl"):
+                cache_path.write_bytes(b"incomplete cache")
+            self.assertEqual(build_metric(config)(generated)["novelty_rate"], 100.0)
+
+            pd.DataFrame({"cif": generated}).to_csv(reference_path, index=False)
+            with mock.patch(
+                "ppmat.metrics.sun_metric_utils.os.replace", side_effect=OSError
+            ):
+                self.assertEqual(build_metric(config)(generated)["novelty_rate"], 0.0)
+            self.assertFalse(list(cache_dir.glob("*.tmp")))
+            reference_path.unlink()
+            with self.assertRaises(FileNotFoundError):
+                metric(generated)
 
 
 def _make_dispatch_pair():
@@ -456,6 +574,7 @@ class MiADCinnTrainerTest(unittest.TestCase):
                 for suffix in ("pdparams", "pdopt", "pdstates"):
                     self.assertTrue((checkpoint_dir / f"{prefix}.{suffix}").is_file())
             saved_state = paddle.load(str(checkpoint_dir / "latest.pdparams"))
+            saved_optimizer = paddle.load(str(checkpoint_dir / "latest.pdopt"))
             self.assertEqual(saved_state.keys(), first_model.state_dict().keys())
 
             paddle.seed(2026)
@@ -463,10 +582,32 @@ class MiADCinnTrainerTest(unittest.TestCase):
             resumed_trainer, resumed_optimizer = _build_trainer(
                 resumed_model, Path(tmp_dir) / "resumed", 2
             )
-            with paddle.utils.unique_name.guard():
-                resumed_trainer.train(
-                    resume_from_checkpoint=str(checkpoint_dir / "latest")
-                )
+            original_train_epoch = resumed_trainer.train_epoch
+
+            def check_restored_state(*args, **kwargs):
+                self.assertEqual(resumed_trainer.state.global_step, 1)
+                for key, value in resumed_model.state_dict().items():
+                    np.testing.assert_array_equal(value.numpy(), saved_state[key])
+                restored_optimizer = resumed_optimizer.state_dict()
+                self.assertEqual(restored_optimizer.keys(), saved_optimizer.keys())
+                for key, value in restored_optimizer.items():
+                    if isinstance(value, dict):
+                        self.assertEqual(value, saved_optimizer[key])
+                    else:
+                        np.testing.assert_array_equal(
+                            value.numpy(), saved_optimizer[key]
+                        )
+                self.assertEqual(resumed_optimizer.get_lr(), 1e-3 * 0.9)
+                return original_train_epoch(*args, **kwargs)
+
+            with mock.patch.object(
+                resumed_trainer, "train_epoch", side_effect=check_restored_state
+            ) as resumed_epoch:
+                with paddle.utils.unique_name.guard():
+                    resumed_trainer.train(
+                        resume_from_checkpoint=str(checkpoint_dir / "latest")
+                    )
+                resumed_epoch.assert_called_once()
 
             paddle.seed(2026)
             straight_model = _make_tiny_model(execution_backend="cinn")
@@ -481,6 +622,10 @@ class MiADCinnTrainerTest(unittest.TestCase):
         self.assertEqual(resumed_trainer.state.global_step, 2)
         self.assertEqual(resumed_trainer.state.epoch, 2)
         self.assertEqual(resumed_optimizer.get_lr(), straight_optimizer.get_lr())
+        self.assertEqual(
+            resumed_trainer.lr_scheduler.state_dict(),
+            straight_trainer.lr_scheduler.state_dict(),
+        )
         self.assertEqual(
             resumed_optimizer.state_dict().keys(),
             straight_optimizer.state_dict().keys(),

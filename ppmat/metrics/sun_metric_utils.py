@@ -13,8 +13,14 @@
 # limitations under the License.
 
 import hashlib
+import io
 import os
+import pickle
+import tempfile
 from collections import defaultdict
+from datetime import datetime
+from importlib.metadata import version
+from typing import TYPE_CHECKING
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -26,6 +32,9 @@ from ppmat.datasets.build_structure import BuildStructure
 from ppmat.metrics.streaming_base import StreamingMetricBase
 from ppmat.utils import download
 from ppmat.utils import logger
+
+if TYPE_CHECKING:
+    from pymatgen.core import Structure
 
 
 def _parse_structures(raw_list):
@@ -72,27 +81,6 @@ def _match_against(
     return results
 
 
-def compute_uniqueness(
-    structures: List[Optional["Structure"]],
-    stol: float = 0.5,
-    angle_tol: float = 10.0,
-    ltol: float = 0.3,
-    attempt_supercell: bool = False,
-    symmetric: bool = False,
-) -> List[bool]:
-    from pymatgen.analysis.structure_matcher import StructureMatcher
-
-    matcher = StructureMatcher(
-        stol=stol,
-        angle_tol=angle_tol,
-        ltol=ltol,
-        attempt_supercell=attempt_supercell,
-    )
-    return _match_against(
-        structures, defaultdict(list), matcher, symmetric=symmetric, dynamic=True
-    )
-
-
 def compute_novelty(
     structures: List[Optional["Structure"]],
     reference_structures: List["Structure"],
@@ -121,7 +109,7 @@ def compute_stability(
     threshold: float = 0.0,
 ) -> List[bool]:
     return [
-        (eah is not None and not np.isnan(eah) and eah < threshold)
+        (eah is not None and np.isfinite(eah) and eah < threshold)
         for eah in energy_above_hull
     ]
 
@@ -133,7 +121,9 @@ def compute_sun(
     structures: List[Optional["Structure"]],
     min_elements: int = 2,
 ) -> Dict[str, float]:
-    n = len(stability)
+    n = len(structures)
+    if any(len(flags) != n for flags in (stability, uniqueness, novelty)):
+        raise ValueError("S.U.N. flags must align with every generated structure")
     non_trivial = []
     for s in structures:
         if s is not None and len(set(s.composition)) >= min_elements:
@@ -170,6 +160,8 @@ class SUNMetric(StreamingMetricBase):
     streaming evaluation share the same cross-batch uniqueness pool.
     """
 
+    _REFERENCE_CACHE_VERSION = "buildstructure-cif-v1"
+
     def __init__(
         self,
         gt_file_path: Optional[str] = None,
@@ -179,6 +171,7 @@ class SUNMetric(StreamingMetricBase):
         ltol: float = 0.3,
         stability_threshold: float = 0.0,
         attempt_supercell: bool = False,
+        cache_dir: Optional[str] = None,
     ):
         self.gt_file_path = gt_file_path
         self.reference_file_path = reference_file_path or gt_file_path
@@ -187,7 +180,9 @@ class SUNMetric(StreamingMetricBase):
         self.ltol = ltol
         self.stability_threshold = stability_threshold
         self.attempt_supercell = attempt_supercell
+        self.cache_dir = cache_dir
         self._reference_structures = None
+        self._reference_cache_key = None
         self.reset()
 
     def reset(self):
@@ -236,38 +231,30 @@ class SUNMetric(StreamingMetricBase):
             raise ValueError(
                 "generated must be a non-empty list of cif strings or array dicts"
             )
+        n = len(generated)
+        energies = [None] * n if energy_above_hull is None else list(energy_above_hull)
+        if len(energies) != n:
+            raise ValueError("energy_above_hull must have one entry per structure")
+        stability = compute_stability(energies, threshold=self.stability_threshold)
+        if not self._structures:
+            self._load_reference()
         structures = _parse_structures(generated)
-
-        n = len(structures)
+        novelty = compute_novelty(
+            structures,
+            self._reference_structures,
+            stol=self.stol,
+            angle_tol=self.angle_tol,
+            ltol=self.ltol,
+            attempt_supercell=self.attempt_supercell,
+        )
+        uniqueness = self._match_unique(structures)
         logger.info(f"Evaluating {n} generated structures")
-
         self._structures.extend(structures)
-        self._unique.extend(self._match_unique(structures))
-
-        self._load_reference()
-        if self._reference_structures:
-            self._novelty.extend(
-                compute_novelty(
-                    structures,
-                    self._reference_structures,
-                    stol=self.stol,
-                    angle_tol=self.angle_tol,
-                    ltol=self.ltol,
-                    attempt_supercell=self.attempt_supercell,
-                )
-            )
-        else:
-            logger.warning("No reference set loaded; novelty defaults to True")
-            self._novelty.extend([True] * n)
-
-        if energy_above_hull is not None:
-            self._stability.extend(
-                compute_stability(energy_above_hull, threshold=self.stability_threshold)
-            )
-            self._energy_above_hull.extend(list(energy_above_hull))
-            self._stability_given = True
-        else:
-            self._stability.extend([False] * n)
+        self._unique.extend(uniqueness)
+        self._novelty.extend(novelty)
+        self._stability.extend(stability)
+        self._energy_above_hull.extend(energies)
+        self._stability_given |= energy_above_hull is not None
 
     def _match_unique(self, structures: List[Optional["Structure"]]) -> List[bool]:
         """Incremental uniqueness against the shared (cross-batch) pool."""
@@ -279,22 +266,7 @@ class SUNMetric(StreamingMetricBase):
             ltol=self.ltol,
             attempt_supercell=self.attempt_supercell,
         )
-        results = []
-        for struct in structures:
-            if struct is None:
-                results.append(False)
-                continue
-            h = str(sorted(struct.atomic_numbers))
-            refs = self._unique_pool.get(h)
-            if refs is None:
-                self._unique_pool[h] = [struct]
-                results.append(True)
-                continue
-            matched = any(matcher.fit(struct, ref) for ref in refs)
-            results.append(not matched)
-            if not matched:
-                refs.append(struct)
-        return results
+        return _match_against(structures, self._unique_pool, matcher, dynamic=True)
 
     def _finalize_dict(self) -> Dict[str, float]:
         if not self._stability_given and not self._warned_no_eah:
@@ -326,52 +298,72 @@ class SUNMetric(StreamingMetricBase):
         return results
 
     def _load_reference(self):
-        """Load the novelty reference set, cached under DATASETS_HOME/miad."""
-        import pickle
-
+        """Snapshot and cache the reference content at evaluation start."""
         import pandas as pd
         from pymatgen.core import Structure
-        from tqdm import tqdm
 
-        if self._reference_structures is not None:
-            return
         if self.reference_file_path is None:
-            return
-        if not os.path.exists(self.reference_file_path):
-            logger.warning(f"Reference file not found: {self.reference_file_path}")
-            return
-
-        cache_dir = os.path.join(download.DATASETS_HOME, "miad")
-        os.makedirs(cache_dir, exist_ok=True)
-        path_hash = hashlib.md5(
-            os.path.abspath(self.reference_file_path).encode("utf-8")
-        ).hexdigest()[:8]
-        cache_path = os.path.join(cache_dir, f"novelty_reference_{path_hash}.pkl")
-        if os.path.exists(cache_path):
-            logger.info(f"Loading cached reference structures from {cache_path}")
-            with open(cache_path, "rb") as f:
-                self._reference_structures = pickle.load(f)
-            logger.info(
-                f"Loaded {len(self._reference_structures)} cached reference structures"
-            )
+            raise ValueError("reference_file_path is required for novelty evaluation")
+        with open(self.reference_file_path, "rb") as source:
+            content = source.read()
+        digest = hashlib.sha256()
+        for value in (
+            self._REFERENCE_CACHE_VERSION,
+            version("pymatgen"),
+            pd.__version__,
+            np.__version__,
+        ):
+            digest.update(value.encode("utf-8") + b"\0")
+        digest.update(content)
+        cache_key = digest.hexdigest()
+        if cache_key == self._reference_cache_key:
             return
 
-        df = pd.read_csv(self.reference_file_path)
-        if "cif" not in df.columns:
-            logger.warning("Reference CSV must have a 'cif' column")
-            return
-        self._reference_structures = []
-        for cif_str in tqdm(df["cif"], desc="Loading reference structures"):
-            try:
-                self._reference_structures.append(
-                    Structure.from_str(cif_str, fmt="cif")
-                )
-            except Exception as exc:
-                logger.debug("Failed to parse reference cif: %s", exc)
-        logger.info(f"Loaded {len(self._reference_structures)} reference structures")
+        cache_dir = self.cache_dir or os.path.join(download.DATASETS_HOME, "miad")
+        cache_path = os.path.join(cache_dir, f"novelty_reference_{cache_key}.pkl")
         try:
-            with open(cache_path, "wb") as f:
-                pickle.dump(self._reference_structures, f)
-            logger.info(f"Cached reference structures to {cache_path}")
-        except Exception as e:
-            logger.warning(f"Failed to cache reference structures: {e}")
+            with open(cache_path, "rb") as cached:
+                structures = pickle.load(cached)
+            if (
+                not isinstance(structures, list)
+                or not structures
+                or not all(isinstance(struct, Structure) for struct in structures)
+            ):
+                raise ValueError("Invalid reference cache")
+        except FileNotFoundError:
+            structures = None
+        except (OSError, EOFError, pickle.UnpicklingError, ValueError) as exc:
+            logger.warning("Rebuilding invalid reference cache: %s", exc)
+            structures = None
+        if structures is None:
+            frame = pd.read_csv(io.BytesIO(content))
+            if "cif" not in frame.columns or frame.empty:
+                raise ValueError("Reference CSV must contain a non-empty 'cif' column")
+            structures = _parse_structures(frame["cif"].tolist())
+            if any(struct is None for struct in structures):
+                raise ValueError("Reference CSV contains unparseable structures")
+            self._write_reference_cache(cache_dir, cache_path, structures)
+        self._reference_structures = structures
+        self._reference_cache_key = cache_key
+
+    @staticmethod
+    def _write_reference_cache(cache_dir, cache_path, structures):
+        temporary_path = None
+        try:
+            os.makedirs(cache_dir, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=f"novelty_reference_{timestamp}_",
+                suffix=".tmp",
+                dir=cache_dir,
+                delete=False,
+            ) as temporary:
+                temporary_path = temporary.name
+                pickle.dump(structures, temporary, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(temporary_path, cache_path)
+        except OSError as exc:
+            logger.warning("Unable to cache reference structures: %s", exc)
+        finally:
+            if temporary_path is not None and os.path.exists(temporary_path):
+                os.unlink(temporary_path)

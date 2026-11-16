@@ -26,7 +26,7 @@ MiAD defines separate forward corruption processes for $(L, F, A)$ and trains a 
 
 #### 1) Lattice diffusion
 
-The lattice is diffused with a standard DDPM Gaussian process. Supports Flow Matching as an alternative:
+The lattice is diffused with a DDPM Gaussian process:
 
 $$
 L_t = \sqrt{\bar{\alpha}_t}\,L_0 + \sqrt{1 - \bar{\alpha}_t}\,\epsilon,\quad \epsilon \sim \mathcal{N}(0, I)
@@ -40,17 +40,15 @@ $$
 x_t = (x_0 + \sigma(t)\,\epsilon) \bmod 1,\quad \epsilon \sim \mathcal{N}(0, I)
 $$
 
-Also supports Periodic Flow Matching.
-
 #### 3) Atom-type diffusion
 
-Atom types use D3PM (uniform transition + cosine schedule) or DDPM with one-hot encoding.
+Atom types use D3PM with a uniform transition kernel and a cosine schedule.
 
 #### 4) Mirage Infusion
 
 During sampling, atoms with type 0 are treated as mirage atoms. The model dynamically decides which mirage atoms should materialize into real elements, allowing the final structure to have fewer atoms than the initial maximum. This is the core innovation enabling variable-atom-count generation.
 
-During training, every crystal is padded to `model_cfg.mirage_num_atoms` atoms (default 25, matching the official MiAD `add_mirage_atoms_upto25`) by appending type-0 mirage atoms with random fractional coordinates. The coordinate loss masks out mirage atoms and rescales to keep the loss scale.
+During training, every crystal is padded to `model_cfg.mirage_num_atoms` atoms (configured as 25, matching the official MiAD `add_mirage_atoms_upto25`) by appending type-0 mirage atoms with random fractional coordinates. The coordinate loss masks out mirage atoms and rescales to keep the loss scale.
 
 ---
 
@@ -59,6 +57,29 @@ During training, every crystal is padded to `model_cfg.mirage_num_atoms` atoms (
 | Model | Dataset | Config | Checkpoint / Log |
 | --- | --- | --- | --- |
 | miad_mp20 | mp20 | [miad_mp20.yaml](miad_mp20.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/MiAD/miad_mp20.zip) |
+
+### Integration validation
+
+Validated on 2026-11-16 with Paddle 3.3.0 and an NVIDIA GeForce RTX 5090 D:
+source baseline `6fd4b7b` plus the MiAD changes in this PR.
+
+```bash
+PPMAT_RUN_CINN_WORKFLOW_TESTS=1 python -m pytest test/miad/test_miad.py test/test_execution_backend.py test/test_ase_calculator.py -q
+```
+
+- Model, runtime-backend and ASE regression tests: 35 passed, including the
+  real GPU CINN training/forward comparison at `atol=rtol=2e-5`.
+- Registered `miad_mp20` weights: eager and CINN each completed 1000-step
+  sampling through `StructureSampler.sample_by_num_atoms(20)` and saved a CIF;
+  the registered denoising boundary agreed at `atol=rtol=2e-5`.
+- Registered weights completed one CINN training update on four real MP-20
+  training structures; every trainable parameter had a finite gradient and
+  all parameters remained finite after the optimizer step.
+- Full-schedule eager loss, gradients and sampled arrays remained bitwise
+  identical to the implementation before the sampling-step validation fix.
+
+These checks establish integration and numerical regression, not full-data
+convergence or reproduction of the paper's generation-quality results.
 
 ---
 
@@ -87,6 +108,13 @@ python structure_generation/train.py -c structure_generation/configs/miad/miad_m
 ```
 
 ### Sample
+
+Sampling uses the complete trained diffusion schedule. `num_inference_steps`
+must equal `Model.__init_params__.diffusion_cfg.num_steps` (1000 for the
+released checkpoint); timestep respacing is unsupported. The repository YAML
+derives the model, all three schedulers and sampling steps from
+`Global.num_train_timesteps`. Changing this value defines a new training
+schedule and must not be used to shorten sampling with released weights.
 
 ```bash
 # This command is used to sample crystal structures using a trained model.
@@ -120,6 +148,23 @@ python structure_generation/sample.py --model_name='miad_mp20' --output_path='re
 
 **S.U.N. metric status**:
 
+- `reference_file_path` must point to an existing, non-empty training CSV with
+  a valid `cif` column. Missing or invalid references raise an error; novelty
+  is never inferred from a missing reference set. If MP-20 was automatically
+  downloaded to the dataset cache, explicitly pass its training CSV path:
+
+  ```bash
+  python structure_generation/sample.py --model_name=miad_mp20 --mode=compute_metric Sample.metrics.__init_params__.reference_file_path=/path/to/mp_20/train.csv
+  ```
+
+- Parsed references are cached under the framework dataset cache's `miad/`
+  directory, or an explicit metric `cache_dir`. Cache identity includes CSV
+  content, parser version and dependency versions. Each evaluation snapshots
+  its references; a new call or a reset streaming evaluation rechecks content.
+- An explicit `energy_above_hull` list must have one entry per generated
+  structure. Missing entries use `None`; missing and non-finite energies count
+  as unstable in both stability and metastability rates. All rates use the
+  full generated population, including structures that fail parsing.
 - `Uniqueness` and `Novelty` are fully supported with official semantics
   (`StructureMatcher` with `attempt_supercell=false, symmetric=false`,
   novelty compared against the MP-20 training split).

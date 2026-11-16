@@ -127,8 +127,8 @@ def _extract_x0(batch, mirage_num_atoms=None):
 class MiAD(RuntimeMixin, paddle.nn.Layer):
     """Mirage Atom Diffusion model.
 
-    ``sample`` supports num-atoms-based sampling: all atoms start as mirage
-    (type 0) and mirage atoms are filtered from the output.
+    ``sample`` uses the requested atom count as generation capacity and
+    filters type-0 mirage atoms from the output.
     """
 
     supports_num_atoms_sampling = True
@@ -173,12 +173,17 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
             "pred_type",
             "num_classes",
         }
+        unknown_keys = model_cfg.keys() - _cspnet_keys - {"mirage_num_atoms"}
+        if unknown_keys:
+            raise TypeError(f"Unknown MiAD model parameters: {sorted(unknown_keys)}")
         cspnet_kwargs = {k: v for k, v in model_cfg.items() if k in _cspnet_keys}
         self.decoder = MiADCSPNet(**cspnet_kwargs)
 
         self.config = diffusion_cfg
         self.cont_time = self.config["cont_time"]
         self.num_steps = self.config["num_steps"]
+        if type(self.num_steps) is not int or self.num_steps < 1:
+            raise ValueError("num_steps must be a positive integer")
         # Official default eps=1e-3.
         self.eps = float(self.config.get("eps", 1e-3))
         self.time_embedding = SinusoidalTimeEmbeddings(
@@ -199,6 +204,13 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
         self.sb = self.frac_scheduler.sigma_min
 
         self.type_diffusion = build_scheduler(self.config["type_diffusion"])
+        schedule_lengths = (
+            len(self.lat_scheduler.betas),
+            len(self.sigmas_t),
+            len(self.type_diffusion.cumprod_Q_t),
+        )
+        if any(length != self.num_steps for length in schedule_lengths):
+            raise ValueError("All diffusion schedules must match num_steps")
 
     def set_state_dict(self, state_dict, use_structured_name=True):
         # Official checkpoints: no "decoder." prefix and PyTorch (out, in)
@@ -407,6 +419,15 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
 
     @paddle.no_grad()
     def sample(self, batch_data, num_inference_steps=None):
+        if num_inference_steps is not None and (
+            isinstance(num_inference_steps, bool)
+            or not isinstance(num_inference_steps, int)
+            or num_inference_steps != self.num_steps
+        ):
+            raise ValueError(
+                f"MiAD requires num_inference_steps={self.num_steps} to preserve "
+                "the trained diffusion schedules; timestep respacing is unsupported"
+            )
         if "structure_array" in batch_data:
             num_atoms_data = batch_data["structure_array"].get("num_atoms", None)
         else:
@@ -428,28 +449,21 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
                 "batch_size": batch_size,
             }
 
-        original_steps = self.num_steps
-        if num_inference_steps is not None:
-            self.num_steps = num_inference_steps
-
-        try:
-            batch = batch_data
-            prior_at = self.type_diffusion.prior_sample(batch)
-            na = batch["num_atoms"]
-            total = int(na.sum()) if na.ndim > 0 else int(na)
-            batch["xt"] = [
-                paddle.randn([batch["batch_size"], 3, 3], dtype="float32"),
-                paddle.rand([total, 3], dtype="float32"),
-                prior_at,
-            ]
-            for t_val in range(self.num_steps - 1, -1, -1):
-                t = paddle.full([batch["batch_size"]], t_val, dtype="float32")
-                batch["t"] = [t, t.repeat_interleave(batch["num_atoms"])]
-                batch["xt"] = self._reverse_step_sample(batch["xt"], batch["t"], batch)
-            batch["xt"] = self._output_transform(batch["xt"], batch)
-            batch["x0_prediction"] = batch["xt"]
-        finally:
-            self.num_steps = original_steps
+        batch = batch_data
+        prior_at = self.type_diffusion.prior_sample(batch)
+        na = batch["num_atoms"]
+        total = int(na.sum()) if na.ndim > 0 else int(na)
+        batch["xt"] = [
+            paddle.randn([batch["batch_size"], 3, 3], dtype="float32"),
+            paddle.rand([total, 3], dtype="float32"),
+            prior_at,
+        ]
+        for t_val in range(self.num_steps - 1, -1, -1):
+            t = paddle.full([batch["batch_size"]], t_val, dtype="float32")
+            batch["t"] = [t, t.repeat_interleave(batch["num_atoms"])]
+            batch["xt"] = self._reverse_step_sample(batch["xt"], batch["t"], batch)
+        batch["xt"] = self._output_transform(batch["xt"], batch)
+        batch["x0_prediction"] = batch["xt"]
 
         lattices, frac_coords, atom_types = batch["x0_prediction"]
 
