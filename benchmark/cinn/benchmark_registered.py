@@ -164,9 +164,7 @@ def build_workflow(model_name: str, backend: str):
                     sample_params=sample_params,
                 )
 
-        elif not model_name.startswith("omatg_") and getattr(
-            sampler.model, "supports_num_atoms_sampling", True
-        ):
+        elif getattr(sampler.model, "supports_num_atoms_sampling", True):
 
             def call():
                 return sampler.sample_by_num_atoms(
