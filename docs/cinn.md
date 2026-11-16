@@ -21,6 +21,8 @@ The same values can be supplied as command-line overrides, for example
 - `full_graph: false` uses SOT capture and allows graph breaks.
 - `full_graph: true` uses AST conversion and requires the whole boundary to
   become one static program. Use it only for models marked **AST** below.
+  Force and stress models need it, because SOT capture can split `paddle.grad`
+  from its input; see the model README for the exact setting.
 
 CINN requires a CUDA device and a Paddle build with CINN enabled. AMP and
 distributed execution are not supported by this runtime.

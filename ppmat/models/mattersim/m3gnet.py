@@ -632,6 +632,8 @@ class ThreeDInteraction(paddle.nn.Layer):
         num_edges,
         num_triple_ij,
     ):
+        if three_body_index.shape[0] == 0:
+            return edge_attr
         atom_mask = (
             self.atom_mlp(atom_attr)[edge_index[0][three_body_index[:, 1]]]
             * polynomial(edge_length[three_body_index[:, 0]], self.threebody_cutoff)
