@@ -19,6 +19,8 @@ from typing import Optional
 
 import paddle
 
+from ppmat.utils.execution import in_compiled_execution
+
 __all__ = [
     "scatter",
     "scatter_argmin",
@@ -53,6 +55,10 @@ def _normalize_dim(src: paddle.Tensor, dim: int) -> int:
 def _resolve_dim_size(index: paddle.Tensor, dim_size: Optional[int]) -> int:
     if dim_size is None:
         return 0 if index.numel() == 0 else int(index.max()) + 1
+    # type() keeps a dimension that SOT traces symbolically as it is; int() or
+    # isinstance() would make SOT specialize on its value.
+    if type(dim_size) is int:
+        return dim_size
     # No non-negative check here on purpose. Under AST conversion dim_size
     # arrives as a traced value that converts to -1, so the check fires during
     # conversion rather than on a bad call: M3GNet's registered checkpoints fail
@@ -136,7 +142,6 @@ def _scatter_sum(
 ) -> paddle.Tensor:
     dim = _normalize_dim(src, dim)
     dim_size = _resolve_dim_size(index, dim_size)
-    index = _broadcast(index, src, dim)
     size = list(src.shape)
     size[dim] = dim_size
     out = _zeros(src, size)
@@ -145,9 +150,15 @@ def _scatter_sum(
     # source rows while preserving the second-order gradients used by force
     # training. Other axes retain put_along_axis's broadcast semantics.
     if dim == 0:
-        if src.shape[0] == 0:
+        # Compiled execution skips the shortcut, which would branch on a traced
+        # dimension; index_add accepts empty rows.
+        if not in_compiled_execution() and src.shape[0] == 0:
             return out + src.sum() * 0
-        idx_1d = index.reshape([index.shape[0], -1])[:, 0]
+        if index.ndim == 1:
+            idx_1d = index
+        else:
+            index = _broadcast(index, src, dim)
+            idx_1d = index.reshape([index.shape[0], -1])[:, 0]
         if src.dtype in _INDEX_ADD_DTYPES:
             return paddle.index_add(
                 x=out,
@@ -168,7 +179,7 @@ def _scatter_sum(
 
     return paddle.put_along_axis(
         arr=out,
-        indices=index,
+        indices=_broadcast(index, src, dim),
         values=src,
         axis=dim,
         reduce="add",
