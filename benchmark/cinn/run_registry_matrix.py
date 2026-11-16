@@ -42,6 +42,7 @@ CINN_SUPPORTED_PREFIXES = (
     "mattersim_",
     "megnet_",
     "sfin_",
+    "sgequidiff_",
     "spherenet_",
 )
 
