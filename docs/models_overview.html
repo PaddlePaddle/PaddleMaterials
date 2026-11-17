@@ -200,7 +200,7 @@ flowchart TD
 <tr><th>任务</th><th>模型</th><th>注册名（<code>--model_name</code>）</th><th>数量</th></tr>
 <tr><td rowspan="4">property_prediction</td><td>iComformer</td><td><code>comformer_mp2018_train_60k_{e_form,band_gap,G,K}</code> · <code>comformer_mp2024_train_130k_e_form</code> · <code>comformer_jarvis_{dft_2d,dft_3d,alex_pbe_2d_all}_e_form</code></td><td>8</td></tr>
 <tr><td>MEGNetPlus</td><td><code>megnet_mp2018_train_60k_{e_form,band_gap,G,K}</code> · <code>megnet_mp2024_train_130k_e_form</code> · <code>megnet_jarvis_{dft_2d,dft_3d,alex_pbe_2d_all}_e_form</code></td><td>8</td></tr>
-<tr><td>DimeNetPlusPlus</td><td><code>dimenetpp_mp2018_train_60k_{e_form,band_gap,G,K}</code></td><td>4</td></tr>
+<tr><td>DimeNetPlusPlus</td><td><code>dimenetpp_mp2018_train_60k_{e_form,band_gap,G,K}</code> · <code>dimenetpp_qm9_{mu,alpha,homo,lumo,gap,r2,zpve,U0,U,H,G,Cv}</code></td><td>16</td></tr>
 <tr><td>SphereNet</td><td><code>spherenet_qm9_{mu,alpha,homo,lumo,gap,r2,zpve,U0,U,H,G,Cv}</code></td><td>12</td></tr>
 <tr><td rowspan="3">interatomic_potentials</td><td>CHGNet</td><td><code>chgnet_mptrj</code></td><td>1</td></tr>
 <tr><td>M3GNet（MatterSim）</td><td><code>mattersim_{1M,5M}</code></td><td>2</td></tr>
@@ -208,8 +208,8 @@ flowchart TD
 <tr><td>electronic_structure</td><td>InfGCN</td><td><code>infgcn_md17_{benzene,ethane,ethanol,malonaldehyde,phenol,resorcinol}</code> · <code>infgcn_{mp,qm9}</code> · <code>infgcn_omol25_mc_5k_trimmed</code></td><td>9</td></tr>
 <tr><td>spectrum_enhancement</td><td>SFIN</td><td><code>sfin_{haadf,bf}_{enhance,detect}</code></td><td>4</td></tr>
 <tr><td>spectrum_elucidation</td><td>DiffNMR</td><td><code>diffnmr_msdnmr_nless15</code></td><td>1</td></tr>
-<tr><td rowspan="2">structure_generation</td><td>DiffCSP</td><td><code>diffcsp_mp20</code></td><td>1</td></tr>
-<tr><td>MatterGen</td><td><code>mattergen_{mp20,alex_mp20}_*</code>（含 dft_band_gap / chemical_system / dft_bulk_modulus / dft_mag_density / space_group 等条件变体） · <code>mattergen_ml2ddb{,_chemical_system,_space_group}</code></td><td>17</td></tr>
+<tr><td rowspan="2">structure_generation</td><td>DiffCSP</td><td><code>diffcsp_mp20</code> · <code>diffcsp_mp20_ab_initio</code></td><td>2</td></tr>
+<tr><td>MatterGen</td><td><code>mattergen_{mp20,alex_mp20}_*</code>（含 dft_band_gap / chemical_system / dft_bulk_modulus / dft_mag_density / space_group 等条件变体） · <code>mattergen_mp20_csp</code> · <code>mattergen_ml2ddb{,_chemical_system,_space_group}</code></td><td>17</td></tr>
 </table>
 <div class="note"><code>{a,b,c}</code> 表示该前缀下的多个变体。如 <code>spherenet_qm9_{mu,alpha}</code> = <code>spherenet_qm9_mu</code> + <code>spherenet_qm9_alpha</code>。用法：<code>python &lt;task&gt;/predict.py --model_name &lt;注册名&gt; --weights_name best.pdparams</code>。</div>
 
