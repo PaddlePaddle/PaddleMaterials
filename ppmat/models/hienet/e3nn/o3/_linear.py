@@ -238,14 +238,20 @@ class Linear(CodeGenMixin, paddle.nn.Module):
                 )
             )
         else:
-            self.register_buffer("weight", paddle.Tensor())
+            # Zero-element storage with an allocated holder: uninitialized
+            # buffers break static-graph input binding.
+            self.register_buffer("weight", paddle.zeros((0,)))
         if internal_weights and self.bias_numel > 0:
             assert self.shared_weights, "Having internal weights impose shared weights"
             self.bias = paddle.nn.Parameter(
                 paddle.zeros(*((f_out,) if f_out is not None else ()), self.bias_numel)
             )
         else:
-            self.register_buffer("bias", paddle.Tensor())
+            self.register_buffer("bias", paddle.zeros((0,)))
+        # Empty buffers remain registered (checkpoint keys) but forward gates
+        # their reads on these construction-time flags.
+        self._has_weight = self.weight_numel > 0
+        self._has_bias = self.bias_numel > 0
         if self.irreps_out.dim > 0:
             output_mask = paddle.cat(
                 [
@@ -297,17 +303,17 @@ class Linear(CodeGenMixin, paddle.nn.Module):
             tensor of shape ``(..., irreps_out.dim)``
         """
         if weight is None:
-            if self.weight_numel > 0 and not self.internal_weights:
+            if self._has_weight and not self.internal_weights:
                 raise RuntimeError(
                     "Weights must be provided when internal_weights = False"
                 )
-            weight = self.weight
+            weight = self.weight if self._has_weight else None
         if bias is None:
-            if self.bias_numel > 0 and not self.internal_weights:
+            if self._has_bias and not self.internal_weights:
                 raise RuntimeError(
                     "Biases must be provided when internal_weights = False"
                 )
-            bias = self.bias
+            bias = self.bias if self._has_bias else None
         return self._compiled_main(features, weight, bias)
 
     def weight_view_for_instruction(
@@ -432,6 +438,10 @@ class EagerLinear(paddle.nn.Layer):
             for i_out, mul_ir in enumerate(irreps_out)
             if mul_ir.mul > 0
         ]
+        # Single-slot cache for the multi-output-group placement matrices;
+        # out_groups are construction constants, so no shape key is needed.
+        self._place_mats = None
+        self._place_mats_dtype = None
         steps: List[_LinearStep] = []
         flat_weight_index = 0
         flat_bias_index = 0
@@ -557,43 +567,38 @@ class EagerLinear(paddle.nn.Layer):
             for i_out, out_dim in self._out_groups
         ]
         if len(out) > 1:
-            out = _place_lastdim(out)
+            out = self._place_lastdim(out)
         else:
             out = out[0]
         return out.reshape(outsize)
 
-
-# Cache of 0/1 placement matrices for last-dim concat:
-# (dims, dtype, place) -> [M_i]
-_PLACE_MATS = {}
-
-
-def _place_lastdim(tensors):
-    # Last-dim concat as sum_i t_i @ M_i with 0/1 placement matrices
-    # (bitwise-identical forward); matmul/add keep the double-grad path of
-    # the create_graph training route.
-    dims = [int(t.shape[-1]) for t in tensors]
-    key = (tuple(dims), str(tensors[0].dtype), str(tensors[0].place))
-    # Cache in dynamic mode only: a static trace builds one Program per
-    # (train/eval) mode; cached python tensors must not leak across Programs.
-    use_cache = paddle.in_dynamic_mode()
-    mats = _PLACE_MATS.get(key) if use_cache else None
-    if mats is None:
-        total = sum(dims)
-        mats = []
-        ofs = 0
-        for d in dims:
-            m = paddle.zeros((d, total), dtype=tensors[0].dtype)
-            m[0:d, ofs:ofs + d] = paddle.eye(d, dtype=tensors[0].dtype)
-            m.stop_gradient = True
-            mats.append(m)
-            ofs += d
-        if use_cache:
-            _PLACE_MATS[key] = mats
-    out = tensors[0] @ mats[0]
-    for t, m in zip(tensors[1:], mats[1:]):
-        out = out + t @ m
-    return out
+    def _place_lastdim(self, tensors):
+        # Last-dim concat as sum_i t_i @ M_i with 0/1 placement matrices
+        # (bitwise-identical forward); matmul/add keep the double-grad path
+        # of the create_graph training route. The mats are fixed per
+        # instance, so a single slot replaces the former module-level dict;
+        # caching stays a dynamic-mode write so a static trace rebuilds per
+        # Program instead of leaking tensors across Programs.
+        dims = [int(t.shape[-1]) for t in tensors]
+        dtype = tensors[0].dtype
+        mats = self._place_mats if self._place_mats_dtype == dtype else None
+        if mats is None:
+            total = sum(dims)
+            mats = []
+            ofs = 0
+            for d in dims:
+                m = paddle.zeros((d, total), dtype=dtype)
+                m[0:d, ofs:ofs + d] = paddle.eye(d, dtype=dtype)
+                m.stop_gradient = True
+                mats.append(m)
+                ofs += d
+            if paddle.in_dynamic_mode():
+                self._place_mats = mats
+                self._place_mats_dtype = dtype
+        out = tensors[0] @ mats[0]
+        for t, m in zip(tensors[1:], mats[1:]):
+            out = out + t @ m
+        return out
 
 
 def _codegen_linear(

@@ -121,14 +121,24 @@ class MessagePassing(paddle.nn.Layer):
         self.inspector.inspect(self.message_and_aggregate, pop_first=True)
         self.inspector.inspect(self.update, pop_first=True)
         self.inspector.inspect(self.edge_update)
-        self.__user_args__ = self.inspector.keys(
-            ["message", "aggregate", "update"]
-        ).difference(self.special_args)
-        self.__fused_user_args__ = self.inspector.keys(
-            ["message_and_aggregate", "update"]
-        ).difference(self.special_args)
-        self.__edge_user_args__ = self.inspector.keys(["edge_update"]).difference(
-            self.special_args
+        # Argument names as plain tuples in signature first-appearance order;
+        # traced iteration requires a tuple instead of a set.
+        self.__user_args__ = tuple(
+            key
+            for key in self.inspector.ordered_keys(["message", "aggregate", "update"])
+            if key not in self.special_args
+        )
+        self.__fused_user_args__ = tuple(
+            key
+            for key in self.inspector.ordered_keys(
+                ["message_and_aggregate", "update"]
+            )
+            if key not in self.special_args
+        )
+        self.__edge_user_args__ = tuple(
+            key
+            for key in self.inspector.ordered_keys(["edge_update"])
+            if key not in self.special_args
         )
         self.fuse = self.inspector.implements("message_and_aggregate")
         self._explain = False

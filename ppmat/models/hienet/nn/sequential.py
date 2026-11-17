@@ -96,6 +96,7 @@ class AtomGraphSequential(paddle.nn.Sequential):
         """
         type_map is a dict of {atomic_number: one_hot_idx}
         """
-        for module in self:
+        # Plain mapping iteration: the Layer iterator is not traceable.
+        for module in self._sub_layers.values():
             data = module(data)
         return data

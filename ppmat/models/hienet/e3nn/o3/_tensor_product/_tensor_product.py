@@ -447,7 +447,12 @@ class TensorProduct(CodeGenMixin, paddle.nn.Module):
             assert self.shared_weights, "Having internal weights impose shared weights"
             self.weight = paddle.nn.Parameter(paddle.randn(self.weight_numel))
         else:
-            self.register_buffer("weight", paddle.Tensor())
+            # Zero-element storage with an allocated holder: uninitialized
+            # buffers break static-graph input binding.
+            self.register_buffer("weight", paddle.zeros((0,)))
+        # Empty buffers remain registered (checkpoint keys) but forward gates
+        # their reads on this construction-time flag.
+        self._has_weight = self.weight_numel > 0
         if self.irreps_out.dim > 0:
             output_mask = paddle.cat(
                 [
@@ -497,11 +502,11 @@ class TensorProduct(CodeGenMixin, paddle.nn.Module):
         if not False:
             weight = self._prep_weights_python(weight)
         if weight is None:
-            if self.weight_numel > 0 and not self.internal_weights:
+            if self._has_weight and not self.internal_weights:
                 raise RuntimeError(
                     "Weights must be provided when the TensorProduct does not have `internal_weights`"
                 )
-            return self.weight
+            return self.weight if self._has_weight else None
         elif self.shared_weights:
             assert weight.shape == (self.weight_numel,), "Invalid weight shape"
         else:

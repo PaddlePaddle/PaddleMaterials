@@ -107,7 +107,11 @@ class AtomReduce(paddle.nn.Module):
         if self._is_batch_data:
             data[self.key_output] = (
                 scatter(
-                    data[self.key_input], data[KEY.BATCH], dim=0, reduce=self.reduce
+                    data[self.key_input],
+                    data[KEY.BATCH],
+                    dim=0,
+                    dim_size=data[KEY.NUM_ATOMS].shape[0],
+                    reduce=self.reduce,
                 )
                 * self.constant
             )
