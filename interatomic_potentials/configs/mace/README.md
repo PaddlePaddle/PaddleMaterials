@@ -20,12 +20,12 @@ MACE-MP-0 is trained on the Materials Project Trajectory (MPtrj) dataset, which 
     - 145,923 unique compounds
     - 1,580,395 crystal structures
     - Calculations performed at GGA/GGA+U level of theory
-    
+
     Corresponding labels:
     - Total energies
     - Atomic forces
     - Stresses
-    
+
     | Dataset | Train | Val | Test |
     | :--- | :---: | :---: | :---: |
     | MPtrj_2022.9_full | 116738 | 14592 | 14593 |
