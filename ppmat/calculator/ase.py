@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import warnings
 from typing import Any
 from typing import List
-import warnings
+
 import numpy as np
 from ase import Atoms
 from ase import filters
@@ -54,7 +55,8 @@ OPTIMIZERS = {
     "BFGSLineSearch": BFGSLineSearch,
 }
 
-warnings.filterwarnings('ignore', message='Skipping "graph" info', category=UserWarning)
+warnings.filterwarnings("ignore", message='Skipping "graph" info', category=UserWarning)
+
 
 class OptimizationTask:
     def __init__(
@@ -162,11 +164,8 @@ class ASECalculator(Calculator):
         ase_structures = []
 
         for structure in tqdm(structures):
-            graph = self.predictor.graph_converter(structure)
             # covert pymatgen Structure to ASE Atom
             atom = AseAtomsAdaptor().get_atoms(structure)
-            # attach graph information to ASE Atom
-            atom.info["graph"] = graph
             ase_structures.append(atom)
 
         logger.info("Successfully covert all structures to ASE Atoms.")
@@ -232,8 +231,8 @@ class ASECalculator(Calculator):
             self._get_single_atom_energies(atoms)
         else:
             # Predict
-            graph = atoms.info["graph"]
-            graph = graph.tensor()
+            structure = AseAtomsAdaptor().get_structure(atoms)
+            graph = self.predictor.graph_converter(structure).tensor()
             pred = self.predictor.model.predict(graph)
             pred = self.predictor.post_process(pred)
 
@@ -267,7 +266,7 @@ class ASECalculator(Calculator):
                 elif calc_key == "stress":
                     stress = pred[pred_key]
                     stress_voigt = full_3x3_to_voigt_6_stress(stress)
-                    self.results["stress"] = stress_voigt
+                    self.results["stress"] = stress_voigt * units.GPa
 
     def _check_atoms_pbc(self, atoms) -> None:
         """

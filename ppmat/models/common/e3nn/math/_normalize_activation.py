@@ -73,7 +73,11 @@ class normalize2mom(paddle.nn.Layer):
         if self._is_id:
             return self.f(x)
         else:
-            return self.f(x) * self.cst  
+            # Multiply by the Python scalar directly instead of
+            # ``paddle.to_tensor(self.cst)``: the latter builds a float32
+            # tensor, which silently truncates the constant in float64 and
+            # places it on the default device rather than the input's.
+            return self.f(x) * self.cst
 
     @staticmethod
     def _make_tracing_inputs(n: int):

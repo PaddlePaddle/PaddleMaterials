@@ -358,7 +358,6 @@ class SphereNet(RuntimeMixin, paddle.nn.Layer):
         runtime_options: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> None:
         super().__init__()
-        self._init_runtime(execution_backend, runtime_options)
 
         act_fn = swish if act in ("swish", "silu") else act
         derivative_properties = (
@@ -368,6 +367,8 @@ class SphereNet(RuntimeMixin, paddle.nn.Layer):
         )
         derivative_properties = frozenset(derivative_properties)
         compute_forces = "force" in derivative_properties
+
+        self._init_runtime(execution_backend, runtime_options)
 
         active_properties = {property_name}
         if compute_forces:

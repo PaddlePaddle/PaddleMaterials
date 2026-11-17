@@ -168,6 +168,10 @@ Optional fields include `material_id`, `spacegroup`, `energy`, and dataset split
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | diffcsp_mp20 | mp20 | 51.72 | 0.0591 | 1 | ~13.5 hours | [diffcsp_mp20.yaml](diffcsp_mp20.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/diffcsp/diffcsp_mp20.zip) |
 
+| Model | Dataset | S.U.N. (%) | Stable (%) | Unique (%) | Novel (%) | RMSD (Å) | GPUs | Training Time | Config | Checkpoint / Log |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| diffcsp_mp20_ab_initio | mp20 | 13.71 | 37.19 | 99.21 | 73.60 | 0.429 | 1 | ~15.5 hours | [diffcsp_mp20_ab_initio.yaml](diffcsp_mp20_ab_initio.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/diffcsp/diffcsp_mp20_ab_initio.zip) |
+
 ---
 
 ## Command
@@ -178,6 +182,9 @@ Optional fields include `material_id`, `spacegroup`, `energy`, and dataset split
 python -m paddle.distributed.launch --gpus="0,1,2,3" structure_generation/train.py -c structure_generation/configs/diffcsp/diffcsp_mp20.yaml
 # single-gpu training
 python structure_generation/train.py -c structure_generation/configs/diffcsp/diffcsp_mp20.yaml
+
+# ab initio generation (atom types are generated as well)
+python structure_generation/train.py -c structure_generation/configs/diffcsp/diffcsp_mp20_ab_initio.yaml
 ```
 
 ### Validation
@@ -205,6 +212,13 @@ python structure_generation/sample.py --model_name='diffcsp_mp20' --weights_name
 
 # Mode 2: custom config + checkpoint
 python structure_generation/sample.py --config_path='structure_generation/configs/diffcsp/diffcsp_mp20.yaml' --checkpoint_path='./output/diffcsp_mp20/checkpoints/latest.pdparams' --output_path='result_diffcsp_mp20/' --chemical_formula='LiMnO2'
+
+# ab initio generation (atom types are generated as well)
+# Mode 1: pre-trained model
+python structure_generation/sample.py --model_name='diffcsp_mp20_ab_initio' --weights_name='best.pdparams' --output_path='result_diffcsp_mp20_ab_initio/' --mode='by_dataloader'
+
+# Mode 2: custom config + checkpoint
+python structure_generation/sample.py --config_path='structure_generation/configs/diffcsp/diffcsp_mp20_ab_initio.yaml' --checkpoint_path='./output/diffcsp_mp20_ab_initio/checkpoints/best.pdparams' --output_path='result_diffcsp_mp20_ab_initio/' --mode='by_dataloader'
 ```
 
 ---
