@@ -63,7 +63,7 @@ Results were measured on 2026-10-26 with Paddle 3.3.0 in eager mode on one RTX 5
 
 Validity follows the geometric and SMACT checks used by RL training. All generation rates use all 96 requested structures as the denominator. Target success requires density of at least 5 g/cm3 for the standard models, or HHI of at most 1,250 after qualification for joint DiffCSP. Joint qualification requires converged relaxation, validity, stability, novelty and uniqueness within each seed's 32 candidates. Density is averaged over valid structures; HHI is averaged over qualified structures with finite property values (15 before and 18 after). One missing baseline HHI value is excluded from the property mean but retains zero reward and remains in the success-rate denominator.
 
-The results are mixed: joint HHI and qualification improve, while MatterGen validity and validation loss deteriorate. This single-training-seed, 10-round comparison does not establish full RL convergence or statistically significant improvement. The linked checkpoints initialize the pretrained backbones and are not the fine-tuned experiment outputs. The DiffCSP registry entries temporarily use the local model server; the checkpoint links above are the publication destinations.
+The results are mixed: joint HHI and qualification improve, while MatterGen validity and validation loss deteriorate. This single-training-seed, 10-round comparison does not establish full RL convergence or statistically significant improvement. The linked checkpoints initialize the pretrained backbones and are not the fine-tuned experiment outputs.
 
 ---
 

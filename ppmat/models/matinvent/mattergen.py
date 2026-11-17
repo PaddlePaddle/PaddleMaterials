@@ -50,6 +50,42 @@ def _radius_graph_pbc(
 class MatinventMatterGen(MatterGen):
     """MatterGen whose interaction graph uses the Paddle-safe PBC build."""
 
+    def __init__(
+        self,
+        decoder_cfg: dict,
+        lattice_noise_scheduler_cfg: dict,
+        coord_noise_scheduler_cfg: dict,
+        atom_noise_scheduler_cfg: dict | None = None,
+        num_train_timesteps: int = 1000,
+        max_t: float = 1.0,
+        time_dim: int = 256,
+        lattice_loss_weight: float = 1.0,
+        coord_loss_weight: float = 0.1,
+        atom_loss_weight: float = 1.0,
+        d3pm_hybrid_lambda: float = 0.01,
+        execution_backend: str = "eager",
+        runtime_options: dict | None = None,
+    ):
+        super().__init__(
+            decoder_cfg=decoder_cfg,
+            lattice_noise_scheduler_cfg=lattice_noise_scheduler_cfg,
+            coord_noise_scheduler_cfg=coord_noise_scheduler_cfg,
+            atom_noise_scheduler_cfg=atom_noise_scheduler_cfg,
+            num_train_timesteps=num_train_timesteps,
+            max_t=max_t,
+            time_dim=time_dim,
+            lattice_loss_weight=lattice_loss_weight,
+            coord_loss_weight=coord_loss_weight,
+            atom_loss_weight=atom_loss_weight,
+            d3pm_hybrid_lambda=d3pm_hybrid_lambda,
+            execution_backend=execution_backend,
+            runtime_options=runtime_options,
+        )
+        for block in self.model.gemnet.out_blocks:
+            for layer in (block.dense_rbf, block.layers, block.out_energy):
+                for parameter in layer.parameters():
+                    parameter.stop_gradient = True
+
     def _denoise(self, structure_array, times):
         interaction_graph = self._build_interaction_graph(structure_array)
         return self._runtime_denoise(structure_array, times, interaction_graph)

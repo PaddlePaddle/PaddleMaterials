@@ -80,6 +80,10 @@ class MatinventDiffCSP(DiffCSP):
             for parameter in layer.prop_mlp.parameters():
                 parameter.stop_gradient = True
 
+    @property
+    def supports_num_atoms_sampling(self):
+        return self.pred_type
+
     def encode_time(self, timesteps):
         return self.time_embedding(timesteps + self.time_embedding_offset)
 

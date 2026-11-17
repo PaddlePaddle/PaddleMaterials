@@ -57,6 +57,7 @@ from ppmat.models.matinvent.rl_finetune import MatinventRL
 from ppmat.models.matinvent.rl_loop import MatInvent
 from ppmat.models.matinvent.sampler import MatInventSampler
 from ppmat.predictor.potential_predictor import PotentialPredictor
+from ppmat.sampler import StructureSampler
 from ppmat.schedulers import scheduling_matinvent
 from ppmat.schedulers.scheduling_sde_ve import d_log_p_wrapped_normal
 from ppmat.trainer.base_trainer import BaseTrainer
@@ -452,6 +453,15 @@ def test_matinvent_joint_type_diffusion():
         assert len(result["atom_types"]) == result["num_atoms"]
         assert all(1 <= value <= 100 for value in result["atom_types"])
 
+    assert model.supports_num_atoms_sampling
+    sampler = StructureSampler.__new__(StructureSampler)
+    sampler.model = model
+    sampler.sample_config = {"model_sample_params": {"num_inference_steps": 2}}
+    sampler.post_transforms = None
+    generated = sampler.sample_by_num_atoms(3)["result"]
+    assert len(generated) == 1
+    assert generated[0]["num_atoms"] == len(generated[0]["atom_types"]) == 3
+
 
 class TestModelPackage:
     """Cover config -> model, package yaml -> build -> load -> sample."""
@@ -509,6 +519,13 @@ class TestModelPackage:
         assert type(model.backbone()).__name__ == _BACKBONE_CLASS[model_type].__name__
         expected_steps = package_config["Global"]["num_inference_steps"]
         assert model.num_inference_steps == expected_steps
+
+        sampler = StructureSampler.__new__(StructureSampler)
+        sampler.model = model
+        assert model.supports_num_atoms_sampling == (model_type == "mattergen")
+        if model_type == "diffcsp":
+            with pytest.raises(NotImplementedError, match="requires atom types"):
+                sampler.sample_by_num_atoms(2)
 
         save_load.load_pretrain(model, resolved, weights_name=_WEIGHTS_NAME)
         saved = paddle.load(str(package_dir / "checkpoints" / _WEIGHTS_NAME))
@@ -572,6 +589,25 @@ class TestMatterGenBackbone:
             np.testing.assert_allclose(
                 np.asarray(actual_value), np.asarray(expected_value), atol=0, rtol=0
             )
+
+        assert mainline.state_dict().keys() == adapter.state_dict().keys()
+        mainline_parameters = dict(mainline.named_parameters())
+        newly_frozen = [
+            name
+            for name, parameter in adapter.named_parameters()
+            if parameter.stop_gradient and not mainline_parameters[name].stop_gradient
+        ]
+        assert newly_frozen
+        assert all(".out_blocks." in name for name in newly_frozen)
+        adapter.train()
+        loss = adapter({"structure_array": inputs[0]})["loss_dict"]["loss"]
+        loss.backward()
+        for name, parameter in adapter.named_parameters():
+            if parameter.stop_gradient:
+                assert parameter.grad is None
+            else:
+                assert parameter.grad is not None, name
+                assert bool(paddle.isfinite(parameter.grad).all()), name
 
 
 class TestDataFlow:

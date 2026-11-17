@@ -67,6 +67,10 @@ class MatinventRL(RuntimeMixin, nn.Layer):
     def execution_backend(self):
         return self.backbone().execution_backend
 
+    @property
+    def supports_num_atoms_sampling(self):
+        return self.backbone().supports_num_atoms_sampling
+
     def backbone(self):
         if self._backbone is None:
             cfg = self.backbone_cfg
