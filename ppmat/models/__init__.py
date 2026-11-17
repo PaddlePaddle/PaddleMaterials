@@ -14,6 +14,7 @@
 
 import copy
 import inspect
+from pathlib import Path
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -167,6 +168,13 @@ MODEL_REGISTRY = {
 }
 
 
+# Metadata missing from existing registered archives. Archive values take priority.
+# JSON resources are included by setup.py's package_data rule.
+MODEL_INFERENCE_DEFAULTS = {
+    "gegnn_binary_activity": "gegnn_binary_activity.json",
+}
+
+
 def build_graph_converter(cfg: Dict, vocab=None):
     """Build graph converter.
 
@@ -266,6 +274,10 @@ def build_model_from_name(
     config_path = get_model_config_path(model_name, path)
 
     config = OmegaConf.load(config_path)
+    defaults_name = MODEL_INFERENCE_DEFAULTS.get(model_name)
+    if defaults_name is not None:
+        defaults_path = Path(__file__).with_name(defaults_name)
+        config = OmegaConf.merge(OmegaConf.load(defaults_path), config)
     config = OmegaConf.to_container(config, resolve=True)
 
     model_config = config.get("Model", None)

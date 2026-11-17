@@ -1,0 +1,143 @@
+{
+  "Predict": {
+    "eval_with_no_grad": false,
+    "graph_converter": {
+      "__class_name__": "MolecularGraphConverter",
+      "__init_params__": {
+        "add_self_loops": true,
+        "edge_mode": "bidirectional",
+        "node_feature_key": "h",
+        "remove_h": false
+      }
+    }
+  },
+  "Vocabulary": {
+    "atom": {
+      "num_embeddings": 43,
+      "tokens": [
+        "C",
+        "N",
+        "O",
+        "S",
+        "F",
+        "Si",
+        "P",
+        "Cl",
+        "Br",
+        "Mg",
+        "Na",
+        "Ca",
+        "Fe",
+        "As",
+        "Al",
+        "I",
+        "B",
+        "V",
+        "K",
+        "Tl",
+        "Yb",
+        "Sb",
+        "Sn",
+        "Ag",
+        "Pd",
+        "Co",
+        "Se",
+        "Ti",
+        "Zn",
+        "H",
+        "Li",
+        "Ge",
+        "Cu",
+        "Au",
+        "Ni",
+        "Cd",
+        "In",
+        "Mn",
+        "Zr",
+        "Cr",
+        "Pt",
+        "Hg",
+        "Pb"
+      ],
+      "type": "categorical"
+    },
+    "bond": {
+      "num_embeddings": 5,
+      "tokens": [
+        "NO_BOND",
+        "SINGLE",
+        "DOUBLE",
+        "TRIPLE",
+        "AROMATIC"
+      ],
+      "type": "categorical"
+    },
+    "degree": {
+      "num_embeddings": 11,
+      "tokens": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "type": "categorical"
+    },
+    "formal_charge": {
+      "num_embeddings": 0,
+      "tokens": [],
+      "type": "numeric"
+    },
+    "hybridization": {
+      "num_embeddings": 5,
+      "tokens": [
+        "SP",
+        "SP2",
+        "SP3",
+        "SP3D",
+        "SP3D2"
+      ],
+      "type": "categorical"
+    },
+    "implicit_valence": {
+      "num_embeddings": 7,
+      "tokens": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "type": "categorical"
+    },
+    "is_aromatic": {
+      "num_embeddings": 0,
+      "tokens": [],
+      "type": "numeric"
+    },
+    "radical_electrons": {
+      "num_embeddings": 0,
+      "tokens": [],
+      "type": "numeric"
+    },
+    "total_num_hs": {
+      "num_embeddings": 5,
+      "tokens": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "type": "categorical"
+    }
+  }
+}

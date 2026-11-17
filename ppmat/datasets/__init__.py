@@ -36,6 +36,7 @@ from ppmat.datasets.density_dataset import MPCubicDensityDataset
 from ppmat.datasets.density_dataset import OMol25MC5kDensityDataset
 from ppmat.datasets.density_dataset import OMol25MC5kTrimmedDensityDataset
 from ppmat.datasets.density_dataset import QM9DensityDataset
+from ppmat.datasets.gegnn_dataset import BinaryActivityDataset
 from ppmat.datasets.high_level_water_dataset import HighLevelWaterDataset
 from ppmat.datasets.jarvis_dataset import JarvisDataset
 from ppmat.datasets.matbench_dataset import MatbenchDataset
@@ -48,7 +49,6 @@ from ppmat.datasets.mp2024_dataset import MP2024Dataset
 from ppmat.datasets.mptrj_dataset import MPTrjDataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrDataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrinfos
-from ppmat.datasets.gegnn_dataset import BinaryActivityDataset
 from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
 from ppmat.datasets.oc20_s2ef_dataset import OC20S2EFDataset  # noqa
 from ppmat.datasets.omol25_dataset import OMol25Dataset

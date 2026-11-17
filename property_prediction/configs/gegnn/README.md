@@ -48,10 +48,10 @@ The mixture CSV contains `smiles1`, `smiles2` and `x1`. Predictions are saved as
 python property_prediction/predict.py --config_path=property_prediction/configs/gegnn/gegnn_binary_activity.yaml --checkpoint_path=output/YOUR_TRAINING_RUN/checkpoints/best.pdparams --input_format=mixture_csv --input_path=property_prediction/example_data/binary_mixtures.csv
 ```
 
-For the downloadable three-edge-feature checkpoint:
+For the downloadable checkpoint:
 
 ```bash
-python property_prediction/predict.py --config_path=property_prediction/configs/gegnn/gegnn_binary_activity.yaml --checkpoint_path=https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/ge-gnn/gegnn_binary_activity.zip --input_format=mixture_csv --input_path=property_prediction/example_data/binary_mixtures.csv Model.__init_params__.edge_in_feats=3
+python property_prediction/predict.py --model_name=gegnn_binary_activity --input_format=mixture_csv --input_path=property_prediction/example_data/binary_mixtures.csv
 ```
 
 ## Citation
