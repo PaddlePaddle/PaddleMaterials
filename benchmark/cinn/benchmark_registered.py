@@ -208,6 +208,24 @@ def git_revision(name: str) -> str | None:
     return process.stdout.strip() if process.returncode == 0 else None
 
 
+def to_jsonable(value):
+    """Convert a prediction to JSON-compatible nested lists."""
+
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, paddle.Tensor):
+        return value.detach().cpu().numpy().tolist()
+    if isinstance(value, dict):
+        return {str(key): to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(item) for item in value]
+    if isinstance(value, (np.integer, np.floating, np.bool_)):
+        return value.item()
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    raise TypeError(f"Cannot serialize prediction value of type {type(value).__name__}")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_name", required=True)
@@ -248,7 +266,7 @@ def main() -> None:
 
         paddle.device.synchronize()
         start = time.perf_counter()
-        seeded_call()
+        first_output = seeded_call()
         paddle.device.synchronize()
         first_seconds = time.perf_counter() - start
         compiled_runtime_keys = runtime_keys(workflow)
@@ -265,6 +283,12 @@ def main() -> None:
                 "CINN was selected but the measured call created no compiled "
                 "runtime boundary"
             )
+        prediction = None
+        prediction_error = None
+        try:
+            prediction = to_jsonable(first_output)
+        except (TypeError, ValueError, RuntimeError) as error:
+            prediction_error = str(error)
         warm_seconds = []
         for _ in range(args.repeats):
             start = time.perf_counter()
@@ -283,6 +307,8 @@ def main() -> None:
                 "warm_seconds": warm_seconds,
                 "warm_median_seconds": statistics.median(warm_seconds),
                 "runtime_keys": compiled_runtime_keys,
+                "prediction": prediction,
+                "prediction_error": prediction_error,
             }
         )
     except Exception as error:

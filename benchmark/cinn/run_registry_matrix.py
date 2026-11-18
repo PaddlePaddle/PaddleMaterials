@@ -75,6 +75,7 @@ def valid_result(path: Path, model_name: str, backend: str) -> bool:
         result.get("model") == model_name
         and result.get("backend") == backend
         and result.get("status") == "passed"
+        and result.get("prediction") is not None
     )
 
 
@@ -167,7 +168,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Benchmark every CINN-qualified registered weight. By default both "
-            "eager and CINN are measured and compared."
+            "eager and CINN are measured and compared for speed and precision."
         )
     )
     parser.add_argument("--backend", choices=("eager", "cinn", "both"), default="both")
