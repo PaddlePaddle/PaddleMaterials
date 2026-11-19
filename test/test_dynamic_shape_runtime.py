@@ -177,6 +177,18 @@ def test_dynamic_dims_are_validated():
     assert boundary_dynamic_dims(_EdgeModel._runtime_forward) == {"edge_vec": (0,)}
 
 
+def test_dynamic_boundaries_take_every_argument_by_position():
+    def keyword_only(pos, *, edge_vec):
+        return pos
+
+    def variadic(pos, *edge_vecs):
+        return pos
+
+    for function in (keyword_only, variadic):
+        with pytest.raises(TypeError, match="by position"):
+            DynamicShapeRuntime(cinn_module.CINN_BACKEND, function, {}, {"pos": (0,)})
+
+
 def test_cinn_dynamic_shape_option_is_normalized():
     backend = cinn_module.CINN_BACKEND
     assert backend.normalize_options(None) == {

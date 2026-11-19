@@ -212,16 +212,20 @@ class DynamicShapeRuntime:
         self._options = dict(options)
         self._dynamic_dims = dict(dynamic_dims)
         self._signature = inspect.signature(function)
-        variadic = [
+        # The compiled program receives the bound arguments by position.
+        unsupported = [
             parameter.name
             for parameter in self._signature.parameters.values()
             if parameter.kind
-            in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+            not in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            )
         ]
-        if variadic:
+        if unsupported:
             raise TypeError(
-                "A boundary with dynamic_dims must have named arguments only, "
-                f"found {variadic}."
+                "A boundary with dynamic_dims must accept every argument by "
+                f"position, found variadic or keyword-only {unsupported}."
             )
         self.programs: dict[tuple[Any, ...], RuntimeCallable] = {}
 
