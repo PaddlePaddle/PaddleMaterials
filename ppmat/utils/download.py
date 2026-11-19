@@ -260,7 +260,72 @@ def _uncompress_file_zip(filepath):
             for item in file_list:
                 files.extract(item, os.path.join(file_dir, rootpath))
 
+    _expand_windows_separators(file_dir)
     return uncompressed_path
+
+
+def _expand_windows_separators(root):
+    """Expand ``\\`` path separators created by Windows-made zip archives.
+
+    ``zipfile.extract`` keeps backslashes as literal characters on POSIX, which
+    hides nested files such as ``checkpoints\\best.pdparams`` from the package
+    resolver.  Move such entries to their real nested location.
+
+    Because the archive names are attacker controlled, every relocation is
+    validated first: absolute paths, drive letters, ``.``/``..`` components,
+    symlinks, targets escaping ``root`` and targets that would overwrite an
+    existing file all raise ``RuntimeError`` instead of writing outside the
+    extraction directory.
+    """
+    root = osp.abspath(root)
+    real_root = osp.realpath(root)
+
+    def resolve(current_root, name):
+        # A trailing separator is legitimate on directory entries
+        # (``checkpoints\\``); everything else must be plain components.
+        parts = name.replace("\\", "/").rstrip("/").split("/")
+        for part in parts:
+            if part in ("", os.curdir, os.pardir) or ":" in part:
+                raise RuntimeError(
+                    f"refusing to expand unsafe archive entry {name!r}: "
+                    f"invalid path component {part!r}"
+                )
+        target = osp.join(current_root, *parts)
+        real_target = osp.realpath(target)
+        if real_target != real_root and not real_target.startswith(real_root + os.sep):
+            raise RuntimeError(
+                f"refusing to expand archive entry {name!r}: target "
+                f"{real_target!r} escapes extraction root {real_root!r}"
+            )
+        if osp.lexists(target):
+            raise RuntimeError(
+                f"refusing to overwrite existing path while expanding "
+                f"archive entry {name!r}: {target}"
+            )
+        return target
+
+    for current_root, dirnames, filenames in os.walk(root):
+        for name in list(dirnames):
+            if "\\" not in name:
+                continue
+            source = osp.join(current_root, name)
+            if osp.islink(source):
+                raise RuntimeError(f"refusing to expand symlinked directory {source}")
+            target = resolve(current_root, name)
+            os.makedirs(osp.dirname(target), exist_ok=True)
+            shutil.move(source, target)
+            dirnames.remove(name)
+            dirnames.append(osp.relpath(target, current_root))
+
+        for name in filenames:
+            if "\\" not in name:
+                continue
+            source = osp.join(current_root, name)
+            if osp.islink(source):
+                raise RuntimeError(f"refusing to expand symlinked file {source}")
+            target = resolve(current_root, name)
+            os.makedirs(osp.dirname(target), exist_ok=True)
+            shutil.move(source, target)
 
 
 def _uncompress_file_tar(filepath, mode="r:*"):

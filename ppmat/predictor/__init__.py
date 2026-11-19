@@ -17,6 +17,7 @@ from ppmat.predictor.base import BasePredictor
 __all__ = [
     "BasePredictor",
     "FieldPredictor",
+    "IntegratorPredictor",
     "PotentialPredictor",
     "PropertyPredictor",
     "SpectrumPredictor",
@@ -28,6 +29,10 @@ def __getattr__(name):
         from ppmat.predictor.field_predictor import FieldPredictor
 
         predictor_class = FieldPredictor
+    elif name == "IntegratorPredictor":
+        from ppmat.predictor.integrator_predictor import IntegratorPredictor
+
+        predictor_class = IntegratorPredictor
     elif name == "PotentialPredictor":
         from ppmat.predictor.potential_predictor import PotentialPredictor
 
