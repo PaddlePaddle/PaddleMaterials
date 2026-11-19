@@ -137,6 +137,44 @@ eager 和 CINN 都会在首次调用前重置随机种子，因此可以直接�
 随机种子，但如果 CINN 的编译路径改变了随机操作顺序，输出仍可能产生明显差异；
 这类结果应结合同一环境下的重复运行来解释。
 
+## 参考实测结果
+
+以下结果来自 2026-11-19 在单机 8×NVIDIA A100-SXM4-40GB 上的测试。环境为
+PaddlePaddle 3.1.0，CUDA 和 CINN 均开启；覆盖 79 个具备 CINN 路径的注册
+权重，eager/CINN 各执行 1 次首次调用和 5 次 warm 调用。结果仅用于本次机器和
+环境的参考，不用于跨机器结论。
+
+- eager 全部 79/79 通过；CINN 77/79 通过。
+- 77 个双后端通过的权重全部完成精度比较，`precision_status` 均为
+  `passed`，没有字段缺失、形状不匹配或未比较的项。
+- 加速比中位数 0.997，最小 0.517，最大 3.164；其中 38 个权重 CINN 更快。
+  加速比按 `eager warm / CINN warm` 计算，小于 1 表示 eager 更快。
+- 整体最大绝对误差 93.0，最大相对误差 691.55，最大相对 L2 误差 3.34。
+  最大误差主要来自 MatterGen 的随机结构采样；SFIN detect 的最大相对误差
+  则是小值分母造成的，对应相对 L2 误差仅 5.49e-05。
+
+| 模型族 | 权重数 | CINN 通过 | 加速比中位数 | 最大绝对误差 | 最大相对误差 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| CHGNet | 1 | 1 | 1.704 | 3.26e-03 | 43.64 |
+| ComFormer | 8 | 8 | 0.849 | 1.17e-01 | 2.47e-04 |
+| DiffCSP | 2 | 2 | 0.917 | 3.87e-04 | 3.12e-03 |
+| DiffNMR | 1 | 1 | 1.087 | 0 | 0 |
+| DimeNet++ | 16 | 16 | 1.484 | 1.81e-02 | 6.31e-04 |
+| MatterGen | 17 | 17 | 0.677 | 93.0 | 691.55 |
+| MatterSim | 2 | 0 | - | - | - |
+| MEGNet | 8 | 8 | 0.552 | 6.06e-05 | 5.42e-05 |
+| SFIN | 4 | 4 | 2.332 | 9.72e-02 | 497.2 |
+| SphereNet | 20 | 20 | 1.475 | 6.25e-02 | 9.97e-02 |
+
+MatterSim 的 2 个权重未进入精度比较。它们在 CINN 编译阶段报
+`Required in_value_dim and out_value_dim have same size`
+（`in_value_dim.size()==0`、`out_value_dim.size()==1`），属于当前
+PaddlePaddle 3.1.0 CINN 编译期错误，而不是 benchmark 输入或模型参数问题。
+
+实测还发现 MatterGen、MatterSim 源码中的 `reshape(1, -1)` 在 CINN SOT 下
+不可被识别。本次已将相关调用改为 `reshape([1, -1])`；MatterGen 的 4 个此前
+CINN 失败的权重在修改后通过，MatterSim 仍被上述编译期错误阻塞。
+
 测试输入由 `benchmark_registered.py` 固定。结果用于比较同一权重的 eager 和
 CINN，不用于不同模型之间的横向性能比较。输出目录位于 `output/`，不会提交到
 Git。
