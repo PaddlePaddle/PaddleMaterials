@@ -91,7 +91,7 @@ def test_compare_selected_models_ignores_stale_results(tmp_path):
 
     output_path = tmp_path / "comparison.csv"
     comparison.write_csv(output_path, summary["results"])
-    assert output_path.read_text(encoding="utf-8").startswith("model,family,")
+    assert output_path.read_text(encoding="utf-8").startswith("model,eager_status,")
 
 
 def test_compare_computes_prediction_errors(tmp_path):

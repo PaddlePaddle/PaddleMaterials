@@ -22,7 +22,6 @@ import os
 import statistics
 import subprocess
 import time
-import traceback
 from pathlib import Path
 
 import numpy as np
@@ -231,7 +230,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model_name", required=True)
     parser.add_argument("--backend", choices=("eager", "cinn"), required=True)
     parser.add_argument("--output", required=True)
-    parser.add_argument("--repeats", type=int, default=10)
+    parser.add_argument("--repeats", type=int, default=5)
     args = parser.parse_args()
     if args.repeats < 1:
         parser.error("--repeats must be at least 1")
@@ -316,7 +315,6 @@ def main() -> None:
             {
                 "error_type": type(error).__name__,
                 "error": str(error),
-                "traceback": traceback.format_exc(),
             }
         )
         output_path.write_text(json.dumps(result, indent=2), encoding="utf-8")

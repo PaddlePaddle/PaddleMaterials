@@ -19,12 +19,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import queue
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import as_completed
 from pathlib import Path
 
 from ppmat.models import MODEL_REGISTRY
@@ -32,6 +29,7 @@ from ppmat.models import MODEL_REGISTRY
 ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_ONE = Path(__file__).with_name("benchmark_registered.py")
 COMPARE_BACKENDS = Path(__file__).with_name("compare_backends.py")
+MODEL_TIMEOUT_SECONDS = 1800
 CINN_SUPPORTED_PREFIXES = (
     "chgnet_",
     "comformer_",
@@ -46,14 +44,6 @@ CINN_SUPPORTED_PREFIXES = (
 )
 
 
-def model_timeout(model_name: str) -> int:
-    """Return the per-process timeout in seconds."""
-
-    if model_name.startswith("mattergen_"):
-        return 1800
-    return 900
-
-
 def supported_models() -> list[str]:
     """Return registered weights with a qualified CINN workflow."""
 
@@ -65,7 +55,7 @@ def supported_models() -> list[str]:
 
 
 def valid_result(path: Path, model_name: str, backend: str) -> bool:
-    """Return whether *path* is a reusable successful result."""
+    """Return whether *path* contains a successful result for this backend."""
 
     try:
         result = json.loads(path.read_text(encoding="utf-8"))
@@ -83,35 +73,18 @@ def run_one(
     model_name: str,
     backend: str,
     output_dir: Path,
-    gpu_queue: queue.Queue,
+    gpu: str,
     repeats: int,
-    resume: bool = False,
 ) -> dict:
-    """Run one registered weight and return its launcher result."""
+    """Run one registered weight in a child process."""
 
-    gpu = gpu_queue.get()
     started = time.perf_counter()
     result_path = output_dir / backend / f"{model_name}.json"
     log_path = output_dir / "logs" / backend / f"{model_name}.log"
     result_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    if resume and valid_result(result_path, model_name, backend):
-        gpu_queue.put(gpu)
-        return {
-            "model": model_name,
-            "backend": backend,
-            "status": "skipped",
-            "returncode": 0,
-            "gpu": gpu,
-            "wall_seconds": 0.0,
-            "result": str(result_path),
-            "log": str(log_path),
-        }
-
-    # Never let a result from an earlier invocation mask a crash or timeout in
-    # this one. The worker will create a fresh record, including failures it can
-    # catch itself.
     result_path.unlink(missing_ok=True)
+
     command = [
         sys.executable,
         str(BENCHMARK_ONE),
@@ -124,8 +97,6 @@ def run_one(
         "--output",
         str(result_path),
     ]
-    timeout = model_timeout(model_name)
-
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = gpu
     try:
@@ -137,7 +108,7 @@ def run_one(
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 check=False,
-                timeout=timeout + 60,
+                timeout=MODEL_TIMEOUT_SECONDS + 60,
             )
         status = (
             "passed"
@@ -149,8 +120,6 @@ def run_one(
     except subprocess.TimeoutExpired:
         status = "timeout"
         returncode = 124
-    finally:
-        gpu_queue.put(gpu)
 
     return {
         "model": model_name,
@@ -167,33 +136,20 @@ def run_one(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Benchmark every CINN-qualified registered weight. By default both "
-            "eager and CINN are measured and compared for speed and precision."
+            "Benchmark registered weights with eager and CINN, then compare "
+            "their speed and prediction precision."
         )
     )
-    parser.add_argument("--backend", choices=("eager", "cinn", "both"), default="both")
+    parser.add_argument(
+        "--backend", choices=("eager", "cinn", "both"), default="both"
+    )
     parser.add_argument("--output_dir", default="output/cinn_benchmark")
-    parser.add_argument("--gpus", default="0")
+    parser.add_argument("--gpu", default="0", help="CUDA device index")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument(
         "--models",
         nargs="+",
-        help="Optional registered-weight names; the default is all supported weights.",
-    )
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="Reuse matching successful JSON records from an interrupted run.",
-    )
-    parser.add_argument(
-        "--list-models",
-        action="store_true",
-        help="Print the resolved CINN-supported registry and exit.",
-    )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Print the selected backends and weights without downloading or running.",
+        help="Registered-weight names; the default is all supported weights.",
     )
     args = parser.parse_args()
     if args.repeats < 1:
@@ -205,96 +161,50 @@ def run_backend(
     backend: str,
     models: list[str],
     output_dir: Path,
-    gpus: list[str],
+    gpu: str,
     repeats: int,
-    resume: bool,
-) -> dict:
-    """Run one backend over *models* and write its launcher summary."""
+) -> tuple[int, int]:
+    """Run one backend over *models* and report passed/failed counts."""
 
-    gpu_queue = queue.Queue()
-    for gpu in gpus:
-        gpu_queue.put(gpu)
-
-    launchers = []
-    with ThreadPoolExecutor(max_workers=len(gpus)) as executor:
-        futures = {
-            executor.submit(
-                run_one,
-                model,
-                backend,
-                output_dir,
-                gpu_queue,
-                repeats,
-                resume,
-            ): model
-            for model in models
-        }
-        for future in as_completed(futures):
-            launcher = future.result()
-            launchers.append(launcher)
-            print(
-                f"[{backend} {len(launchers)}/{len(models)}] "
-                f"{launcher['status']:7s} gpu={launcher['gpu']} "
-                f"{launcher['model']} ({launcher['wall_seconds']:.1f}s)",
-                flush=True,
-            )
-
-    summary = {
-        "backend": backend,
-        "models": len(models),
-        "passed": sum(item["status"] == "passed" for item in launchers),
-        "skipped": sum(item["status"] == "skipped" for item in launchers),
-        "failed": sum(
-            item["status"] not in {"passed", "skipped"} for item in launchers
-        ),
-        "results": sorted(launchers, key=lambda item: item["model"]),
-    }
-    summary_path = output_dir / f"{backend}_launcher_summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    print(json.dumps({key: summary[key] for key in summary if key != "results"}))
-    return summary
+    launchers = [
+        run_one(model, backend, output_dir, gpu, repeats) for model in models
+    ]
+    for launcher in launchers:
+        print(
+            f"[{backend} {launcher['status']:7s}] gpu={launcher['gpu']} "
+            f"{launcher['model']} ({launcher['wall_seconds']:.1f}s)",
+            flush=True,
+        )
+    passed = sum(item["status"] == "passed" for item in launchers)
+    failed = sum(item["status"] != "passed" for item in launchers)
+    print(json.dumps({"backend": backend, "passed": passed, "failed": failed}))
+    return passed, failed
 
 
 def main() -> None:
     args = parse_args()
-    all_supported = supported_models()
-    if args.list_models:
-        print("\n".join(all_supported))
-        print(f"total: {len(all_supported)}")
-        return
-
-    available = set(all_supported)
-    models = list(dict.fromkeys(args.models or all_supported))
+    available = set(supported_models())
+    models = list(dict.fromkeys(args.models or sorted(available)))
     unknown = sorted(set(models) - available)
     if unknown:
-        raise ValueError("Unsupported CINN benchmark models: " + ", ".join(unknown))
-
-    backends = ["eager", "cinn"] if args.backend == "both" else [args.backend]
-    if args.dry_run:
-        print(f"backends: {','.join(backends)}")
-        print(f"models: {len(models)}")
-        print("\n".join(models))
-        return
-
-    gpus = list(
-        dict.fromkeys(gpu.strip() for gpu in args.gpus.split(",") if gpu.strip())
-    )
-    if not gpus:
-        raise ValueError("--gpus must contain at least one GPU index")
+        raise ValueError(
+            "Unsupported CINN benchmark models: " + ", ".join(unknown)
+        )
 
     output_dir = Path(args.output_dir).resolve()
-    summaries = [
-        run_backend(
+    backends = ["eager", "cinn"] if args.backend == "both" else [args.backend]
+    failure_count = 0
+    for backend in backends:
+        _, failed = run_backend(
             backend,
             models,
             output_dir,
-            gpus,
+            args.gpu,
             args.repeats,
-            args.resume,
         )
-        for backend in backends
-    ]
+        failure_count += failed
 
+    compare_failed = False
     if args.backend == "both":
         compare = subprocess.run(
             [
@@ -309,10 +219,8 @@ def main() -> None:
             check=False,
         )
         compare_failed = compare.returncode != 0
-    else:
-        compare_failed = False
-    failed = sum(summary["failed"] for summary in summaries)
-    raise SystemExit(1 if failed or compare_failed else 0)
+
+    raise SystemExit(1 if failure_count or compare_failed else 0)
 
 
 if __name__ == "__main__":
