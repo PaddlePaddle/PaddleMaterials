@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# This code is ported from https://github.com/learningmatter-mit/liflow
+#
+# Copyright (c) 2024 Learning Matter @ MIT
+# Licensed under the MIT License:
+#     https://github.com/learningmatter-mit/liflow/blob/main/LICENSE
+
 from __future__ import annotations
 
 import argparse
@@ -103,6 +109,7 @@ def main() -> None:
                 per_row.append(row)
 
     import csv
+
     for temp in args.temperatures:
         for mode in args.modes:
             rows = [

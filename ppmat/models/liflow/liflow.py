@@ -12,6 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# This code is ported from https://github.com/learningmatter-mit/liflow
+#
+# Copyright (c) 2024 Learning Matter @ MIT
+# Licensed under the MIT License:
+#     https://github.com/learningmatter-mit/liflow/blob/main/LICENSE
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -60,8 +66,8 @@ class LiFlow(RuntimeMixin, DualPaiNN):
     """DualPaiNN flow-matching model.
 
     The network parameters live directly on this layer (no ``network``
-    sub-module) so that the state dict matches the released checkpoints and the
-    output of ``molecular_dynamics_integrator/liflow/convert_weights.py``.
+    sub-module) so that the state dict matches the released ``best.pdparams``
+    checkpoints.
     """
 
     def __init__(

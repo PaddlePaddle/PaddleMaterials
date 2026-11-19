@@ -16,8 +16,8 @@
 
 The propagator dataset (``LiFlowDataset``, reference ``TimeDelayedPairDataset``)
 and the corrector dataset (``NoisedFrameDataset``) are independent classes.
-Both return plain PaddleMaterials ``Data`` objects that batch through the
-unmodified ``DefaultCollator``.
+Both return plain PaddleMaterials ``Data`` objects that batch through
+``LiFlowCollator``, which returns the collated fields as a plain ``dict``.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ import pytest
 from ase import units
 
 from ppmat.datasets.collate_fn import DefaultCollator
+from ppmat.datasets.collate_fn import LiFlowCollator
 from ppmat.datasets.geometric_data_type.data import Data
 from ppmat.datasets.liflow_dataset import LiFlowDataset
 from ppmat.datasets.liflow_noised_frame_dataset import NoisedFrameDataset
@@ -240,7 +241,7 @@ def test_default_collator_offsets_variable_length_graphs(
         )
 
 
-def test_zero_edge_graph_batches(mini_dataset_path):
+def test_zero_edge_graph_batches_through_liflow_collator(mini_dataset_path):
     dataset = LiFlowDataset(path=mini_dataset_path, split="train", seed=0)
     samples = [dataset[0], dataset[1]]
     empty_edges = [
@@ -259,12 +260,13 @@ def test_zero_edge_graph_batches(mini_dataset_path):
         )
         for s in samples
     ]
-    batch = DefaultCollator()(empty_edges)
+    batch = LiFlowCollator()(empty_edges)
     assert list(batch["edge_index"].shape) == [2, 0]
     assert list(batch["shifts"].shape) == [0, 3]
     assert batch["start_positions"].shape[0] == sum(
         int(s["start_positions"].shape[0]) for s in samples
     )
+    assert int(batch["batch"].max()) == 1
 
 
 @pytest.mark.parametrize("dataset_cls", DATASET_CLASSES)
@@ -391,8 +393,7 @@ def test_build_dataloader_transports_collated_graphs(
             "loader": {
                 "num_workers": num_workers,
                 "use_shared_memory": True,
-                "collate_fn": "DefaultCollator",
-                "as_dict": True,
+                "collate_fn": "LiFlowCollator",
             },
             "sampler": {
                 "__class_name__": "BatchSampler",
@@ -415,7 +416,7 @@ def test_build_dataloader_transports_collated_graphs(
 
 
 def test_build_dataloader_keeps_default_collator_for_other_datasets(tmp_path):
-    """LiFlow's ``as_dict`` adapter must not leak into other datasets."""
+    """``LiFlowCollator`` must not be installed for unrelated datasets."""
     import numpy as np
     from omegaconf import OmegaConf
 
@@ -481,11 +482,7 @@ def test_build_dataloader_keeps_default_collator_for_other_datasets(tmp_path):
         }
     )
     loader = build_dataloader(cfg)
-    # The adapter is opt-in: without ``as_dict`` the loader keeps the upstream
-    # collator object untouched.
-    from ppmat.datasets import _FieldDictCollator
-
-    assert not isinstance(loader.collate_fn, _FieldDictCollator)
+    assert not isinstance(loader.collate_fn, LiFlowCollator)
 
     batches = list(loader)
     assert len(batches) == 1

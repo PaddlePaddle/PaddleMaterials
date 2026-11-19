@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 from __future__ import annotations
 
 import numbers
@@ -33,6 +32,73 @@ from ppmat.utils import logger
 from ppmat.utils.pgl_compat import patch_pgl_empty_edge_batch
 
 patch_pgl_empty_edge_batch()
+
+
+class LiFlowCollator(object):
+    """Collate LiFlow ``Data`` graphs into flat tensors.
+
+    Paddle's ``DataLoader`` flattens the collate result before handing it to the
+    consumer (both in ``_DataLoaderIterSingleProcess`` and in ``_worker_loop``),
+    and that flattening only understands sequences and mappings.  A returned
+    ``Batch`` is an opaque geometric container, so it flattens to zero slots and
+    the loader yields no batch at all.  The LiFlow datasets therefore need a
+    collator that returns a plain ``dict``; the geometric containers stay inside
+    the dataset, exactly like ``RadiusGraphCollator`` returns a ``pgl.Graph``
+    instead of an opaque object.
+
+    Batching itself reuses ``DefaultCollator`` (graph concatenation and
+    ``edge_index`` offsetting through ``Batch.from_data_list``), so only the
+    transport format is added here.  A batch in which *every* graph has no edge
+    cannot be concatenated (``paddle.concat`` rejects all-empty inputs); those
+    graphs get one placeholder self-loop with a zero shift, which is removed
+    right after batching.  Every dataset that is not LiFlow keeps the upstream
+    ``DefaultCollator`` output.
+    """
+
+    _EDGE_INDEX_KEY = "edge_index"
+    _SHIFTS_KEY = "shifts"
+
+    def __call__(self, batch: List[Any]) -> Any:
+        if not all(isinstance(item, Data) for item in batch):
+            return DefaultCollator()(batch)
+
+        edgeless = all(int(item[self._EDGE_INDEX_KEY].shape[1]) == 0 for item in batch)
+        samples = (
+            [self._with_placeholder_edge(item) for item in batch] if edgeless else batch
+        )
+
+        data = DefaultCollator()(samples)
+        result = {key: data[key] for key in data.keys}
+
+        if edgeless:
+            # Drop the placeholder self-loops again.
+            result[self._EDGE_INDEX_KEY] = result[self._EDGE_INDEX_KEY][:, :0]
+            result[self._SHIFTS_KEY] = result[self._SHIFTS_KEY][:0]
+        return result
+
+    def _with_placeholder_edge(self, item):
+        """Return a copy of ``item`` carrying one placeholder self-loop."""
+        num_nodes = int(item["num_nodes"]) or 1
+        node = num_nodes - 1
+        placeholder = paddle.to_tensor(
+            [[node], [node]], dtype=item[self._EDGE_INDEX_KEY].dtype
+        )
+        zero_shift = paddle.zeros(shape=[1, 3], dtype=item[self._SHIFTS_KEY].dtype)
+        # ``num_nodes`` is stored as ``__num_nodes__`` and is therefore not
+        # part of ``item.keys``; it has to be forwarded explicitly, otherwise
+        # ``__inc__`` cannot offset the ``edge_index`` of the next graph.
+        return item.__class__(
+            edge_index=paddle.concat(
+                x=[item[self._EDGE_INDEX_KEY], placeholder], axis=1
+            ),
+            shifts=paddle.concat(x=[item[self._SHIFTS_KEY], zero_shift], axis=0),
+            num_nodes=num_nodes,
+            **{
+                key: item[key]
+                for key in item.keys
+                if key not in (self._EDGE_INDEX_KEY, self._SHIFTS_KEY)
+            },
+        )
 
 
 class DefaultCollator(object):
