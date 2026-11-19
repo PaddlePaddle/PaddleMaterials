@@ -21,7 +21,7 @@ from pymatgen.core.structure import Structure
 
 from ppmat.models.matinvent.rewards.calculators.dft import DFTCalc
 from ppmat.models.matinvent.rewards.calculators.fairchem import FairChem
-from ppmat.models.matinvent.rewards.calculators.pymatgen import PyMatGen
+from ppmat.models.matinvent.rewards.calculators.pymatgen_calc import PyMatGen
 
 CALCULATOR_REGISTRY = {
     "PyMatGen": PyMatGen,
