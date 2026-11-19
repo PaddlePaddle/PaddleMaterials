@@ -12,18 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# LiFlow universal propagator training configuration.
-#
-# The propagator learns the flow-matching velocity field from time-delayed
-# endpoint pairs (start, end) with an adaptive Maxwell-Boltzmann prior.  The
-# dataset computes ``velocity = end - (start + prior)`` on every access so the
-# loss and the LiFlowMSE metric consume the shared ``velocity`` key.
-#
-# PaddleMaterials ``BaseTrainer`` has no patience-based EarlyStopping, so we fix
-# ``max_epochs: 500`` and rely on the ``eval_loss`` indicator to keep the best
-# checkpoint.  This training-orchestration difference is documented in the
-# alignment report with both PyTorch/Paddle best-epoch and best validation loss.
-
 Global:
   do_train: true
   do_eval: true
@@ -93,8 +81,7 @@ Dataset:
     loader:
       num_workers: 2
       use_shared_memory: false
-      collate_fn: DefaultCollator
-      as_dict: true
+      collate_fn: LiFlowCollator
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -117,8 +104,7 @@ Dataset:
     loader:
       num_workers: 2
       use_shared_memory: false
-      collate_fn: DefaultCollator
-      as_dict: true
+      collate_fn: LiFlowCollator
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -141,8 +127,7 @@ Dataset:
     loader:
       num_workers: 2
       use_shared_memory: false
-      collate_fn: DefaultCollator
-      as_dict: true
+      collate_fn: LiFlowCollator
     sampler:
       __class_name__: BatchSampler
       __init_params__:

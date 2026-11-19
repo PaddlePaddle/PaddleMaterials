@@ -12,15 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for strict checkpoint validation and torch -> paddle weight conversion."""
+"""Tests for strict checkpoint validation used by the LiFlow model builders."""
 
 from __future__ import annotations
 
-import numpy as np
 import paddle
 import pytest
 
-from molecular_dynamics_integrator.liflow.convert_weights import convert_state
 from ppmat.models.liflow.dual_painn import DualPaiNN
 from ppmat.utils import save_load
 
@@ -40,31 +38,6 @@ def model():
     return DualPaiNN(**MODEL_CFG)
 
 
-@pytest.fixture(scope="function")
-def model_state_dict(model):
-    return {name: np.asarray(v.numpy()) for name, v in model.state_dict().items()}
-
-
-@pytest.fixture(scope="function")
-def torch_state(model_state_dict):
-    """Torch-style state: Linear weights stored ``[out, in]`` and a ``model.``
-    prefix.  ``*.weight`` other than ``atom_embedding.weight`` is transposed (as
-    torch does); embedding weights and scalar buffers are left as-is.
-    """
-    state = {}
-    for name, arr in model_state_dict.items():
-        prefixed = f"model.{name}"
-        if (
-            arr.ndim == 2
-            and name.endswith(".weight")
-            and not name.startswith("atom_embedding")
-        ):
-            state[prefixed] = arr.T.copy()
-        else:
-            state[prefixed] = arr.copy()
-    return state
-
-
 def test_load_pretrain_strict_rejects_missing_key(model, tmp_path):
     # build a checkpoint missing one parameter
     full = {name: v.numpy() for name, v in model.state_dict().items()}
@@ -72,6 +45,17 @@ def test_load_pretrain_strict_rejects_missing_key(model, tmp_path):
     ckpt = tmp_path / "incomplete"
     paddle.save(full, f"{ckpt}.pdparams")
     with pytest.raises(ValueError, match="missing"):
+        save_load.load_pretrain(model, str(ckpt), strict=True)
+
+
+def test_load_pretrain_strict_rejects_shape_mismatch(model, tmp_path):
+    full = {name: v.numpy() for name, v in model.state_dict().items()}
+    full["messages.0.linear_W.weight"] = (
+        full["messages.0.linear_W.weight"].reshape(-1)[:1].reshape(1, 1)
+    )
+    ckpt = tmp_path / "mismatch"
+    paddle.save(full, f"{ckpt}.pdparams")
+    with pytest.raises(ValueError, match="shape"):
         save_load.load_pretrain(model, str(ckpt), strict=True)
 
 
@@ -84,34 +68,7 @@ def test_load_pretrain_default_keeps_legacy_warning_behavior(model, tmp_path):
     save_load.load_pretrain(model, str(ckpt))
 
 
-def test_convert_state_matches_key_set_and_shapes(model, torch_state, model_state_dict):
-    converted = convert_state(torch_state, model_state_dict)
-    assert set(converted) == set(model_state_dict)
-    for name, expected in model_state_dict.items():
-        assert converted[name]["array"].shape == tuple(np.asarray(expected).shape)
-        assert np.allclose(converted[name]["array"], np.asarray(expected), atol=1e-6)
-    # frame linear weights are transposed by shape; embedding weights are not
-    assert converted["messages.0.linear_W.weight"]["transposed"] is True
-    assert converted["atom_embedding.weight"]["transposed"] is False
-
-
-def test_convert_state_rejects_missing_key(model, model_state_dict):
-    broken = {
-        k: v for k, v in model_state_dict.items() if k != "messages.0.linear_W.weight"
-    }
-    with pytest.raises(ValueError, match="missing"):
-        convert_state(broken, model_state_dict)
-
-
-def test_convert_state_rejects_shape_mismatch(model, model_state_dict):
-    broken = dict(model_state_dict)
-    key = "messages.0.linear_W.weight"
-    broken[key] = np.zeros((1, 1), dtype=np.float32)  # wrong shape
-    with pytest.raises(ValueError, match="shape"):
-        convert_state(broken, model_state_dict)
-
-
-def test_converted_state_loads_strictly(model, tmp_path):
+def test_strict_load_accepts_matching_state(model, tmp_path):
     state = {name: v.numpy() for name, v in model.state_dict().items()}
     ckpt = tmp_path / "converted"
     paddle.save(state, f"{ckpt}.pdparams")

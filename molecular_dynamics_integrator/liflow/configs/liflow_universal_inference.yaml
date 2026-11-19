@@ -12,23 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# LiFlow universal trajectory inference configuration.
-#
-# ``IntegratorPredictor`` loads the propagator and the optional corrector
-# strictly (``strict=True``, all keys and shapes must match) and integrates a
-# future-free trajectory from an initial structure in ``initial_structure.npz``.
-#
-# A model side can be configured in exactly one of two ways:
-#   * ``*_model``      registered weight package name (auto-downloaded,
-#                      strict-loaded), or
-#   * ``*_config`` + ``*_checkpoint``
-#                      local pair produced by ``molecular_dynamics_integrator/
-#                      train.py`` or ``convert_weights.py``.
-# The corrector checkpoint is not published yet, so both corrector forms default
-# to ``null`` and the run integrates the propagator only.  Point
-# ``corrector_config``/``corrector_checkpoint`` (or ``corrector_model``) at a
-# real checkpoint to enable the correction step.
-
 Global:
   do_eval: true
   do_test: false

@@ -152,37 +152,6 @@ def set_signal_handlers():
             signal.signal(signal.SIGTERM, term_mp)
 
 
-class _FieldDictCollator:
-    """Adapt graph collators to paddle's ``DataLoader`` transport.
-
-    Paddle flattens every collated batch into dense tensors before handing it to
-    the consumer, both in the single-process path (``_DataLoaderIterSingleProcess``)
-    and inside every worker process (``_worker_loop``).  That flattening only
-    understands sequences and mappings, so the opaque geometric ``Data`` /
-    ``Batch`` container is flattened into zero slots and the loader then yields
-    no batch at all (or hangs) instead of raising a visible error.
-
-    ``Batch`` is already a flat container of fields, so exposing it as a plain
-    dict keeps the collated content (including ``batch`` / ``ptr``) unchanged
-    while making it transportable.  Mapping results are returned untouched.
-
-    This adapter is opt-in: it is only installed when the loader config sets
-    ``as_dict: true`` (used by the LiFlow datasets).  Every other dataset keeps
-    the upstream ``DefaultCollator`` output.
-    """
-
-    def __init__(self, collate_fn):
-        self.collate_fn = collate_fn
-
-    def __call__(self, batch):
-        from ppmat.datasets.geometric_data_type.data import Data
-
-        data = self.collate_fn(batch)
-        if isinstance(data, Data):
-            return {key: data[key] for key in data.keys}
-        return data
-
-
 def build_dataloader(cfg: Dict, vocab=None):
     """Build dataloader from config.
 
@@ -221,7 +190,6 @@ def build_dataloader(cfg: Dict, vocab=None):
 
     num_workers = loader_config.pop("num_workers", 0)
     use_shared_memory = loader_config.pop("use_shared_memory", True)
-    as_dict = loader_config.pop("as_dict", False)
 
     # collate_obj = getattr(
     #     collate_fn, loader_config.pop("collate_fn", "DefaultCollator")
@@ -230,8 +198,6 @@ def build_dataloader(cfg: Dict, vocab=None):
     collate_params = loader_config.pop("collate_params", {})
     collate_cls = getattr(collate_fn, collate_fn_name)
     collate_obj = collate_cls(**collate_params)
-    if as_dict:
-        collate_obj = _FieldDictCollator(collate_obj)
 
     # build sampler
     if cfg.get("split_dataset_ratio") is not None:
