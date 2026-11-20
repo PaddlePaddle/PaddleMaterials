@@ -25,6 +25,9 @@ __all__ = [
     "make_attn_mask",
 ]
 
+_AUGMENTATION_EPS = 1e-8
+_ATTN_MASK_VALUE = 1e9
+
 
 def get_index_embedding(indices, emb_dim, max_len=2048):
     K = paddle.arange(emb_dim // 2)
@@ -87,7 +90,9 @@ def _augmentation_translate(batch):
     random_translate = (
         paddle.normal(
             mean=paddle.abs(lengths_mean),
-            std=paddle.maximum(paddle.abs(lengths_std), paddle.to_tensor([1e-8])),
+            std=paddle.maximum(
+                paddle.abs(lengths_std), paddle.to_tensor([_AUGMENTATION_EPS])
+            ),
         )
         / 2
     )
@@ -143,7 +148,9 @@ def make_attn_mask(token_mask):
     if not token_mask.cast("bool").all():
         bsize, seq_len = token_mask.shape
         mask = paddle.zeros([bsize, 1, 1, seq_len], dtype="float32")
-        return mask - 1e9 * (~token_mask).unsqueeze(1).unsqueeze(2).astype("float32")
+        return mask - _ATTN_MASK_VALUE * (~token_mask).unsqueeze(1).unsqueeze(2).astype(
+            "float32"
+        )
     return None
 
 

@@ -108,7 +108,10 @@ class Chemeleon2ConditionModule(nn.Layer):
                 [paddle.zeros([batch_size]), paddle.ones([batch_size])]
             )
             drop_mask = drop_mask.astype("bool")
-            batch_y = {k: _duplicate(v) for k, v in batch_y.items()}
+            batch_y = {
+                k: paddle.concat([v, v]) if isinstance(v, paddle.Tensor) else v * 2
+                for k, v in batch_y.items()
+            }
 
         cond_embeds = []
         for cond_name, encoder in self.encoders.items():
@@ -119,15 +122,6 @@ class Chemeleon2ConditionModule(nn.Layer):
         cond_embeds = paddle.concat(cond_embeds, axis=-1)
         cond_embeds = self.proj(cond_embeds)
         return cond_embeds
-
-
-def _duplicate(v):
-    if isinstance(v, paddle.Tensor):
-        return paddle.concat([v, v])
-    elif isinstance(v, list):
-        return v * 2
-    else:
-        raise ValueError(f"Unsupported type: {type(v)}")
 
 
 class BaseEncoder(nn.Layer):

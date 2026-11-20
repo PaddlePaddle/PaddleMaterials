@@ -130,6 +130,14 @@ def test_ldm_pipeline():
         for sampler in ("ddpm", "ddim"):
             r = ldm.sample(b, sampler=sampler, num_inference_steps=5, progress=False)
             assert "result" in r and len(r["result"]) == 2
+            assert r["result"][0]["num_atoms"] == 8
+
+    # BaseTrainer calls model.train() every epoch; the frozen VAE must stay
+    # in eval mode across Stage-2 losses.
+    ldm.train()
+    assert ldm.vae.training is True
+    ldm.calculate_loss(b, training=True)
+    assert ldm.vae.training is False
 
     with paddle.no_grad():
         r = ldm.predict(
@@ -146,6 +154,20 @@ def test_ldm_pipeline():
             {"num_samples": 1, "num_atoms": 8, "condition": "MgO"},
             num_inference_steps=1,
             sampler="ddim",
+            progress=False,
+        )
+
+    # Fixed atom types (by_chemical_formula) are not consumed by the latent
+    # diffusion path and must be rejected instead of silently ignored.
+    with pytest.raises(ValueError, match="by_chemical_formula"):
+        ldm.sample(
+            {
+                "structure_array": {
+                    "atom_types": paddle.to_tensor([11, 17], dtype="int64"),
+                    "num_atoms": paddle.to_tensor([2], dtype="int64"),
+                }
+            },
+            num_inference_steps=1,
             progress=False,
         )
 
@@ -182,8 +204,7 @@ def test_ldm_pipeline():
     assert 0.0 <= res["validity"] <= 1.0 and res["validity"] > 0.0
     assert 0.0 <= res["uniqueness"] <= 1.0 and res["uniqueness"] < 1.0
 
-    ref_metric = StructGenMetric()
-    ref_metric.reference_structures = [Crystal(valid_pred).structure]
+    ref_metric = StructGenMetric(reference_structures=[Crystal(valid_pred).structure])
     res2 = ref_metric([valid_pred])
     assert res2["novelty"] == 0.0
 
@@ -269,6 +290,17 @@ def test_ldm_conditional_pipeline():
     paddle.seed(42)
     loss = ldm.calculate_loss(b, training=False)
     assert not paddle.isnan(loss["total_loss"]).item()
+
+    # Condition properties arrive as top-level batch keys (dataset contract).
+    structure_array = _structure_array([8, 12])
+    with paddle.no_grad():
+        out = ldm(
+            {
+                "structure_array": structure_array,
+                "condition": ["MgO", "NaCl"],
+            }
+        )
+    assert not paddle.isnan(out["loss_dict"]["loss"]).item()
 
     with paddle.no_grad():
         r = ldm.sample(b, sampler="ddim", num_inference_steps=3, progress=False)
@@ -378,9 +410,9 @@ def test_ldm_cinn_gpu_compile_parity():
         t = paddle.to_tensor([3, 3], dtype="int64")
         mask = paddle.ones([2, 8], dtype="bool")
         with paddle.no_grad():
-            eager = ldm._denoise_step(x, t, mask=mask)
+            eager = ldm._runtime_denoise(x, t, mask=mask)
             ldm.set_execution_backend("cinn")
-            cinn = ldm._denoise_step(x, t, mask=mask)
+            cinn = ldm._runtime_denoise(x, t, mask=mask)
     finally:
         paddle.set_device("cpu")
 

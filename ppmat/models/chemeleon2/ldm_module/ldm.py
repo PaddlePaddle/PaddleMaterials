@@ -113,12 +113,6 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
             if "model_state_dict" in checkpoint:
                 checkpoint = checkpoint["model_state_dict"]
             self.set_state_dict(checkpoint)
-            if "latent_std" in checkpoint:
-                # Re-register after set_state_dict: the buffer entry inside
-                # the checkpoint dict would otherwise be consumed as a stale
-                # overwrite; an explicit re-register pins the checkpointed
-                # normalization constant.
-                self.register_buffer("latent_std", checkpoint["latent_std"])
 
     @property
     def condition_names(self):
@@ -132,12 +126,18 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
         return list(self.condition_module.target_condition)
 
     def forward(self, batch):
-        crystal_batch = self._convert_sample_batch(batch)
+        crystal_batch = build_structure_array(CrystalBatch(), batch["structure_array"])
+        if self.use_cfg:
+            # Condition properties arrive as top-level batch keys.
+            crystal_batch.y = {
+                name: batch[name] for name in self.condition_names if name in batch
+            }
         loss_dict = self.calculate_loss(crystal_batch, training=True)
         return {"loss_dict": loss_dict}
 
-    def _denoise_step(self, x, t, mask=None, y=None, apply_mask=True, cfg_scale=None):
-        return self._runtime_denoise(x, t, mask, y, apply_mask, cfg_scale)
+    def before_train(self, trainer):
+        if hasattr(self, "vae") and self.vae is not None:
+            self.vae.eval()
 
     @runtime_boundary("denoise_step")
     def _runtime_denoise(
@@ -147,17 +147,14 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
             return self.denoiser.forward_with_cfg(x, t, mask, y, cfg_scale)
         return self.denoiser(x, t, mask=mask, y=y, apply_mask=apply_mask)
 
-    def _convert_sample_batch(self, batch):
-        structure_array = batch["structure_array"]
-
-        crystal_batch = build_structure_array(CrystalBatch(), structure_array)
-        return crystal_batch
-
     def calculate_loss(self, batch, training=True):
         if not hasattr(self, "vae") or self.vae is None:
             raise ValueError(
                 "VAE must be loaded before training. Set vae_ckpt_path in __init__."
             )
+        # BaseTrainer calls model.train() every epoch, which would put the
+        # frozen VAE back in training mode.
+        self.vae.eval()
 
         if not hasattr(batch, "lattices") or batch.lattices is None:
             raise ValueError(
@@ -177,8 +174,11 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
         y = None
         if self.use_cfg:
             y = batch.y
-            if y is None:
-                raise ValueError("Batch must contain 'y' field when use_cfg=True")
+            if not y:
+                raise ValueError(
+                    "Batch must carry condition fields "
+                    f"{self.condition_names} at the top level when use_cfg=True"
+                )
             y = self.condition_module(y, training=training)
             if y.shape[0] != x.shape[0]:
                 # CFG doubling from the condition module; align the latent
@@ -189,7 +189,7 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
 
         model_kwargs = {"mask": mask, "y": y}
         loss_dict = self.diffusion.training_losses(
-            model=self._denoise_step,
+            model=self._runtime_denoise,
             x_start=x,
             t=t,
             model_kwargs=model_kwargs,
@@ -213,6 +213,14 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
         progress=True,
     ):
         if isinstance(batch, dict):
+            structure_array = batch["structure_array"]
+            if "atom_types" in structure_array:
+                raise ValueError(
+                    "Chemeleon2 LDM samples atom types from the latent code and "
+                    "does not support fixed atom types (by_chemical_formula). "
+                    "Use by_num_atoms, or a composition condition through "
+                    "condition_module and by_condition."
+                )
             # Conditions arrive as top-level keys (see sample_by_condition)
             names = self.condition_names or []
             entries = {
@@ -231,7 +239,7 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
                         f"input dict carries condition fields {passed}. Remove "
                         "them or rebuild the model with a condition_module."
                     )
-            batch = self._convert_sample_batch(batch)
+            batch = build_structure_array(CrystalBatch(), structure_array)
             if entries:
                 batch.y = entries
 
@@ -274,7 +282,10 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
         if self.use_cfg:
             y = batch.y
             if y is None:
-                raise ValueError("Batch must contain 'y' field when use_cfg=True")
+                raise ValueError(
+                    "Condition fields must be set on the batch for conditional "
+                    f"sampling: {self.condition_names}"
+                )
             z = paddle.concat([z, z], axis=0)
             mask = paddle.concat([mask, mask], axis=0)
             y = self.condition_module(y, training=False)
@@ -286,10 +297,8 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
         if self.use_cfg:
             model_kwargs["cfg_scale"] = cfg_scale
 
-        model_fn = self._denoise_step
-
         diffusion_out = sampler_fn(
-            model=model_fn,
+            model=self._runtime_denoise,
             shape=z.shape,
             noise=z,
             clip_denoised=False,
@@ -321,8 +330,8 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
         # Per-structure array dicts for BuildStructure.build_one(format="array")
         structures_list = batch_rec._split_by_batch_index()
         result_list = []
-        for struct_data in structures_list:
-            result_dict = {}
+        for i, struct_data in enumerate(structures_list):
+            result_dict = {"num_atoms": int(batch_rec.num_atoms[i])}
             if "atom_types" in struct_data:
                 result_dict["atom_types"] = (
                     struct_data["atom_types"].cpu().numpy().tolist()

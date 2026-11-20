@@ -17,7 +17,9 @@ import math
 import paddle
 import paddle.nn as nn
 
-from ..common import get_index_embedding as get_pos_embedding
+from ppmat.models.chemeleon2.common import get_index_embedding as get_pos_embedding
+
+_ATTN_MASK_VALUE = 1e9
 
 
 def modulate(x, shift, scale):
@@ -120,7 +122,7 @@ class DiTBlock(nn.Layer):
         attn_mask = None
         if mask is not None:
             attn_mask = mask.unsqueeze([1, 2])
-            attn_mask = paddle.cast(attn_mask, dtype="float32") * -1e9
+            attn_mask = paddle.cast(attn_mask, dtype="float32") * -_ATTN_MASK_VALUE
 
         attn_out = self.attn(modulated_x, modulated_x, modulated_x, attn_mask=attn_mask)
         x = x + gate_msa.unsqueeze(1) * attn_out

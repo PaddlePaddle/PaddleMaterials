@@ -14,12 +14,11 @@
 
 import paddle.nn as nn
 
+from ppmat.models.chemeleon2.common import get_index_embedding
+from ppmat.models.chemeleon2.common import make_attn_mask
+from ppmat.models.chemeleon2.common import set_gelu_approx
+from ppmat.models.chemeleon2.common import to_dense_batch
 from ppmat.utils.scatter import scatter_mean
-
-from ..common import get_index_embedding
-from ..common import make_attn_mask
-from ..common import set_gelu_approx
-from ..common import to_dense_batch
 
 
 class Chemeleon2TransformerDecoder(nn.Layer):

@@ -59,3 +59,5 @@ Sample:
     __class_name__: StructGenMetric
     __init_params__:
       reference_file_path: null
+  model_sample_params:
+    num_inference_steps: 50

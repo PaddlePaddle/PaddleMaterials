@@ -75,7 +75,7 @@
 | Task | Models | Dataset |
 |------|--------|---------|
 | **Property Prediction**                       | MEGNet, iComformer, DimeNet++, SphereNet | MP2018, MP2024, JARVIS, QM9, etc.|
-| **Structure Generation**                      | MatterGen, DiffCSP                       | MP20, ALEX, etc.|
+| **Structure Generation**                      | Chemeleon2, MatterGen, DiffCSP           | MP20, ALEX, etc.|
 | **Machine Learning Interatomic Potential**    | CHGNet, MatterSim, SphereNet             | MPTRJ, MD17, etc.|
 | **Electronic Structure**                      | InfGCN                                   | QM9_ES, MP_ES, OMol25_MC_ES, etc.|
 | **Spectrum Elucidation**                      | DiffNMR                                  | MSD_NMR, etc.|

@@ -21,12 +21,12 @@ from typing import Optional
 
 from omegaconf import OmegaConf
 
-from ppmat.models.chemeleon2 import Chemeleon2LDMModule
-from ppmat.models.chemeleon2 import Chemeleon2VAEModule
-from ppmat.models.chemeleon2.ldm_module import Chemeleon2ConditionModule
+from ppmat.models.chemeleon2.ldm_module.condition import Chemeleon2ConditionModule
 from ppmat.models.chemeleon2.ldm_module.dit import Chemeleon2DiT
+from ppmat.models.chemeleon2.ldm_module.ldm import Chemeleon2LDMModule
 from ppmat.models.chemeleon2.vae_module.decoder import Chemeleon2TransformerDecoder
 from ppmat.models.chemeleon2.vae_module.encoder import Chemeleon2TransformerEncoder
+from ppmat.models.chemeleon2.vae_module.vae import Chemeleon2VAEModule
 from ppmat.models.chgnet.chgnet import CHGNet
 from ppmat.models.chgnet.chgnet_graph_converter import CHGNetGraphConverter
 from ppmat.models.comformer.comformer import iComformer

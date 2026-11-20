@@ -150,6 +150,22 @@ python structure_generation/train.py -c structure_generation/configs/chemeleon2/
 python structure_generation/train.py -c structure_generation/configs/chemeleon2/chemeleon2_mp20_ldm.yaml
 ```
 
+### Conditional LDM training
+
+The LDM reads each condition from a top-level batch key named after
+`condition_module.target_condition`. To train a conditional LDM:
+
+1. add a `condition_module` entry to `Model.__init_params__`, mapping each
+   condition name to `composition`, `chemical_system`, `float` or `categorical`;
+2. set `denoiser.__init_params__.condition_dim` to the module `hidden_dim`;
+3. list the same names in the dataset `property_names` so that the collator
+   emits them as top-level batch keys.
+
+`MP20Dataset` exposes numeric properties such as `band_gap` and
+`e_above_hull`. Composition and chemical-system conditions need a dataset that
+provides those fields, for example an `MP20Dataset` subclass that extends
+`read_property_data`.
+
 ### Validation
 
 ```bash
@@ -189,6 +205,10 @@ python structure_generation/sample.py --model_name='chemeleon2_ldm' --weights_na
 
 # Mode 2: custom config + checkpoint
 python structure_generation/sample.py --config_path='structure_generation/configs/chemeleon2/chemeleon2_mp20_sample.yaml' --checkpoint_path='./output/chemeleon2_ldm/checkpoints/best.pdparams' --output_path='result_chemeleon2_ldm/' --mode='by_num_atoms' --num_atoms=20
+
+# ``--mode by_chemical_formula`` is not supported: the LDM samples atom types
+# from the latent code. Use ``--mode by_num_atoms``, or expose a composition
+# condition through ``condition_module`` and pass ``--mode by_condition``.
 
 # Quick forward pass test (no training data required)
 python -c "

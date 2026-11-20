@@ -16,6 +16,8 @@ import paddle
 
 from ppmat.schedulers import build_scheduler
 
+_MASK_NORM_EPS = 1e-6
+
 
 class GaussianDiffusion:
     def __init__(self, learn_sigma=False, **kwargs):
@@ -89,7 +91,7 @@ class GaussianDiffusion:
             mask_b = paddle.broadcast_to(mask_b, list(target.shape))
             squared = (target - model_output) ** 2 * mask_b
             mse = squared.sum(axis=list(range(1, target.ndim))) / (
-                mask_b.sum(axis=list(range(1, target.ndim))).clip(min=1e-6)
+                mask_b.sum(axis=list(range(1, target.ndim))).clip(min=_MASK_NORM_EPS)
             )
         else:
             mse = paddle.mean(

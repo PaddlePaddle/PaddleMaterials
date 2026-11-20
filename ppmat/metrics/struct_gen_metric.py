@@ -12,15 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import pickle
+from typing import Any
+from typing import Dict
+from typing import List
+from typing import Optional
+from typing import Sequence
 
 from pymatgen.analysis.structure_matcher import StructureMatcher
+from pymatgen.core.composition import Composition
+from pymatgen.core.structure import Structure
 
-from ppmat.utils import logger
-
-__all__ = [
-    "StructGenMetric",
-]
+from ppmat.metrics.utils import Crystal
 
 
 class StructGenMetric:
@@ -34,8 +39,9 @@ class StructGenMetric:
     - ``uniqueness``: fraction of unique structures among valid ones, judged
       by ``StructureMatcher.group_structures``.
     - ``novelty``: fraction of unique structures that do not match any
-      structure in an optional reference set (e.g. a pickle of the training
-      split built locally from the dataset).
+      structure in an optional reference set, passed either as a pickle of
+      pymatgen structures (``reference_file_path``) or directly as a list
+      (``reference_structures``).
 
     The metric is consumed offline and in one shot by
     ``StructureSampler.compute_metric`` (``metric(total_results)``). It
@@ -43,52 +49,59 @@ class StructGenMetric:
     incremental train/eval consumer for structure-generation metrics.
     """
 
-    def __init__(self, reference_file_path=None, stol=0.5, angle_tol=10, ltol=0.3):
+    def __init__(
+        self,
+        reference_file_path: Optional[str] = None,
+        reference_structures: Optional[Sequence[Structure]] = None,
+        stol: float = 0.5,
+        angle_tol: float = 10,
+        ltol: float = 0.3,
+    ) -> None:
+        if reference_file_path is not None and reference_structures is not None:
+            raise ValueError(
+                "Pass either reference_file_path or reference_structures, not both."
+            )
         if reference_file_path is not None and not reference_file_path.endswith(".pkl"):
             raise ValueError(
                 "reference_file_path should be a pickle file with "
                 "pymatgen structures, got: " + reference_file_path
             )
         self.matcher = StructureMatcher(stol=stol, angle_tol=angle_tol, ltol=ltol)
-        self.reference_structures = None
-        self._reference_index = None
         if reference_file_path is not None:
             with open(reference_file_path, "rb") as f:
-                self.reference_structures = pickle.load(f)
-            if not isinstance(self.reference_structures, (list, tuple)):
-                raise ValueError(
-                    "reference pickle must contain a list of pymatgen structures"
-                )
-            self._reference_index = self._build_reference_index()
+                reference_structures = pickle.load(f)
+        if reference_structures is not None and not isinstance(
+            reference_structures, (list, tuple)
+        ):
+            raise ValueError(
+                "reference structures must be a list of pymatgen structures"
+            )
+        self.reference_structures = reference_structures
+        self._reference_index: Optional[Dict[Composition, List[Structure]]] = None
+        if reference_structures is not None:
+            self._reference_index = {}
+            for ref_structure in reference_structures:
+                self._reference_index.setdefault(
+                    self._composition_key(ref_structure), []
+                ).append(ref_structure)
 
     @staticmethod
-    def _composition_key(structure):
+    def _composition_key(structure: Structure) -> Composition:
         return structure.composition.element_composition.fractional_composition
 
-    def _build_reference_index(self):
-        reference_index = {}
-        for ref_structure in self.reference_structures:
-            reference_index.setdefault(self._composition_key(ref_structure), []).append(
-                ref_structure
-            )
-        return reference_index
-
-    def _novelty_one(self, structure, reference_index):
+    def _novelty_one(
+        self,
+        structure: Structure,
+        reference_index: Dict[Composition, List[Structure]],
+    ) -> bool:
         candidates = reference_index.get(self._composition_key(structure), [])
-        try:
-            # Novel: matches none of the reference structures
-            is_new = all(
-                not self.matcher.fit(structure, ref_structure)
-                for ref_structure in candidates
-            )
-        except Exception as e:
-            logger.warning(f"novelty check failed for one structure: {e}")
-            return False
-        return bool(is_new)
+        # Novel: matches none of the reference structures
+        return all(
+            not self.matcher.fit(structure, ref_structure)
+            for ref_structure in candidates
+        )
 
-    def __call__(self, pred_data):
-        from ppmat.metrics.utils import Crystal
-
+    def __call__(self, pred_data: Sequence[Dict[str, Any]]) -> Dict[str, float]:
         crystals = [Crystal(crys_array_dict) for crys_array_dict in pred_data]
         valid_crystals = [c for c in crystals if c.valid and c.constructed]
         total = len(crystals)
@@ -107,11 +120,6 @@ class StructGenMetric:
         results["uniqueness"] = n_unique / n_valid
 
         if self.reference_structures is not None:
-            # Built once and reused across calls; ``reference_structures`` is
-            # expected to be fixed after construction (tests may also inject
-            # it directly, which triggers a build on the first call).
-            if self._reference_index is None:
-                self._reference_index = self._build_reference_index()
             unique_structures = [group[0] for group in groups]
             flags = [
                 self._novelty_one(structure, self._reference_index)

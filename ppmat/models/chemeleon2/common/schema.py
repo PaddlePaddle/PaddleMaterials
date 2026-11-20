@@ -27,9 +27,6 @@ __all__ = [
 
 
 class CrystalBatch(Data):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
     @property
     def num_graphs(self):
         if hasattr(self, "__num_graphs__"):
@@ -140,13 +137,11 @@ def build_structure_array(batch, structure_array):
     return batch
 
 
-def create_empty_batch(num_atoms, atom_types=None):
+def create_empty_batch(num_atoms):
     data_list = []
-    for i, n in enumerate(num_atoms):
+    for n in num_atoms:
         d = CrystalBatch(
-            atom_types=paddle.empty([n], dtype="int64")
-            if atom_types is None
-            else paddle.to_tensor(atom_types[i], dtype="int64"),
+            atom_types=paddle.empty([n], dtype="int64"),
             frac_coords=paddle.empty([n, 3]),
             cart_coords=paddle.empty([n, 3]),
             lattices=paddle.empty([1, 3, 3]),

@@ -23,6 +23,9 @@ from ppmat.models.chemeleon2.common.schema import CrystalBatch
 from ppmat.models.chemeleon2.common.schema import build_structure_array
 from ppmat.utils.crystal import lattice_params_to_matrix_paddle
 
+_FA_SIMILARITY_MARGIN = 0.25
+_FA_COSINE_FLOOR = 0.5
+
 
 class Chemeleon2VAEModule(nn.Layer):
     def __init__(
@@ -183,8 +186,10 @@ class Chemeleon2VAEModule(nn.Layer):
                 "ij,kj->ik", mace_features_norm, mace_features_norm
             )
             diff = paddle.abs(z_cos_sim - mace_cos_sim)
-            fa_loss_1 = F.relu(diff - 0.25).mean()
-            fa_loss_2 = F.relu(0.5 - F.cosine_similarity(mace_features, z)).mean()
+            fa_loss_1 = F.relu(diff - _FA_SIMILARITY_MARGIN).mean()
+            fa_loss_2 = F.relu(
+                _FA_COSINE_FLOOR - F.cosine_similarity(mace_features, z)
+            ).mean()
             fa_loss = fa_loss_1 + fa_loss_2
 
         loss = (

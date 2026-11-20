@@ -18,12 +18,15 @@ __all__ = [
     "DiagonalGaussianDistribution",
 ]
 
+LOGVAR_MIN = -30.0
+LOGVAR_MAX = 20.0
+
 
 class DiagonalGaussianDistribution:
     def __init__(self, parameters):
         self.parameters = parameters
         self.mean, self.logvar = paddle.chunk(parameters, 2, axis=1)
-        self.logvar = paddle.clip(self.logvar, -30.0, 20.0)
+        self.logvar = paddle.clip(self.logvar, LOGVAR_MIN, LOGVAR_MAX)
         self.std = paddle.exp(0.5 * self.logvar)
         self.var = paddle.exp(self.logvar)
 

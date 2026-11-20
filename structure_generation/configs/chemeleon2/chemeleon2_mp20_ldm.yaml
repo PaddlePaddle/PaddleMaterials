@@ -1,6 +1,20 @@
 Global:
   do_eval: True
 
+Trainer:
+  max_epochs: 100
+  seed: 42
+  output_dir: ./output/chemeleon2_ldm
+  save_freq: 500
+  log_freq: 20
+  start_eval_epoch: 1
+  eval_freq: 100
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'epoch'
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: 'loss'
+  greater_is_better: False
+
 Model:
   __class_name__: Chemeleon2LDMModule
   __init_params__:
@@ -45,6 +59,12 @@ Model:
         latent_dim: 8
         loss_weights: {}
     vae_ckpt_path: null
+
+Optimizer:
+  __class_name__: AdamW
+  __init_params__:
+    lr: 0.0001
+    weight_decay: 0.0
 
 Dataset:
   train:
@@ -95,26 +115,6 @@ Dataset:
       __init_params__:
         batch_size: 32
 
-Trainer:
-  max_epochs: 100
-  seed: 42
-  output_dir: ./output/chemeleon2_ldm
-  save_freq: 500
-  log_freq: 20
-  start_eval_epoch: 1
-  eval_freq: 100
-  compute_metric_during_train: False
-  metric_strategy_during_eval: 'epoch'
-  best_metric_indicator: 'eval_loss'
-  name_for_best_metric: 'loss'
-  greater_is_better: False
-
-Optimizer:
-  __class_name__: AdamW
-  __init_params__:
-    lr: 0.0001
-    weight_decay: 0.0
-
 Sample:
   data:
     dataset:
@@ -132,3 +132,5 @@ Sample:
     __class_name__: StructGenMetric
     __init_params__:
       reference_file_path: "./data/mp_20/novelty_reference.pkl"
+  model_sample_params:
+    num_inference_steps: 50
