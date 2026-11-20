@@ -39,6 +39,7 @@ from ppmat.datasets.density_dataset import QM9DensityDataset
 from ppmat.datasets.high_level_water_dataset import HighLevelWaterDataset
 from ppmat.datasets.jarvis_dataset import JarvisDataset
 from ppmat.datasets.matbench_dataset import MatbenchDataset
+from ppmat.datasets.matterchat_dataset import MatterChatDataset
 from ppmat.datasets.md17_dataset import MD17Dataset  # noqa
 from ppmat.datasets.mp20_dataset import AlexMP20MatterGenDataset
 from ppmat.datasets.mp20_dataset import MP20Dataset
@@ -70,6 +71,7 @@ __all__ = [
     "HighLevelWaterDataset",
     "MSDnmrDataset",
     "MatbenchDataset",
+    "MatterChatDataset",
     "DensityDataset",
     "QM9DensityDataset",
     "MPCubicDensityDataset",

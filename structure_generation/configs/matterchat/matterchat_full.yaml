@@ -1,0 +1,79 @@
+# Copyright (c) 2026 PaddlePaddle Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# MatterChat inference config.
+# NOTE: MatterChat is a dialogue model, not a structure generator. It does NOT
+# use structure_generation/sample.py (StructureSampler). Inference is done via
+# Blip2MistralInstruct.from_pretrained(), see
+# README.md for usage.
+
+Model:
+  __class_name__: Blip2MistralInstruct
+  __init_params__:
+    num_query_token: 32
+    prompt: "what is the chemical formula of this material?"
+    max_txt_len: 512
+    max_output_txt_len: 1024
+    qformer_text_input: false
+    llm_tokenizer: null
+    llm_model: null
+    tokenizer_path: ""
+    material_encoder_config:
+      atom_fea_dim: 64
+      bond_fea_dim: 64
+      angle_fea_dim: 64
+      composition_model: MPtrj
+      num_radial: 9
+      num_angular: 9
+      n_conv: 4
+      atom_conv_hidden_dim: 64
+      update_bond: true
+      bond_conv_hidden_dim: 64
+      update_angle: true
+      angle_layer_hidden_dim: 0
+      conv_dropout: 0.0
+      read_out: ave
+      mlp_hidden_dims: [64, 64]
+      mlp_dropout: 0.0
+      mlp_first: true
+      is_intensive: true
+      atom_graph_cutoff: 5.0
+      bond_graph_cutoff: 3.0
+      cutoff_coeff: 5.0
+      learnable_rbf: true
+      mlp_out_bias: true
+    qformer_config:
+      hidden_size: 768
+      num_hidden_layers: 12
+      num_attention_heads: 12
+      intermediate_size: 3072
+      cross_attention_freq: 2
+      hidden_dropout_prob: 0.1
+      attention_probs_dropout_prob: 0.1
+    llm_config:
+      vocab_size: 32769
+      hidden_size: 4096
+      intermediate_size: 14336
+      num_hidden_layers: 32
+      num_attention_heads: 32
+      num_key_value_heads: 8
+      hidden_act: silu
+      max_position_embeddings: 131072
+      initializer_range: 0.02
+      rms_norm_eps: 1.0e-5
+      rope_theta: 1000000.0
+      attention_dropout: 0.0
+      attn_implementation: eager
+    execution_backend: eager
+    runtime_options: null
