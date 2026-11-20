@@ -1501,7 +1501,20 @@ class CHGNet(RuntimeMixin, paddle.nn.Layer):
 
         return energy, force, stress, magmom, site_energies, atom_feas, crystal_feas
 
-    @runtime_boundary("forward")
+    @runtime_boundary(
+        "forward",
+        # Bond (directed and undirected) and angle counts change at every MD
+        # step; atom and structure counts stay static.
+        dynamic_dims={
+            "image": 0,
+            "batched_atom_graph": 0,
+            "batched_bond_graph": 0,
+            "bond_vecs_i_index": 0,
+            "bond_vecs_j_index": 0,
+            "undirected2directed": 0,
+            "directed2undirected": 0,
+        },
+    )
     def _runtime_forward(
         self,
         atomic_numbers,

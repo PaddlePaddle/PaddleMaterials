@@ -24,13 +24,14 @@ import paddle
 import paddle.nn as nn
 import pgl
 from paddle.nn import Linear
-from pgl.math import segment_softmax
-from pgl.math import segment_sum
 
 from ppmat.models.common import initializer
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
 from ppmat.utils import logger
+from ppmat.utils.pgl_compat import graph_count
+from ppmat.utils.pgl_compat import segment_softmax
+from ppmat.utils.pgl_compat import segment_sum
 
 
 class GaussianExpansion(paddle.nn.Layer):
@@ -377,9 +378,7 @@ class MEGNetGraphConv(paddle.nn.Layer):
     def node_update(self, graph, node_feat, edge_feat, u):
         src, dst, eid = graph.sorted_edges(sort_by="dst")
         # node_feat_e = paddle.geometric.segment_mean(edge_feat[eid], dst)
-        node_feat_e = self.sorted_segment_mean(
-            edge_feat[eid], dst, graph.num_nodes.item()
-        )
+        node_feat_e = self.sorted_segment_mean(edge_feat[eid], dst, node_feat.shape[0])
         node_feat = paddle.concat([node_feat, node_feat_e, u], axis=1)
         node_feat = self.node_func(node_feat)
         return node_feat
@@ -581,7 +580,7 @@ class Set2Set(nn.Layer):
             output_feat: A tensor with shape (num_nodes, output_size).
         """
         graph_id = graph.graph_node_id
-        batch_size = graph_id.max() + 1
+        batch_size = graph_count(graph)
         h = (
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
@@ -591,8 +590,8 @@ class Set2Set(nn.Layer):
             q, h = self.lstm(q_star.unsqueeze(0), h)
             q = q.reshape((batch_size, self.input_dim))
             e = (x * q.index_select(graph_id, axis=0)).sum(axis=-1, keepdim=True)
-            a = segment_softmax(e, graph_id)
-            r = segment_sum(a * x, graph_id)
+            a = segment_softmax(e, graph_id, batch_size)
+            r = segment_sum(a * x, graph_id, batch_size)
             q_star = paddle.concat([q, r], axis=-1)
 
         return q_star
@@ -629,7 +628,7 @@ class EdgeSet2Set(paddle.nn.Layer):
             output_feat: A tensor with shape (num_nodes, output_size).
         """
         graph_id = graph.graph_edge_id
-        batch_size = graph_id.max() + 1
+        batch_size = graph_count(graph)
         h = (
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
@@ -639,8 +638,8 @@ class EdgeSet2Set(paddle.nn.Layer):
             q, h = self.lstm(q_star.unsqueeze(0), h)
             q = q.reshape((batch_size, self.input_dim))
             e = (x * q.index_select(graph_id, axis=0)).sum(axis=-1, keepdim=True)
-            a = segment_softmax(e, graph_id)
-            r = segment_sum(a * x, graph_id)
+            a = segment_softmax(e, graph_id, batch_size)
+            r = segment_sum(a * x, graph_id, batch_size)
             q_star = paddle.concat([q, r], axis=-1)
 
         return q_star
@@ -792,9 +791,7 @@ class MEGNetPlus(RuntimeMixin, paddle.nn.Layer):
         #  The data in data['graph'] is numpy.ndarray, convert it to paddle.Tensor
         g = data["graph"].tensor()
         # print(data["id"])
-        batch_size = g.num_graph
-        if isinstance(batch_size, paddle.Tensor):
-            batch_size = int(batch_size)
+        batch_size = graph_count(g)
         state_attr = paddle.zeros(
             [batch_size, self.embedding.dim_state_embedding], dtype="float32"
         )

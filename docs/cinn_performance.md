@@ -6,40 +6,72 @@
 
 Under the tested workloads, all 79 registered weights with a CINN path
 completed in eager and CINN modes. The median warm speedup across all weights
-was 1.41x, ranging from 0.57x to 4.15x.
+was 2.50x, ranging from 0.96x to 5.15x.
 
 - Families where every registered weight was faster, with median speedup:
-  MatterSim 3.82x, SphereNet MD17 2.93x, SFIN 2.32x, CHGNet 2.09x, DimeNet++
-  MP2018 2.01x, DimeNet++ QM9 1.93x, SphereNet QM9 1.41x, DiffCSP 1.17x, and
-  DiffNMR 1.09x.
-- Families where every registered weight was slower, with median speedup:
-  ComFormer 0.84x, MatterGen 0.68x, and MEGNet 0.63x.
+  DimeNet++ MP2018 4.79x, DimeNet++ QM9 4.38x, MatterSim 3.53x, SphereNet MD17
+  3.13x, SphereNet QM9 2.87x, SFIN 2.45x, ComFormer 2.43x, DiffCSP 2.12x,
+  DiffNMR 2.06x, CHGNet 1.96x, and MEGNet 1.66x.
+- Families with both faster and slower weights, with median speedup: MatterGen
+  1.19x (13/17 faster).
 
 ## Method
 
+- Measured model sources: PR #332 at `f5ec186`, remeasured on 16–17 November
+  2026 (Asia/Shanghai). The remote working tree's 197 Python files under `ppmat/` were
+  verified against that revision, as was the benchmark harness. The snapshot's
+  Git metadata records `dd87607` plus working-tree changes; the file comparison
+  establishes the measured model revision.
 - Environment: Paddle 3.3.1, NVIDIA A100-SXM4-40GB GPUs, and an Intel Xeon Gold
-  6148 host.
+  6148 host. The node was shared; CPU affinity did not provide exclusive CPU use.
 - Workloads: repository prediction and sampling examples. Structure generators
   sampled eight atoms for two denoising steps; DiffNMR ran complete reverse
-  diffusion.
+  diffusion (500 steps).
 - Timing: model loading, checkpoint loading, and input conversion were excluded.
-  GPU synchronization bracketed each call. Warm results are the median of ten
-  identically seeded calls; the first CINN call is reported separately.
+  GPU synchronization bracketed each call. The first CINN call is reported
+  separately; warm results are the median of the ten calls immediately after
+  it. The random seeds are reset for each call. There is no separate
+  warm-up-stability gate in this protocol.
 - Execution: each weight ran in a separate process. Three passes ran on three
   GPUs, one pass per GPU; each pass was bound to the CPU cores of its GPU's NUMA
   node and tested the weights one at a time. Each reported time is the median of
-  the three passes.
+  the three passes. Each per-weight speedup is the ratio of the separately
+  computed three-pass eager and CINN medians; family speedups are medians of
+  those per-weight ratios.
 
 | Metric | Definition |
 | --- | --- |
-| First CINN | Compilation plus the first execution |
-| Warm | Median of ten executions after the first call |
+| First CINN | First call, including initial compilation and execution |
+| Warm | Median of the ten calls immediately after the first call |
 | Speedup | `eager warm / CINN warm`; values above 1 are faster |
-| Compile estimate | `first CINN (s) - CINN warm (ms) / 1000` |
-| Break-even | `ceil(compile estimate (s) * 1000 / (eager warm - CINN warm) (ms))`; `never` when warm CINN is not faster |
+| First-call extra-cost estimate | `first CINN (s) - CINN warm (ms) / 1000` |
+| Estimated break-even calls | `ceil((first CINN - CINN warm) / (eager warm - CINN warm))`, using consistent units; `never` when warm CINN is not faster |
 
-Compile estimates and break-even counts use unrounded timings; displayed times
-are rounded.
+The break-even estimate counts total model calls and uses the extra cost of the
+first call. It compares `F + (N - 1)C` with `NE`, where `F` is the first CINN
+call, `C` is CINN warm, and `E` is eager warm; the extra cost of the first eager
+call is not included. Subsequent-call samples retain any compilation work that
+occurs within those calls. The estimate does not separately accumulate later
+compilation costs. Estimates use unrounded timings; displayed times
+are rounded. Faster counts and break-even eligibility use unrounded values;
+a displayed 1.00x can lie on either side of parity.
+
+### Attempt history
+
+The initial 474 eager/CINN process attempts produced 473 successful timing
+records. In pass 1, CINN for
+`mattergen_alex_mp20_dft_mag_density_hhi_score` exited with SIGSEGV (139)
+during a later call, in CINN symbolic-shape inference after its first call had
+completed. The same weight passed in the other two initial passes. After all
+three passes finished, only this failed slot was retried, on the same GPU with
+the same code and harness, and passed. The tables therefore contain 474 valid
+records from 475 process attempts; the original failed log is preserved. The
+trace does not establish what triggered the additional compilation.
+
+For example, MatterGen CSP's subsequent-ten medians were 0.151–0.174 s
+across passes, while the longest calls were 111.582–125.573 s and the sums
+of all ten calls were 112.944–127.137 s. These long calls remain in the raw
+samples. The reported median is not a cumulative-cost measure.
 
 ## Family results
 
@@ -48,99 +80,99 @@ weights in the family.
 
 | Family | Weights | Faster | First CINN median (s) | Eager warm (ms) | CINN warm (ms) | Median speedup [range] |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| CHGNet | 1 | 1 | 137.296 | 26.336 | 12.621 | 2.09x [2.09x, 2.09x] |
-| ComFormer | 8 | 0 | 52.733 | 8.311 | 9.835 | 0.84x [0.71x, 0.91x] |
-| DiffCSP | 2 | 2 | 21.728 | 39.480 | 33.615 | 1.17x [1.16x, 1.18x] |
-| DiffNMR | 1 | 1 | 126.865 | 19,685.083 | 18,033.541 | 1.09x [1.09x, 1.09x] |
-| DimeNet++ MP2018 | 4 | 4 | 174.935 | 22.745 | 11.255 | 2.01x [1.89x, 2.16x] |
-| DimeNet++ QM9 | 12 | 12 | 175.312 | 21.207 | 10.843 | 1.93x [1.71x, 2.06x] |
-| MatterGen | 17 | 0 | 258.981 | 340.562 | 503.302 | 0.68x [0.63x, 0.76x] |
-| MatterSim | 2 | 2 | 149.109 | 36.900 | 9.617 | 3.82x [3.50x, 4.15x] |
-| MEGNet | 8 | 0 | 53.760 | 12.113 | 19.769 | 0.63x [0.57x, 0.65x] |
-| SFIN | 4 | 4 | 26.193 | 38.263 | 16.195 | 2.32x [2.01x, 2.52x] |
-| SphereNet MD17 | 8 | 8 | 260.129 | 47.980 | 16.946 | 2.93x [2.39x, 3.18x] |
-| SphereNet QM9 | 12 | 12 | 143.700 | 21.154 | 14.883 | 1.41x [1.33x, 1.46x] |
+| CHGNet | 1 | 1 | 134.162 | 25.842 | 13.153 | 1.96x [1.96x, 1.96x] |
+| ComFormer | 8 | 8 | 53.464 | 7.430 | 3.055 | 2.43x [2.18x, 2.50x] |
+| DiffCSP | 2 | 2 | 23.638 | 34.483 | 16.303 | 2.12x [2.10x, 2.13x] |
+| DiffNMR | 1 | 1 | 163.490 | 19,127.407 | 9,279.350 | 2.06x [2.06x, 2.06x] |
+| DimeNet++ MP2018 | 4 | 4 | 77.639 | 20.899 | 4.357 | 4.79x [4.45x, 5.15x] |
+| DimeNet++ QM9 | 12 | 12 | 75.339 | 19.024 | 4.329 | 4.38x [3.79x, 4.77x] |
+| MatterGen | 17 | 13 | 348.575 | 326.272 | 274.224 | 1.19x [0.96x, 1.57x] |
+| MatterSim | 2 | 2 | 157.544 | 34.751 | 9.845 | 3.53x [3.52x, 3.54x] |
+| MEGNet | 8 | 8 | 70.291 | 11.555 | 6.717 | 1.66x [1.62x, 1.77x] |
+| SFIN | 4 | 4 | 25.566 | 38.312 | 15.670 | 2.45x [1.94x, 2.50x] |
+| SphereNet MD17 | 8 | 8 | 251.388 | 44.110 | 14.344 | 3.13x [2.40x, 3.70x] |
+| SphereNet QM9 | 12 | 12 | 122.902 | 19.755 | 6.849 | 2.87x [2.63x, 3.21x] |
 
 ## Per-weight results
 
-| Registered weight | First CINN (s) | Compile estimate (s) | Eager warm (ms) | CINN warm (ms) | Speedup | Break-even calls |
+| Registered weight | First CINN (s) | First-call extra cost (s) | Eager warm (ms) | CINN warm (ms) | Speedup | Estimated break-even calls |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `chgnet_mptrj` | 137.296 | 137.283 | 26.336 | 12.621 | 2.09x | 10,010 |
-| `comformer_jarvis_alex_pbe_2d_all_e_form` | 53.234 | 53.224 | 8.030 | 9.895 | 0.81x | never |
-| `comformer_jarvis_dft_2d_e_form` | 53.752 | 53.742 | 7.984 | 9.792 | 0.82x | never |
-| `comformer_jarvis_dft_3d_e_form` | 53.904 | 53.892 | 8.260 | 11.610 | 0.71x | never |
-| `comformer_mp2018_train_60k_G` | 50.869 | 50.860 | 8.528 | 9.364 | 0.91x | never |
-| `comformer_mp2018_train_60k_K` | 52.233 | 52.223 | 8.366 | 9.627 | 0.87x | never |
-| `comformer_mp2018_train_60k_band_gap` | 53.459 | 53.449 | 8.149 | 10.051 | 0.81x | never |
-| `comformer_mp2018_train_60k_e_form` | 51.646 | 51.636 | 8.491 | 9.879 | 0.86x | never |
-| `comformer_mp2024_train_130k_e_form` | 51.825 | 51.815 | 8.361 | 9.578 | 0.87x | never |
-| `diffcsp_mp20` | 21.572 | 21.539 | 38.599 | 33.149 | 1.16x | 3,953 |
-| `diffcsp_mp20_ab_initio` | 21.883 | 21.849 | 40.362 | 34.082 | 1.18x | 3,479 |
-| `diffnmr_msdnmr_nless15` | 126.865 | 108.831 | 19,685.083 | 18,033.541 | 1.09x | 66 |
-| `dimenetpp_mp2018_train_60k_G` | 173.587 | 173.576 | 20.954 | 11.063 | 1.89x | 17,549 |
-| `dimenetpp_mp2018_train_60k_K` | 174.487 | 174.476 | 21.633 | 11.331 | 1.91x | 16,937 |
-| `dimenetpp_mp2018_train_60k_band_gap` | 176.005 | 175.994 | 24.346 | 11.251 | 2.16x | 13,440 |
-| `dimenetpp_mp2018_train_60k_e_form` | 175.383 | 175.372 | 23.857 | 11.259 | 2.12x | 13,921 |
-| `dimenetpp_qm9_Cv` | 184.914 | 184.902 | 20.878 | 12.006 | 1.74x | 20,841 |
-| `dimenetpp_qm9_G` | 183.871 | 183.860 | 21.867 | 10.797 | 2.03x | 16,610 |
-| `dimenetpp_qm9_H` | 182.481 | 182.470 | 21.412 | 11.126 | 1.92x | 17,740 |
-| `dimenetpp_qm9_U` | 181.177 | 181.164 | 21.531 | 12.563 | 1.71x | 20,202 |
-| `dimenetpp_qm9_U0` | 175.980 | 175.969 | 20.820 | 10.840 | 1.92x | 17,632 |
-| `dimenetpp_qm9_alpha` | 174.686 | 174.676 | 21.398 | 10.690 | 2.00x | 16,313 |
-| `dimenetpp_qm9_gap` | 175.422 | 175.411 | 20.922 | 10.805 | 1.94x | 17,338 |
-| `dimenetpp_qm9_homo` | 174.717 | 174.706 | 20.895 | 10.826 | 1.93x | 17,353 |
-| `dimenetpp_qm9_lumo` | 175.203 | 175.192 | 20.276 | 11.105 | 1.83x | 19,103 |
-| `dimenetpp_qm9_mu` | 174.907 | 174.896 | 21.016 | 10.846 | 1.94x | 17,198 |
-| `dimenetpp_qm9_r2` | 174.449 | 174.438 | 21.489 | 11.036 | 1.95x | 16,688 |
-| `dimenetpp_qm9_zpve` | 174.874 | 174.863 | 21.795 | 10.560 | 2.06x | 15,564 |
-| `mattergen_alex_mp20` | 256.315 | 256.081 | 172.278 | 234.290 | 0.74x | never |
-| `mattergen_alex_mp20_chemical_system` | 264.755 | 264.298 | 343.203 | 456.753 | 0.75x | never |
-| `mattergen_alex_mp20_chemical_system_energy_above_hull` | 276.666 | 276.182 | 345.945 | 483.861 | 0.71x | never |
-| `mattergen_alex_mp20_dft_band_gap` | 253.012 | 252.499 | 328.696 | 512.786 | 0.64x | never |
-| `mattergen_alex_mp20_dft_mag_density` | 253.310 | 252.787 | 339.267 | 523.796 | 0.65x | never |
-| `mattergen_alex_mp20_dft_mag_density_hhi_score` | 256.601 | 256.100 | 341.793 | 501.565 | 0.68x | never |
-| `mattergen_alex_mp20_ml_bulk_modulus` | 254.362 | 253.841 | 337.521 | 520.516 | 0.65x | never |
-| `mattergen_alex_mp20_space_group` | 281.360 | 280.833 | 340.562 | 527.493 | 0.65x | never |
-| `mattergen_ml2ddb` | 248.953 | 248.723 | 175.187 | 230.254 | 0.76x | never |
-| `mattergen_ml2ddb_chemical_system` | 264.622 | 264.105 | 338.964 | 516.656 | 0.66x | never |
-| `mattergen_ml2ddb_space_group` | 254.549 | 253.985 | 353.574 | 564.080 | 0.63x | never |
-| `mattergen_mp20` | 253.121 | 252.873 | 176.741 | 248.288 | 0.71x | never |
-| `mattergen_mp20_chemical_system` | 262.961 | 262.466 | 348.049 | 494.905 | 0.70x | never |
-| `mattergen_mp20_csp` | 268.722 | 268.458 | 179.104 | 263.406 | 0.68x | never |
-| `mattergen_mp20_dft_band_gap` | 258.981 | 258.478 | 365.091 | 503.302 | 0.73x | never |
-| `mattergen_mp20_dft_bulk_modulus` | 259.948 | 259.398 | 351.841 | 549.921 | 0.64x | never |
-| `mattergen_mp20_dft_mag_density` | 261.062 | 260.529 | 351.732 | 533.397 | 0.66x | never |
-| `mattersim_1M` | 141.675 | 141.666 | 32.414 | 9.253 | 3.50x | 6,117 |
-| `mattersim_5M` | 156.544 | 156.534 | 41.386 | 9.982 | 4.15x | 4,985 |
-| `megnet_jarvis_alex_pbe_2d_all_e_form` | 47.983 | 47.964 | 11.926 | 18.902 | 0.63x | never |
-| `megnet_jarvis_dft_2d_e_form` | 49.512 | 49.493 | 12.289 | 18.981 | 0.65x | never |
-| `megnet_jarvis_dft_3d_e_form` | 49.362 | 49.343 | 12.011 | 18.549 | 0.65x | never |
-| `megnet_mp2018_train_60k_G` | 53.957 | 53.935 | 13.716 | 21.750 | 0.63x | never |
-| `megnet_mp2018_train_60k_K` | 54.010 | 53.988 | 13.596 | 21.878 | 0.62x | never |
-| `megnet_mp2018_train_60k_band_gap` | 54.819 | 54.798 | 11.968 | 20.904 | 0.57x | never |
-| `megnet_mp2018_train_60k_e_form` | 54.508 | 54.487 | 11.857 | 20.410 | 0.58x | never |
-| `megnet_mp2024_train_130k_e_form` | 53.562 | 53.543 | 12.216 | 19.127 | 0.64x | never |
-| `sfin_bf_detect` | 25.757 | 25.738 | 39.045 | 19.379 | 2.01x | 1,309 |
-| `sfin_bf_enhance` | 26.325 | 26.308 | 37.119 | 16.899 | 2.20x | 1,302 |
-| `sfin_haadf_detect` | 26.115 | 26.100 | 38.595 | 15.326 | 2.52x | 1,122 |
-| `sfin_haadf_enhance` | 26.272 | 26.256 | 37.931 | 15.491 | 2.45x | 1,171 |
-| `spherenet_md17_aspirin` | 259.083 | 259.068 | 47.250 | 15.508 | 3.05x | 8,162 |
-| `spherenet_md17_benzene_old` | 255.978 | 255.962 | 48.587 | 15.567 | 3.12x | 7,752 |
-| `spherenet_md17_ethanol` | 260.034 | 260.017 | 49.112 | 16.827 | 2.92x | 8,054 |
-| `spherenet_md17_malonaldehyde` | 260.490 | 260.470 | 47.662 | 19.892 | 2.40x | 9,380 |
-| `spherenet_md17_naphthalene` | 260.223 | 260.208 | 48.298 | 15.202 | 3.18x | 7,863 |
-| `spherenet_md17_salicylic` | 257.560 | 257.542 | 53.548 | 18.251 | 2.93x | 7,297 |
-| `spherenet_md17_toluene` | 261.926 | 261.908 | 44.640 | 18.647 | 2.39x | 10,076 |
-| `spherenet_md17_uracil` | 261.918 | 261.901 | 47.446 | 17.066 | 2.78x | 8,621 |
-| `spherenet_qm9_Cv` | 143.733 | 143.718 | 21.131 | 14.631 | 1.44x | 22,109 |
-| `spherenet_qm9_G` | 143.666 | 143.652 | 20.882 | 14.841 | 1.41x | 23,780 |
-| `spherenet_qm9_H` | 144.182 | 144.167 | 21.233 | 15.162 | 1.40x | 23,749 |
-| `spherenet_qm9_U` | 142.687 | 142.672 | 20.866 | 14.664 | 1.42x | 23,007 |
-| `spherenet_qm9_U0` | 144.034 | 144.020 | 21.200 | 14.491 | 1.46x | 21,467 |
-| `spherenet_qm9_alpha` | 146.084 | 146.069 | 21.294 | 14.959 | 1.42x | 23,059 |
-| `spherenet_qm9_gap` | 142.761 | 142.746 | 20.481 | 15.411 | 1.33x | 28,151 |
-| `spherenet_qm9_homo` | 142.876 | 142.861 | 21.309 | 14.793 | 1.44x | 21,927 |
-| `spherenet_qm9_lumo` | 144.167 | 144.152 | 21.176 | 15.019 | 1.41x | 23,410 |
-| `spherenet_qm9_mu` | 142.856 | 142.841 | 20.986 | 14.925 | 1.41x | 23,571 |
-| `spherenet_qm9_r2` | 94.262 | 94.248 | 19.075 | 13.871 | 1.38x | 18,112 |
-| `spherenet_qm9_zpve` | 143.778 | 143.763 | 21.282 | 15.099 | 1.41x | 23,249 |
+| `chgnet_mptrj` | 134.162 | 134.149 | 25.842 | 13.153 | 1.96x | 10,573 |
+| `comformer_jarvis_alex_pbe_2d_all_e_form` | 53.230 | 53.227 | 7.370 | 3.142 | 2.35x | 12,590 |
+| `comformer_jarvis_dft_2d_e_form` | 53.734 | 53.731 | 7.358 | 3.041 | 2.42x | 12,449 |
+| `comformer_jarvis_dft_3d_e_form` | 53.698 | 53.695 | 7.452 | 2.981 | 2.50x | 12,010 |
+| `comformer_mp2018_train_60k_G` | 52.814 | 52.811 | 7.396 | 3.269 | 2.26x | 12,796 |
+| `comformer_mp2018_train_60k_K` | 51.731 | 51.728 | 7.527 | 3.451 | 2.18x | 12,690 |
+| `comformer_mp2018_train_60k_band_gap` | 53.101 | 53.098 | 7.409 | 3.019 | 2.45x | 12,095 |
+| `comformer_mp2018_train_60k_e_form` | 54.260 | 54.257 | 7.608 | 3.042 | 2.50x | 11,882 |
+| `comformer_mp2024_train_130k_e_form` | 54.089 | 54.085 | 7.472 | 3.069 | 2.43x | 12,286 |
+| `diffcsp_mp20` | 20.976 | 20.960 | 32.991 | 15.466 | 2.13x | 1,197 |
+| `diffcsp_mp20_ab_initio` | 26.300 | 26.283 | 35.975 | 17.141 | 2.10x | 1,396 |
+| `diffnmr_msdnmr_nless15` | 163.490 | 154.211 | 19,127.407 | 9,279.350 | 2.06x | 16 |
+| `dimenetpp_mp2018_train_60k_G` | 77.094 | 77.090 | 19.291 | 4.335 | 4.45x | 5,155 |
+| `dimenetpp_mp2018_train_60k_K` | 78.203 | 78.199 | 19.627 | 4.354 | 4.51x | 5,120 |
+| `dimenetpp_mp2018_train_60k_band_gap` | 77.705 | 77.700 | 22.171 | 4.366 | 5.08x | 4,364 |
+| `dimenetpp_mp2018_train_60k_e_form` | 77.573 | 77.569 | 22.441 | 4.360 | 5.15x | 4,291 |
+| `dimenetpp_qm9_Cv` | 75.602 | 75.598 | 19.022 | 4.273 | 4.45x | 5,126 |
+| `dimenetpp_qm9_G` | 75.144 | 75.139 | 19.026 | 4.798 | 3.97x | 5,282 |
+| `dimenetpp_qm9_H` | 76.038 | 76.034 | 18.656 | 4.467 | 4.18x | 5,359 |
+| `dimenetpp_qm9_U` | 73.927 | 73.922 | 18.717 | 4.896 | 3.82x | 5,349 |
+| `dimenetpp_qm9_U0` | 76.348 | 76.344 | 19.629 | 4.190 | 4.69x | 4,945 |
+| `dimenetpp_qm9_alpha` | 74.610 | 74.605 | 18.817 | 4.963 | 3.79x | 5,386 |
+| `dimenetpp_qm9_gap` | 75.241 | 75.236 | 18.916 | 4.384 | 4.31x | 5,178 |
+| `dimenetpp_qm9_homo` | 75.419 | 75.415 | 19.022 | 4.211 | 4.52x | 5,092 |
+| `dimenetpp_qm9_lumo` | 75.258 | 75.254 | 19.381 | 4.214 | 4.60x | 4,962 |
+| `dimenetpp_qm9_mu` | 75.582 | 75.578 | 19.937 | 4.184 | 4.77x | 4,798 |
+| `dimenetpp_qm9_r2` | 75.071 | 75.067 | 19.318 | 4.152 | 4.65x | 4,950 |
+| `dimenetpp_qm9_zpve` | 75.859 | 75.854 | 19.204 | 4.898 | 3.92x | 5,303 |
+| `mattergen_alex_mp20` | 338.525 | 338.384 | 165.197 | 141.504 | 1.17x | 14,282 |
+| `mattergen_alex_mp20_chemical_system` | 298.418 | 298.078 | 326.272 | 339.898 | 0.96x | never |
+| `mattergen_alex_mp20_chemical_system_energy_above_hull` | 286.127 | 285.789 | 336.399 | 337.867 | 1.00x | never |
+| `mattergen_alex_mp20_dft_band_gap` | 369.134 | 368.844 | 352.789 | 289.786 | 1.22x | 5,855 |
+| `mattergen_alex_mp20_dft_mag_density` | 372.261 | 371.986 | 342.179 | 275.031 | 1.24x | 5,540 |
+| `mattergen_alex_mp20_dft_mag_density_hhi_score` | 369.039 | 368.815 | 328.087 | 223.820 | 1.47x | 3,538 |
+| `mattergen_alex_mp20_ml_bulk_modulus` | 361.645 | 361.358 | 342.073 | 286.654 | 1.19x | 6,521 |
+| `mattergen_alex_mp20_space_group` | 272.753 | 272.534 | 343.790 | 219.119 | 1.57x | 2,187 |
+| `mattergen_ml2ddb` | 341.259 | 341.141 | 161.957 | 118.196 | 1.37x | 7,796 |
+| `mattergen_ml2ddb_chemical_system` | 276.401 | 276.087 | 312.834 | 313.953 | 1.00x | never |
+| `mattergen_ml2ddb_space_group` | 363.190 | 362.888 | 350.261 | 301.931 | 1.16x | 7,509 |
+| `mattergen_mp20` | 348.575 | 348.442 | 180.682 | 132.346 | 1.37x | 7,209 |
+| `mattergen_mp20_chemical_system` | 297.668 | 297.346 | 314.303 | 321.837 | 0.98x | never |
+| `mattergen_mp20_csp` | 341.529 | 341.375 | 177.939 | 153.973 | 1.16x | 14,245 |
+| `mattergen_mp20_dft_band_gap` | 366.559 | 366.293 | 318.311 | 265.692 | 1.20x | 6,962 |
+| `mattergen_mp20_dft_bulk_modulus` | 367.520 | 367.283 | 327.714 | 236.860 | 1.38x | 4,043 |
+| `mattergen_mp20_dft_mag_density` | 362.261 | 361.987 | 315.356 | 274.224 | 1.15x | 8,801 |
+| `mattersim_1M` | 149.221 | 149.212 | 31.375 | 8.856 | 3.54x | 6,626 |
+| `mattersim_5M` | 165.868 | 165.857 | 38.126 | 10.834 | 3.52x | 6,078 |
+| `megnet_jarvis_alex_pbe_2d_all_e_form` | 69.601 | 69.594 | 11.737 | 6.695 | 1.75x | 13,804 |
+| `megnet_jarvis_dft_2d_e_form` | 69.996 | 69.989 | 10.983 | 6.650 | 1.65x | 16,153 |
+| `megnet_jarvis_dft_3d_e_form` | 70.319 | 70.313 | 11.195 | 6.744 | 1.66x | 15,795 |
+| `megnet_mp2018_train_60k_G` | 70.309 | 70.301 | 12.908 | 7.814 | 1.65x | 13,801 |
+| `megnet_mp2018_train_60k_K` | 69.740 | 69.732 | 12.737 | 7.873 | 1.62x | 14,335 |
+| `megnet_mp2018_train_60k_band_gap` | 70.273 | 70.267 | 11.495 | 6.641 | 1.73x | 14,478 |
+| `megnet_mp2018_train_60k_e_form` | 70.430 | 70.423 | 11.615 | 6.561 | 1.77x | 13,935 |
+| `megnet_mp2024_train_130k_e_form` | 70.454 | 70.447 | 11.200 | 6.739 | 1.66x | 15,793 |
+| `sfin_bf_detect` | 25.612 | 25.596 | 38.292 | 15.674 | 2.44x | 1,132 |
+| `sfin_bf_enhance` | 25.865 | 25.846 | 37.926 | 19.521 | 1.94x | 1,405 |
+| `sfin_haadf_detect` | 25.373 | 25.358 | 38.475 | 15.666 | 2.46x | 1,112 |
+| `sfin_haadf_enhance` | 25.519 | 25.504 | 38.333 | 15.347 | 2.50x | 1,110 |
+| `spherenet_md17_aspirin` | 251.601 | 251.586 | 48.385 | 15.118 | 3.20x | 7,563 |
+| `spherenet_md17_benzene_old` | 250.319 | 250.304 | 50.101 | 14.174 | 3.53x | 6,968 |
+| `spherenet_md17_ethanol` | 247.947 | 247.933 | 48.941 | 13.213 | 3.70x | 6,940 |
+| `spherenet_md17_malonaldehyde` | 253.856 | 253.838 | 43.493 | 18.151 | 2.40x | 10,017 |
+| `spherenet_md17_naphthalene` | 251.782 | 251.768 | 44.249 | 14.449 | 3.06x | 8,449 |
+| `spherenet_md17_salicylic` | 251.175 | 251.163 | 43.972 | 12.514 | 3.51x | 7,985 |
+| `spherenet_md17_toluene` | 253.191 | 253.175 | 42.458 | 15.853 | 2.68x | 9,517 |
+| `spherenet_md17_uracil` | 246.768 | 246.754 | 41.925 | 14.238 | 2.94x | 8,913 |
+| `spherenet_qm9_Cv` | 121.391 | 121.384 | 20.054 | 6.770 | 2.96x | 9,138 |
+| `spherenet_qm9_G` | 122.783 | 122.776 | 19.728 | 6.923 | 2.85x | 9,588 |
+| `spherenet_qm9_H` | 123.147 | 123.140 | 19.838 | 6.816 | 2.91x | 9,457 |
+| `spherenet_qm9_U` | 123.489 | 123.482 | 19.766 | 6.961 | 2.84x | 9,643 |
+| `spherenet_qm9_U0` | 122.973 | 122.965 | 20.265 | 7.718 | 2.63x | 9,801 |
+| `spherenet_qm9_alpha` | 122.832 | 122.825 | 20.154 | 6.857 | 2.94x | 9,238 |
+| `spherenet_qm9_gap` | 123.911 | 123.904 | 21.881 | 6.808 | 3.21x | 8,221 |
+| `spherenet_qm9_homo` | 122.285 | 122.279 | 19.456 | 6.872 | 2.83x | 9,718 |
+| `spherenet_qm9_lumo` | 123.271 | 123.264 | 19.744 | 6.840 | 2.89x | 9,553 |
+| `spherenet_qm9_mu` | 121.930 | 121.924 | 19.597 | 6.664 | 2.94x | 9,428 |
+| `spherenet_qm9_r2` | 66.340 | 66.334 | 17.649 | 6.519 | 2.71x | 5,960 |
+| `spherenet_qm9_zpve` | 125.330 | 125.323 | 19.496 | 6.921 | 2.82x | 9,967 |
