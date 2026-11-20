@@ -1,0 +1,114 @@
+# Copyright (c) 2025 PaddlePaddle Authors. All Rights Reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Adapted from https://github.com/divelab/AIRS (OpenMat/HIENet)
+
+from typing import Tuple
+
+import paddle
+from .. import get_optimization_defaults
+
+
+def _conditional_script(fn):
+    """apply torch.jit.script only if jit_mode is 'script'"""
+    if get_optimization_defaults()["jit_mode"] == "script":
+        return paddle.jit.to_static(function=fn)
+    return fn
+
+
+def direct_sum(*matrices):
+    """Direct sum of matrices, put them in the diagonal"""
+    front_indices = matrices[0].shape[:-2]
+    m = sum(x.size(-2) for x in matrices)
+    n = sum(x.size(-1) for x in matrices)
+    total_shape = list(front_indices) + [m, n]
+    out = matrices[0].new_zeros(total_shape)
+    i, j = 0, 0
+    for x in matrices:
+        m, n = x.shape[-2:]
+        out[..., i : i + m, j : j + n] = x
+        i += m
+        j += n
+    return out
+
+
+@_conditional_script
+def orthonormalize(
+    original: paddle.Tensor, eps: float = 1e-09
+) -> Tuple[paddle.Tensor, paddle.Tensor]:
+    """orthonomalize vectors
+
+    Parameters
+    ----------
+    original : `torch.Tensor`
+        list of the original vectors :math:`x`
+
+    eps : float
+        a small number
+
+    Returns
+    -------
+    final : `torch.Tensor`
+        list of orthonomalized vectors :math:`y`
+
+    matrix : `torch.Tensor`
+        the matrix :math:`A` such that :math:`y = A x`
+    """
+    assert original.dim() == 2
+    dim = original.shape[1]
+    final = []
+    matrix = []
+    for i, x in enumerate(original):
+        cx = x.new_zeros(len(original))
+        cx[i] = 1
+        for j, y in enumerate(final):
+            c = paddle.dot(x, y)
+            x = x - c * y
+            cx = cx - c * matrix[j]
+        if x.norm() > 2 * eps:
+            c = 1 / x.norm()
+            x = c * x
+            cx = c * cx
+            x[x.abs() < eps] = 0
+            cx[cx.abs() < eps] = 0
+            c = x[x.nonzero()[0, 0]].sign()
+            x = c * x
+            cx = c * cx
+            final += [x]
+            matrix += [cx]
+    final = paddle.stack(final) if len(final) > 0 else original.new_zeros((0, dim))
+    matrix = (
+        paddle.stack(matrix)
+        if len(matrix) > 0
+        else original.new_zeros((0, len(original)))
+    )
+    return final, matrix
+
+
+@_conditional_script
+def complete_basis(vecs: paddle.Tensor, eps: float = 1e-09) -> paddle.Tensor:
+    assert vecs.dim() == 2
+    dim = vecs.shape[1]
+    base = [(x / x.norm()) for x in vecs]
+    expand = []
+    for x in paddle.eye(dim, device=vecs.device, dtype=vecs.dtype):
+        for y in base + expand:
+            x -= paddle.dot(x, y) * y
+        if x.norm() > 2 * eps:
+            x /= x.norm()
+            x[x.abs() < eps] = x.new_zeros(())
+            x *= x[x.nonzero()[0, 0]].sign()
+            expand += [x]
+    expand = paddle.stack(expand) if len(expand) > 0 else vecs.new_zeros(0, dim)
+    return expand

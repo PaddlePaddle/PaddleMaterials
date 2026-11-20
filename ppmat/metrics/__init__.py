@@ -18,12 +18,14 @@ import paddle  # noqa
 
 from ppmat.metrics.csp_metric import CSPMetric
 from ppmat.metrics.diffnmr_streaming_adapter import DiffNMRStreamingAdapter
+from ppmat.metrics.hienet_stress_metric import HIENetStressVoigtMetric
 from ppmat.metrics.sfin_metric import SFINStreamingAdapter
 
 __all__ = [
     "build_metric",
     "CSPMetric",
     "DiffNMRStreamingAdapter",
+    "HIENetStressVoigtMetric",
     "SFINStreamingAdapter",
     # "DiffNMRMetric",
     # "NLL", "CrossEntropyMetric", "SumExceptBatchMetric", "SumExceptBatchKL",

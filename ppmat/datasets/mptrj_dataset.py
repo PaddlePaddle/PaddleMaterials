@@ -438,11 +438,17 @@ class MPTrjDataset(Dataset):
                 if isinstance(value, str):
                     data[property_name] = value
                 elif property_name in ["force", "stress", "magmom"]:
-                    num_atoms = (
-                        data["graph"].node_feat["num_atoms"]
-                        if "graph" in data.keys()
-                        else data["structure_array"]["num_atoms"].data
-                    )
+                    # pgl graphs carry the count in node_feat; geometric
+                    # Data converters emit it as a flat key.
+                    if "graph" in data.keys():
+                        graph = data["graph"]
+                        num_atoms = (
+                            graph.node_feat["num_atoms"]
+                            if hasattr(graph, "node_feat")
+                            else graph["num_atoms"]
+                        )
+                    else:
+                        num_atoms = data["structure_array"]["num_atoms"].data
                     num_atoms = num_atoms[0]
                     if value is None:
                         if property_name == "force":

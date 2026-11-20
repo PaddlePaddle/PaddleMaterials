@@ -1,0 +1,231 @@
+# HIENet training config (ppmat seven-section layout).
+
+Global:
+  do_train: True
+  do_eval: False
+  do_test: False
+
+  label_names: ['energy', 'force', 'stress']
+  graph_converter:
+    __class_name__: HIENetGraphConverter
+    __init_params__:
+      cutoff: 5.0
+
+  prim_eager_enabled: False
+
+Trainer:
+  max_epochs: 200
+  seed: 1
+  output_dir: ./output/hienet_v3
+  save_freq: 10
+  log_freq: 10
+  start_eval_epoch: 1
+  eval_freq: 1
+  # Pretrained model path, if null, no pretrained model will be loaded
+  pretrained_model_path: null
+  pretrained_weight_name: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: 'O1'
+  # force/stress are energy derivatives, so eval must not run under no_grad
+  eval_with_no_grad: False
+  gradient_accumulation_steps: 1
+  best_metric_indicator: 'eval_metric'
+  name_for_best_metric: 'energy'
+  greater_is_better: False
+  compute_metric_during_train: True
+  metric_strategy_during_eval: 'step'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: HIENet
+  __init_params__:
+    # dataset label keys (the raw MPtrj field names); the model maps
+    # uncorrected_total_energy to its energy output
+    property_names: ['uncorrected_total_energy', 'force', 'stress']
+    # _type_map / shift / scale are per-checkpoint constants carried by the
+    # released weights; see "Configuration constants" in README.md before
+    # retraining from scratch or swapping in other weights.
+    config:
+      cutoff: 5.0
+      _number_of_species: 89
+      _type_map: {89: 0, 47: 1, 13: 2, 18: 3, 33: 4, 79: 5, 5: 6, 56: 7, 4: 8, 83: 9, 35: 10,
+        6: 11, 20: 12, 48: 13, 58: 14, 17: 15, 27: 16, 24: 17, 55: 18, 29: 19, 66: 20, 68: 21,
+        63: 22, 9: 23, 26: 24, 31: 25, 64: 26, 32: 27, 1: 28, 2: 29, 72: 30, 80: 31, 67: 32,
+        53: 33, 49: 34, 77: 35, 19: 36, 36: 37, 57: 38, 3: 39, 71: 40, 12: 41, 25: 42, 42: 43,
+        7: 44, 11: 45, 41: 46, 60: 47, 10: 48, 28: 49, 93: 50, 8: 51, 76: 52, 15: 53, 91: 54,
+        82: 55, 46: 56, 61: 57, 59: 58, 78: 59, 94: 60, 37: 61, 75: 62, 45: 63, 44: 64, 16: 65,
+        51: 66, 21: 67, 34: 68, 14: 69, 62: 70, 50: 71, 38: 72, 73: 73, 65: 74, 43: 75, 52: 76,
+        90: 77, 22: 78, 81: 79, 69: 80, 92: 81, 23: 82, 74: 83, 54: 84, 39: 85, 70: 86, 30: 87,
+        40: 88}
+      irreps_manual:
+        - '384x0e'
+        - '512x0e+128x1e+64x2e'
+        - '512x0e+128x1e+64x2e+32x3e'
+        - '512x0e+128x1e+64x2e+32x3e'
+        - '512x0e'
+      sh: "1x0e + 1x1e + 1x2e + 1x3e"
+      inv_features: [384, 384]
+      triplet_features: 512
+      num_invariant_conv: 1
+      use_comf_embedding: False
+      use_edge_conv: False
+      use_cgcnn_embedding: False
+      lmax: 3
+      lmax_edge: -1
+      lmax_node: -1
+      is_parity: False
+      radial_basis:
+        radial_basis_name: bessel
+        bessel_basis_num: 8
+      cutoff_function:
+        cutoff_function_name: poly_cut
+        poly_cut_p_value: 6
+      act_radial: silu
+      act_scalar:
+        e: silu
+        o: tanh
+      act_gate:
+        e: silu
+        o: tanh
+      conv_denominator: 35.989574 # 'avg_num_neigh'
+      weight_nn_hidden_neurons: [64, 64]
+      num_convolution_layer: 3
+      self_connection_type: linear
+      use_bias_in_linear: False
+      readout_as_fcn: False
+      _normalize_sph: True
+      dropout: 0.04 # dropout for mlps
+      dropout_attn: 0.08 # dropout on attention weigths
+      use_denoising: False
+      use_species_wise_shift_scale: True
+      train_shift_scale: False # allow shift/scale to be trainable params
+      train_denominator: False
+      shift: [-4.976337432861328, -2.062394380569458, -4.850656986236572, -0.0626310408115387,
+        -3.9736762046813965, -2.372425079345703, -7.728188991546631, -4.9875383377075195,
+        -4.761916160583496, -3.443413257598877, -2.5239810943603516, -8.403777122497559,
+        -5.389795303344727, -0.6401233077049255, -8.73913860321045, -2.812206745147705,
+        -5.57773494720459, -9.235284805297852, -2.768251657485962, -3.2433338165283203,
+        -8.123305320739746, -6.803064346313477, -13.600611686706543, -4.898566246032715,
+        -7.047091007232666, -3.528671979904175, -18.509862899780273, -4.706840991973877,
+        -3.6671040058135986, -1.3169609308242798, -12.783592224121094, 0.25511330366134644,
+        -7.605325698852539, -1.6401801109313965, -2.789116144180298, -7.324741840362549,
+        -2.6213138103485107, 6.762941360473633, -8.939224243164062, -3.4794907569885254,
+        -7.4462971687316895, -2.822338104248047, -8.304560661315918, -8.782547950744629,
+        -7.358026027679443, -2.759213447570801, -12.138731002807617, -8.253807067871094,
+        -0.029634622856974602, -5.172701835632324, -14.94078540802002, -7.284396648406982,
+        -9.629858016967773, -6.961874485015869, -12.265888214111328, -3.7320823669433594,
+        -4.883209705352783, -7.562558174133301, -8.015908241271973, -5.300786018371582,
+        -15.269716262817383, -2.5620508193969727, -11.380659103393555, -6.856767177581787,
+        -7.777291774749756, -4.67112922668457, -3.5867326259613037, -7.904437065124512,
+        -3.889052391052246, -7.700756549835205, -8.160840034484863, -3.816749095916748,
+        -4.944102764129639, -14.108634948730469, -7.650569915771484, -8.793882369995117,
+        -2.8766283988952637, -11.007125854492188, -10.290688514709473, -2.3261520862579346,
+        -7.825587749481201, -13.8422212600708, -8.661603927612305, -9.378005981445312,
+        9.952446937561035, -10.162566184997559, -3.583754301071167, -1.2931500673294067,
+        -11.847882270812988]
+      scale: [0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799,
+        0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799,
+        0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799,
+        0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799,
+        0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799,
+        0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799,
+        0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799, 0.799,
+        0.799, 0.799, 0.799, 0.799, 0.799, 0.799]
+    loss_type: huber
+    huber_loss_delta: 0.01
+    loss_weights_dict:
+      energy: 1.0
+      force: 1.0
+      stress: 0.01
+
+Optimizer:
+  __class_name__: AdamW
+  __init_params__:
+    weight_decay: 0.001
+    lr:
+      __class_name__: Cosine
+      __init_params__:
+        learning_rate: 0.01
+        eta_min: 5e-6
+        warmup_epoch: 0
+        by_epoch: False
+
+Metric:
+  energy:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+  force:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+  stress:
+    __class_name__: HIENetStressVoigtMetric
+    __init_params__: {}
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MPTrjDataset
+      __init_params__:
+        path: "./data/MPtrj_2022.9_full/train.json"
+        # label keys as stored in the split JSON
+        property_names: ['uncorrected_total_energy', 'force', 'stress']
+        build_structure_cfg:
+          format: dict
+          num_cpus: 10
+        build_graph_cfg: ${Global.graph_converter}
+        # kBar -> eV/A^3 (1 / 1602.1766208); sign preserved
+        filter_unvalid: False
+        transforms:
+          - __class_name__: Scale
+            __init_params__:
+              scale: 0.0006241509125883258
+              apply_keys: ['stress']
+        # keep the graph cache separate from configs using other converters
+        cache_path: "./data/MPtrj_2022.9_full_cache_hienet/train"
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 48
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+  val:
+    dataset:
+      __class_name__: MPTrjDataset
+      __init_params__:
+        path: "./data/MPtrj_2022.9_full/val.json"
+        property_names: ['uncorrected_total_energy', 'force', 'stress']
+        build_structure_cfg:
+          format: dict
+          num_cpus: 10
+        build_graph_cfg: ${Global.graph_converter}
+        filter_unvalid: False
+        transforms:
+          - __class_name__: Scale
+            __init_params__:
+              scale: 0.0006241509125883258
+              apply_keys: ['stress']
+        cache_path: "./data/MPtrj_2022.9_full_cache_hienet/val"
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 48
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+
+
+Predict:
+  graph_converter: ${Global.graph_converter}
+  eval_with_no_grad: False
