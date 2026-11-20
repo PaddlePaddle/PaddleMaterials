@@ -201,7 +201,7 @@ class UMA(paddle.nn.Layer):
         wigner_inv = paddle.einsum("njk,mk->njm", wigner_inv, to_m)
         return wigner, wigner_inv
 
-    def _forward(self, data: dict) -> tuple[paddle.Tensor, paddle.Tensor]:
+    def _forward(self, data: dict) -> dict[str, paddle.Tensor]:
         graph = data["graph"].tensor()
         node_feat = graph.node_feat
         edge_feat = graph.edge_feat
@@ -264,7 +264,28 @@ class UMA(paddle.nn.Layer):
 
         force_embedding = self.force_head(x[:, :4, :])
         forces = force_embedding[:, 1:4, 0]
-        return energy, forces
+        return {"energy": energy, "forces": forces}
+
+    def loss_fn(self, pred: dict, label: dict) -> dict[str, paddle.Tensor]:
+        graph = label["graph"]
+        natoms = graph.node_feat["num_atoms"].reshape([-1]).astype(pred["energy"].dtype)
+        batch = graph.graph_node_id
+        scale = natoms.reshape([-1, 1])
+        energy_loss = paddle.nn.functional.l1_loss(
+            pred["energy"] / scale, label["energy"] / scale
+        )
+        atom_force_loss = paddle.linalg.norm(pred["forces"] - label["forces"], axis=1)
+        structure_force_loss = paddle.zeros_like(natoms, dtype=atom_force_loss.dtype)
+        structure_force_loss = structure_force_loss.index_add(
+            axis=0, index=batch, value=atom_force_loss
+        )
+        forces_loss = (structure_force_loss / natoms).mean()
+        return {
+            "energy": energy_loss,
+            "forces": forces_loss,
+            "loss": energy_loss * self.loss_weights_dict["energy"]
+            + forces_loss * self.loss_weights_dict["forces"],
+        }
 
     def forward(
         self,
@@ -276,48 +297,17 @@ class UMA(paddle.nn.Layer):
             raise ValueError(
                 "At least one of return_loss and return_prediction must be True."
             )
-        energy, forces = self._forward(data)
-        predictions = {"energy": energy, "forces": forces}
-
-        loss_dict: dict[str, paddle.Tensor] = {}
-        if return_loss:
-            graph = data["graph"].tensor()
-            natoms = graph.node_feat["num_atoms"].reshape([-1]).astype(energy.dtype)
-            batch = graph.graph_node_id.astype("int64")
-            energy_label = data["energy"]
-            if not paddle.is_tensor(energy_label):
-                energy_label = paddle.to_tensor(energy_label)
-            energy_label = energy_label.astype(energy.dtype).reshape(energy.shape)
-            forces_label = data["forces"]
-            if not paddle.is_tensor(forces_label):
-                forces_label = paddle.to_tensor(forces_label)
-            forces_label = forces_label.astype(forces.dtype).reshape(forces.shape)
-
-            scale = natoms.reshape([-1, 1])
-            energy_loss = paddle.nn.functional.l1_loss(
-                energy / scale,
-                energy_label / scale,
-            )
-            atom_force_loss = paddle.linalg.norm(forces - forces_label, axis=1)
-            structure_force_loss = paddle.zeros(
-                [natoms.shape[0]], dtype=atom_force_loss.dtype
-            ).index_add(axis=0, index=batch, value=atom_force_loss)
-            forces_loss = (structure_force_loss / natoms).mean()
-
-            loss_dict = {
-                "energy": energy_loss,
-                "forces": forces_loss,
-                "loss": energy_loss * self.loss_weights_dict["energy"]
-                + forces_loss * self.loss_weights_dict["forces"],
-            }
-
-        pred_dict = predictions if return_prediction else {}
+        pred = self._forward(data)
+        loss_dict = self.loss_fn(pred, data) if return_loss else {}
+        pred_dict = pred if return_prediction else {}
         return {"loss_dict": loss_dict, "pred_dict": pred_dict}
 
-    def predict(self, graph) -> dict[str, np.ndarray]:
-        output = self.forward(
-            {"graph": graph},
-            return_loss=False,
-            return_prediction=True,
-        )
-        return {name: value.numpy() for name, value in output["pred_dict"].items()}
+    @paddle.no_grad()
+    def predict(self, samples) -> dict[str, np.ndarray] | list[dict[str, np.ndarray]]:
+        is_list = isinstance(samples, list)
+        samples = samples if is_list else [samples]
+        results = []
+        for sample in samples:
+            pred = self._forward({"graph": sample})
+            results.append({name: value.numpy() for name, value in pred.items()})
+        return results if is_list else results[0]

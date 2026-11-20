@@ -13,35 +13,37 @@
 # limitations under the License.
 
 import json
+import shutil
 import zlib
 
 import lmdb
 import numpy as np
+import paddle
 import pytest
-from pymatgen.core import Lattice
-from pymatgen.core import Structure
 
 from ppmat import datasets
 from ppmat.datasets.ase_lmdb_dataset import OMat24Dataset
 from ppmat.datasets.ase_lmdb_dataset import UMAOC20Dataset
 from ppmat.datasets.collate_fn import DefaultCollator
-from ppmat.datasets.custom_data_type import ConcatNumpyWarper
-from ppmat.models import UMA
-from ppmat.models import FindPointsInSpheres
+from ppmat.utils import download
 
 
 @pytest.mark.parametrize("nested", [False, True])
 @pytest.mark.parametrize("split", ["train", "val", "test"])
-def test_uma_dataset_resolves_only_requested_split(tmp_path, nested, split):
+def test_uma_dataset_resolves_only_requested_split(
+    tmp_path, database_path, graph_cfg, monkeypatch, nested, split
+):
     extracted_root = tmp_path / "uma_datasets" if nested else tmp_path
     requested_split = extracted_root / "oc20" / "uma_aselmdb" / split
     requested_split.mkdir(parents=True)
-
-    oc20_dataset = UMAOC20Dataset.__new__(UMAOC20Dataset)
-
-    assert oc20_dataset._get_downloaded_split_path(tmp_path, split) == str(
-        requested_split
+    shutil.copyfile(database_path, requested_split / "sample.aselmdb")
+    monkeypatch.setattr(
+        download, "get_datasets_path_from_url", lambda *args: str(tmp_path)
     )
+    dataset = UMAOC20Dataset(build_graph_cfg=graph_cfg, split=split)
+
+    assert dataset.path == str(requested_split)
+    assert len(dataset) == 1
 
 
 @pytest.mark.parametrize(
@@ -95,46 +97,9 @@ def test_uma_dataset_reads_local_split(tmp_path, dataset_class, split):
     np.testing.assert_array_equal(batch["forces"], np.tile(expected_forces, (2, 1)))
 
 
-def test_uma_forward_with_default_collator():
-    converter = FindPointsInSpheres(
-        cutoff=4.0,
-        max_neighbors=8,
-        num_cpus=1,
-    )
-    structures = [
-        Structure(
-            Lattice.cubic(3.5),
-            ["Si", "Si"],
-            [[0, 0, 0], [0.25, 0.25, 0.25]],
-        ),
-        Structure(
-            Lattice.cubic(4.0),
-            ["C", "C", "C"],
-            [[0, 0, 0], [0.5, 0.5, 0], [0.5, 0, 0.5]],
-        ),
-    ]
-
-    samples = []
-    for structure in structures:
-        graph = converter(structure)
-        samples.append(
-            {
-                "graph": graph,
-                "energy": np.zeros([1], dtype="float32"),
-                "forces": ConcatNumpyWarper(
-                    np.zeros([len(structure), 3], dtype="float32")
-                ),
-            }
-        )
-    batch = DefaultCollator()(samples)
-
-    model = UMA(
-        sphere_channels=16,
-        edge_channels=16,
-        hidden_channels=16,
-        num_distance_basis=16,
-        num_layers=1,
-    )
+def test_uma_forward_with_default_collator(uma_samples, small_uma):
+    batch = DefaultCollator()(uma_samples)
+    model = small_uma
     output = model(batch)
 
     assert output["pred_dict"]["energy"].shape == [2, 1]
@@ -144,3 +109,99 @@ def test_uma_forward_with_default_collator():
     prediction = model.predict(batch["graph"])
     assert prediction["energy"].shape == (2, 1)
     assert prediction["forces"].shape == (5, 3)
+
+
+@pytest.mark.parametrize(
+    "return_loss, return_prediction", [(True, False), (False, True), (True, True)]
+)
+def test_uma_forward_return_flags(
+    uma_samples, small_uma, return_loss, return_prediction
+):
+    batch = DefaultCollator()(uma_samples)
+    if not return_loss:
+        batch = {"graph": batch["graph"]}
+    output = small_uma(
+        batch, return_loss=return_loss, return_prediction=return_prediction
+    )
+    assert set(output) == {"loss_dict", "pred_dict"}
+    assert bool(output["loss_dict"]) == return_loss
+    assert bool(output["pred_dict"]) == return_prediction
+    if return_loss:
+        assert set(output["loss_dict"]) == {"energy", "forces", "loss"}
+
+
+def test_uma_forward_requires_loss_or_prediction(small_uma):
+    with pytest.raises(ValueError, match="At least one"):
+        small_uma({}, return_loss=False, return_prediction=False)
+
+
+def test_uma_predict_supports_lists_and_disables_gradients(
+    uma_samples, small_uma, monkeypatch
+):
+    observed = []
+    original = small_uma._forward
+
+    def forward(data):
+        observed.append(paddle.is_grad_enabled())
+        output = original(data)
+        assert all(value.stop_gradient for value in output.values())
+        return output
+
+    monkeypatch.setattr(small_uma, "_forward", forward)
+    results = small_uma.predict([sample["graph"] for sample in uma_samples])
+    assert isinstance(results, list)
+    assert len(results) == 2
+    for result, num_atoms in zip(results, [2, 3]):
+        assert result["energy"].shape == (1, 1)
+        assert result["forces"].shape == (num_atoms, 3)
+    single = small_uma.predict(uma_samples[0]["graph"])
+    assert isinstance(single, dict)
+    assert single["forces"].shape == (2, 3)
+    assert small_uma.predict([]) == []
+    assert observed == [False, False, False]
+    assert paddle.is_grad_enabled()
+
+
+def test_uma_predict_preserves_batches_inside_lists(uma_samples, small_uma):
+    batched_graph = DefaultCollator()(uma_samples)["graph"]
+    results = small_uma.predict([batched_graph, uma_samples[0]["graph"]])
+    assert len(results) == 2
+    for result, num_graphs, num_atoms in zip(results, [2, 1], [5, 2]):
+        assert result["energy"].shape == (num_graphs, 1)
+        assert result["forces"].shape == (num_atoms, 3)
+
+
+def test_uma_predict_restores_gradients_after_failure(small_uma, monkeypatch):
+    def fail_forward(data):
+        assert not paddle.is_grad_enabled()
+        raise ValueError("Prediction failed")
+
+    monkeypatch.setattr(small_uma, "_forward", fail_forward)
+    with pytest.raises(ValueError, match="Prediction failed"):
+        small_uma.predict(None)
+    assert paddle.is_grad_enabled()
+
+
+def test_uma_loss_preserves_structure_weighted_objective(uma_samples, small_uma):
+    batch = DefaultCollator()(uma_samples)
+    batch["graph"].tensor()
+    predicted_energy = np.asarray([[4.0], [9.0]], dtype="float32")
+    predicted_forces = np.asarray(
+        [[3, 4, 0], [0, 0, 2], [0, 0, 1], [0, 2, 0], [3, 0, 0]],
+        dtype="float32",
+    )
+    pred = {
+        "energy": paddle.to_tensor(predicted_energy, stop_gradient=False),
+        "forces": paddle.to_tensor(predicted_forces, stop_gradient=False),
+    }
+    losses = small_uma.loss_fn(pred, batch)
+    expected_energy = (4 / 2 + 9 / 3) / 2
+    expected_forces = ((5 + 2) / 2 + (1 + 2 + 3) / 3) / 2
+    np.testing.assert_allclose(float(losses["energy"]), expected_energy)
+    np.testing.assert_allclose(float(losses["forces"]), expected_forces)
+    np.testing.assert_allclose(
+        float(losses["loss"]), 10 * expected_energy + 30 * expected_forces
+    )
+    losses["loss"].backward()
+    np.testing.assert_allclose(pred["energy"].grad.numpy(), [[2.5], [10 / 6]])
+    assert bool(paddle.isfinite(pred["forces"].grad).all())

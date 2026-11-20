@@ -191,6 +191,9 @@ def build_dataloader(cfg: Dict, vocab=None):
     num_workers = loader_config.pop("num_workers", 0)
     use_shared_memory = loader_config.pop("use_shared_memory", True)
 
+    # collate_obj = getattr(
+    #     collate_fn, loader_config.pop("collate_fn", "DefaultCollator")
+    # )()
     collate_fn_name = loader_config.pop("collate_fn", "DefaultCollator")
     collate_params = loader_config.pop("collate_params", {})
     collate_cls = getattr(collate_fn, collate_fn_name)
