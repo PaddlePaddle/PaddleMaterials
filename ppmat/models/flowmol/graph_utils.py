@@ -12,22 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FlowMol-specific batched complete-graph construction."""
-
-from __future__ import annotations
-
 import numpy as np
-
-
-def _build_complete_graph_edge_idxs(n_atoms: int) -> np.ndarray:
-    """Build the edge index array of a complete graph with ``n_atoms`` nodes.
-
-    The upper-triangle edges are traversed before the lower-triangle edges, so
-    the first ``n_atoms * (n_atoms - 1) // 2`` edges are the upper triangle.
-    """
-    upper_edge_idxs = np.triu_indices(n_atoms, k=1)
-    lower_edge_idxs = np.stack((upper_edge_idxs[1], upper_edge_idxs[0]))
-    return np.concatenate((upper_edge_idxs, lower_edge_idxs), axis=1)
 
 
 def build_batched_complete_graph(num_atoms: np.ndarray) -> dict:
@@ -36,8 +21,14 @@ def build_batched_complete_graph(num_atoms: np.ndarray) -> dict:
     Returns the edge indices with batch offsets, the upper-triangle edge mask
     and the node/edge batch indices of every molecule in the batch.
     """
-    num_atoms = np.asarray(num_atoms, dtype="int64")
-    edge_idxs_list = [_build_complete_graph_edge_idxs(int(n)) for n in num_atoms]
+    edge_idxs_list = []
+    for n in num_atoms:
+        # Upper-triangle edges come first, so the mask is the first half.
+        upper_edge_idxs = np.triu_indices(int(n), k=1)
+        lower_edge_idxs = np.stack((upper_edge_idxs[1], upper_edge_idxs[0]))
+        edge_idxs_list.append(
+            np.concatenate((upper_edge_idxs, lower_edge_idxs), axis=1)
+        )
     num_edges = np.array([e.shape[1] for e in edge_idxs_list], dtype="int64")
 
     node_offsets = np.concatenate([[0], np.cumsum(num_atoms)[:-1]])

@@ -12,18 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CTMC vector field numerical core of the FlowMol model.
-
-Categorical features (atom types, charges, bond types) follow CTMC
-probability paths, positions follow linear interpolation paths. The
-endpoint is predicted by a GVP message passing network. Ported from the
-upstream PyTorch implementation (vector_field.py, ctmc_vector_field.py,
-self_conditioning.py, priors.py); DGL message passing is replaced by direct
-edge indexing plus ppmat scatter reductions.
-"""
-
-from __future__ import annotations
-
 import math
 
 import paddle
@@ -38,19 +26,17 @@ from ppmat.utils.scatter import scatter_mean
 from ppmat.utils.scatter import scatter_sum
 
 
-def _rbf(dist, d_max, d_count, d_min=0.0):
+def _rbf(dist, d_max, d_count):
     """Radial basis function embedding of pairwise distances."""
-    d_mu = paddle.linspace(d_min, d_max, d_count)
+    d_mu = paddle.linspace(0.0, d_max, d_count)
     d_mu = d_mu.reshape([1, -1])
-    d_sigma = (d_max - d_min) / d_count
+    d_sigma = d_max / d_count
     d_expand = paddle.unsqueeze(dist, -1)
     return paddle.exp(-(((d_expand - d_mu) / d_sigma) ** 2))
 
 
 def get_time_embedding(timesteps, embedding_dim=256, max_positions=1000):
     """Sinusoidal time embedding of a 1-D tensor of timesteps."""
-    if len(timesteps.shape) != 1:
-        raise ValueError("timesteps must be a 1-D tensor")
     timesteps = timesteps * max_positions
     half_dim = embedding_dim // 2
     emb = math.log(max_positions) / (half_dim - 1)
@@ -82,11 +68,6 @@ def ctmc_masked_prior(n: int, n_classes: int) -> paddle.Tensor:
     return paddle.nn.functional.one_hot(tokens, num_classes=n_classes + 1).astype(
         "float32"
     )
-
-
-def _categorical_sample(probs: paddle.Tensor) -> paddle.Tensor:
-    """Draw one category per row; ``probs`` must be normalized probabilities."""
-    return paddle.multinomial(probs, num_samples=1).squeeze(-1)
 
 
 def _purity_sampling(
@@ -225,17 +206,7 @@ class SelfConditioningResidualLayer(nn.Layer):
             nn.SiLU(),
         )
 
-    def forward(
-        self,
-        src,
-        dst,
-        s_t,
-        x_t,
-        v_t,
-        e_t,
-        dst_dict,
-        upper_edge_mask,
-    ):
+    def forward(self, src, dst, s_t, x_t, e_t, dst_dict, upper_edge_mask):
         d_node = norm_no_nan(x_t - dst_dict["positions"])
         d_node = _rbf(d_node, d_max=self.rbf_dmax, d_count=self.rbf_dim)
 
@@ -249,11 +220,12 @@ class SelfConditioningResidualLayer(nn.Layer):
             paddle.concat(node_residual_inputs, axis=-1)
         )
 
-        d_edge_t = self.edge_distances(src, dst, node_positions=x_t)
-        d_edge_1 = self.edge_distances(src, dst, node_positions=dst_dict["positions"])
-
-        d_edge_t = d_edge_t[upper_edge_mask]
-        d_edge_1 = d_edge_1[upper_edge_mask]
+        upper_src = src[upper_edge_mask]
+        upper_dst = dst[upper_edge_mask]
+        d_edge_t = self.edge_distances(upper_src, upper_dst, node_positions=x_t)
+        d_edge_1 = self.edge_distances(
+            upper_src, upper_dst, node_positions=dst_dict["positions"]
+        )
 
         edge_residual_inputs = [
             e_t[upper_edge_mask],
@@ -265,15 +237,13 @@ class SelfConditioningResidualLayer(nn.Layer):
         )
 
         node_feats_out = s_t + node_residual
-        positions_out = x_t
-        vectors_out = v_t
 
         edge_feats_out = paddle.zeros_like(e_t)
         one_triangle_output = e_t[upper_edge_mask] + edge_residual
         edge_feats_out[upper_edge_mask] = one_triangle_output
         edge_feats_out[~upper_edge_mask] = one_triangle_output
 
-        return node_feats_out, positions_out, vectors_out, edge_feats_out
+        return node_feats_out, edge_feats_out
 
     def edge_distances(self, src, dst, node_positions=None):
         """Compute the RBF embedding of every edge length."""
@@ -285,9 +255,12 @@ class SelfConditioningResidualLayer(nn.Layer):
 class CTMCVectorField(RuntimeMixin, nn.Layer):
     """Continuous-time Markov chain vector field for molecular flow matching.
 
-    Only the ``campbell`` discrete-flow type is ported; the upstream
-    configuration of every released checkpoint and the QM9 reference config
-    keeps the default value.
+    Ported from the upstream PyTorch implementation (vector_field.py,
+    ctmc_vector_field.py, self_conditioning.py, priors.py); DGL message
+    passing is replaced by direct edge indexing plus ppmat scatter
+    reductions. Only the ``campbell`` discrete-flow type is ported; the
+    upstream configuration of every released checkpoint and the QM9
+    reference config keeps the default value.
     """
 
     def __init__(
@@ -329,15 +302,12 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         self._init_runtime(execution_backend, runtime_options)
 
         self.n_atom_types = n_atom_types
-        self.n_charges = n_charges
-        self.n_bond_types = n_bond_types
         self.charge_offset = charge_offset
         self.n_vec_channels = n_vec_channels
         self.rbf_dmax = rbf_dmax
         self.rbf_dim = rbf_dim
         self.convs_per_update = convs_per_update
         self.n_recycles = n_recycles
-        self.n_position_update_gvps = n_position_update_gvps
         self.separate_mol_updaters = separate_mol_updaters
         self.interpolant_scheduler = interpolant_scheduler
         self.feature_names = feature_names
@@ -417,7 +387,6 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
                     n_message_gvps=n_message_gvps,
                     n_update_gvps=n_update_gvps,
                     message_norm=message_norm,
-                    rbf_dmax=rbf_dmax,
                     rbf_dim=rbf_dim,
                 )
             )
@@ -477,9 +446,6 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         x_diff = x_diff / dij
         d = _rbf(dij.squeeze(1), d_max=self.rbf_dmax, d_count=self.rbf_dim)
         return x_diff, d
-
-    def _velocity(self, x_t, x_1, alpha_t, alpha_t_prime):
-        return alpha_t_prime / (1 - alpha_t) * (x_1 - x_t)
 
     def forward(
         self,
@@ -569,7 +535,6 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         if self_condition_now:
             with paddle.no_grad():
                 prev_dst_dict = self._runtime_denoise_step(
-                    state,
                     node_scalar_features.clone(),
                     node_vec_features.clone(),
                     node_positions.clone(),
@@ -584,24 +549,17 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
                 )
 
         if self.self_conditioning and prev_dst_dict is not None:
-            (
-                node_scalar_features,
-                node_positions,
-                node_vec_features,
-                edge_features,
-            ) = self.self_conditioning_residual_layer(
+            node_scalar_features, edge_features = self.self_conditioning_residual_layer(
                 src,
                 dst,
                 node_scalar_features,
                 node_positions,
-                node_vec_features,
                 edge_features,
                 prev_dst_dict,
                 upper_edge_mask,
             )
 
         dst_dict = self._runtime_denoise_step(
-            state,
             node_scalar_features,
             node_vec_features,
             node_positions,
@@ -619,7 +577,6 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
     @runtime_boundary("denoise_step")
     def _runtime_denoise_step(
         self,
-        state,
         node_scalar_features,
         node_vec_features,
         node_positions,
@@ -695,7 +652,7 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         upper_edge_mask: paddle.Tensor,
     ) -> dict:
         """Sample the CTMC probability path between the prior and the endpoint."""
-        _, alpha_t = self.interpolant_scheduler.interpolant_weights(t)
+        alpha_t = self.interpolant_scheduler.alpha_t(t)
 
         state = {
             "src": batch["src"],
@@ -780,7 +737,6 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
             s_i = t[s_idx]
             t_i = t[s_idx - 1]
             alpha_t_i = alpha_t[s_idx - 1]
-            alpha_s_i = alpha_t[s_idx]
             alpha_t_prime_i = alpha_t_prime[s_idx - 1]
             last_step = s_idx == t.shape[0] - 1
 
@@ -789,7 +745,6 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
                 s_i,
                 t_i,
                 alpha_t_i,
-                alpha_s_i,
                 alpha_t_prime_i,
                 node_batch_idx,
                 upper_edge_mask,
@@ -811,7 +766,6 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         s_i: paddle.Tensor,
         t_i: paddle.Tensor,
         alpha_t_i: paddle.Tensor,
-        alpha_s_i: paddle.Tensor,
         alpha_t_prime_i: paddle.Tensor,
         node_batch_idx: paddle.Tensor,
         upper_edge_mask: paddle.Tensor,
@@ -843,7 +797,7 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         x_t = state["positions"]
         alpha_x = alpha_t_i[self.positions_idx]
         alpha_x_prime = alpha_t_prime_i[self.positions_idx]
-        vf = self._velocity(x_t, x_1, alpha_x, alpha_x_prime)
+        vf = alpha_x_prime / (1 - alpha_x) * (x_1 - x_t)
         state["positions"] = x_t + dt * vf
 
         for feat_idx, feat in enumerate(self.feature_names):
@@ -906,7 +860,7 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         last_step: bool,
         batch_idx: paddle.Tensor,
     ):
-        x1 = _categorical_sample(p_1_given_t)
+        x1 = paddle.multinomial(p_1_given_t, num_samples=1).squeeze(-1)
 
         unmask_prob = dt * (alpha_t_prime + stochasticity * alpha_t) / (1 - alpha_t)
         mask_prob = dt * stochasticity

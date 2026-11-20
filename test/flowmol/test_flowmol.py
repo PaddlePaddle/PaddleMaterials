@@ -426,13 +426,13 @@ def test_integrate_feeds_evolving_state_to_network():
     state = model._build_sampling_state(num_atoms.numpy(), paddle.get_device())
 
     seen_masks = []
-    orig_step = vf._runtime_denoise_step
+    orig_step = vf._denoise_step
 
     def spy(state_in, *args, **kwargs):
         seen_masks.append(int((state_in["atom_types"].argmax(-1) == 5).sum()))
         return orig_step(state_in, *args, **kwargs)
 
-    vf._runtime_denoise_step = spy
+    vf._denoise_step = spy
     with paddle.no_grad():
         vf.integrate(
             state,
@@ -442,7 +442,7 @@ def test_integrate_feeds_evolving_state_to_network():
             stochasticity=0.0,
             high_confidence_threshold=0.0,
         )
-    vf._runtime_denoise_step = orig_step
+    vf._denoise_step = orig_step
 
     total_masked = int(num_atoms.sum())
     assert seen_masks[0] == total_masked
@@ -463,7 +463,8 @@ def test_geom_sampling_histogram_is_inlined():
     assert len(dataset) == 4
     assert np.array_equal(dataset.sampled_num_atoms, repeated.sampled_num_atoms)
     assert dataset[0] == {
-        "structure_array": {"num_atoms": int(dataset.sampled_num_atoms[0])}
+        "structure_array": {"num_atoms": int(dataset.sampled_num_atoms[0])},
+        "id": 0,
     }
 
 

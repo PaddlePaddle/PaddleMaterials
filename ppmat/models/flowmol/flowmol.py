@@ -12,18 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FlowMol: flow matching for 3D de novo small-molecule generation.
-
-Reference: https://arxiv.org/abs/2508.12629
-
-The model owns the numerical runtime (see ``CTMCVectorField``) and follows the
-``forward``/``sample`` contracts of PaddleMaterials: the training forward
-returns ``{"loss_dict": ...}`` and sampling returns ``{"pred": [...]}``
-consumed by ``MolecularSampler``.
-"""
-
-from __future__ import annotations
-
 import copy
 import os
 import os.path as osp
@@ -36,7 +24,6 @@ from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.flowmol.graph_utils import build_batched_complete_graph
 from ppmat.models.flowmol.vector_field import CTMCVectorField
 from ppmat.models.flowmol.vector_field import centered_normal_prior_batched
-from ppmat.models.flowmol.vector_field import ctmc_masked_prior
 from ppmat.schedulers import build_scheduler
 from ppmat.utils import logger
 
@@ -46,7 +33,10 @@ MASK_ATOM_SYMBOL = "Se"
 
 
 class FlowMol(RuntimeMixin, nn.Layer):
-    """Unconditional 3D molecule generation with mixed CTMC flow matching."""
+    """Unconditional 3D molecule generation with mixed CTMC flow matching.
+
+    Reference: https://arxiv.org/abs/2508.12629
+    """
 
     def __init__(
         self,
@@ -66,7 +56,6 @@ class FlowMol(RuntimeMixin, nn.Layer):
         super().__init__()
 
         self.atom_type_map = list(atom_type_map)
-        self.fake_atom_p = fake_atom_p
         self.fake_atoms = fake_atom_p > 0
         self.n_atom_types = len(self.atom_type_map) + int(self.fake_atoms)
         self.time_scaled_loss = time_scaled_loss
@@ -285,24 +274,12 @@ class FlowMol(RuntimeMixin, nn.Layer):
         return {"loss_dict": loss_dict}
 
     def _build_sampling_state(self, num_atoms: np.ndarray, place) -> dict:
-        num_atoms_np = np.asarray(num_atoms, dtype="int64")
-
-        state = self._build_graph_fields(num_atoms_np, place=place)
+        state = self._build_graph_fields(num_atoms, place=place)
 
         num_nodes = int(state["node_batch_idx"].shape[0])
-        num_edges = int(state["upper_edge_mask"].shape[0])
         prior_kwargs = self.prior_config["positions"]["kwargs"]
         state["positions"] = centered_normal_prior_batched(
             num_nodes, state["node_batch_idx"], **prior_kwargs
-        ).to(place)
-        state["atom_types"] = ctmc_masked_prior(
-            num_nodes, self.vector_field.n_cat_feats["atom_types"]
-        ).to(place)
-        state["atom_charges"] = ctmc_masked_prior(
-            num_nodes, self.vector_field.n_cat_feats["atom_charges"]
-        ).to(place)
-        state["bond_types"] = ctmc_masked_prior(
-            num_edges, self.vector_field.n_cat_feats["bond_types"]
         ).to(place)
         return state
 
@@ -328,7 +305,9 @@ class FlowMol(RuntimeMixin, nn.Layer):
         if num_inference_steps is None:
             num_inference_steps = self.default_n_timesteps
 
-        num_atoms = np.asarray(batch_data["structure_array"]["num_atoms"])
+        num_atoms = np.asarray(
+            batch_data["structure_array"]["num_atoms"], dtype="int64"
+        )
         place = next(iter(self.parameters())).place
 
         state = self._build_sampling_state(num_atoms, place)
@@ -349,20 +328,20 @@ class FlowMol(RuntimeMixin, nn.Layer):
         charges = (
             state["atom_charges_1"].argmax(-1).numpy() - self.vector_field.charge_offset
         )
-        src = state["src"].numpy()[state["upper_edge_mask"].numpy()]
-        dst = state["dst"].numpy()[state["upper_edge_mask"].numpy()]
-        bond_types = (
-            state["bond_types_1"].argmax(-1).numpy()[state["upper_edge_mask"].numpy()]
-        )
+        upper_edge_mask = state["upper_edge_mask"].numpy()
+        src = state["src"].numpy()[upper_edge_mask]
+        dst = state["dst"].numpy()[upper_edge_mask]
+        bond_types = state["bond_types_1"].argmax(-1).numpy()[upper_edge_mask]
 
         n_real_atom_types = len(self.atom_type_map)
         n_cat_atom = self.vector_field.n_cat_feats["atom_types"]
+        n_bond_cats = self.vector_field.n_cat_feats["bond_types"]
         fake_token_idx = n_cat_atom - 1 if self.fake_atoms else None
 
         results = []
         node_offset = 0
         edge_offset = 0
-        for n in num_atoms.astype("int64"):
+        for n in num_atoms:
             n = int(n)
             n_edges = n * (n - 1) // 2
             node_slice = slice(node_offset, node_offset + n)
@@ -389,7 +368,6 @@ class FlowMol(RuntimeMixin, nn.Layer):
             molecule_src = src[edge_slice]
             molecule_dst = dst[edge_slice]
             molecule_bonds = bond_types[edge_slice]
-            n_bond_cats = self.vector_field.n_cat_feats["bond_types"]
             keep = (
                 (molecule_bonds != 0)
                 & (molecule_bonds < n_bond_cats)
@@ -426,14 +404,10 @@ class FlowMol(RuntimeMixin, nn.Layer):
         sdf_path = osp.join(output_dir, "flowmol_samples.sdf")
         writer = Chem.SDWriter(sdf_path)
         writer.SetKekulize(False)
-        n_written = 0
         for molecule in molecules:
-            rdkit_mol = build_rdkit_mol(molecule)
-            if rdkit_mol is not None:
-                writer.write(rdkit_mol)
-                n_written += 1
+            writer.write(build_rdkit_mol(molecule))
         writer.close()
-        logger.info(f"Saved {n_written} molecules to {sdf_path}")
+        logger.info(f"Saved {len(molecules)} molecules to {sdf_path}")
 
 
 def build_rdkit_mol(molecule: dict):

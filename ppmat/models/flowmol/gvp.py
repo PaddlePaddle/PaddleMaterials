@@ -12,16 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Geometric vector perceptron layers for FlowMol.
-
-GVP splits features into scalar and vector channels and updates the vector
-channels with rotation-equivariant linear maps. The graph convolution replaces
-DGL message passing with direct edge indexing and ppmat scatter reduction.
-The implementation follows https://github.com/lucidrains/geometric-vector-perceptron.
-"""
-
-from __future__ import annotations
-
 import math
 from typing import Union
 
@@ -41,7 +31,10 @@ def norm_no_nan(x, axis=-1, keepdims=False, eps=1e-8, sqrt=True):
 
 
 class GVP(nn.Layer):
-    """Geometric vector perceptron."""
+    """Geometric vector perceptron.
+
+    Reference: https://github.com/lucidrains/geometric-vector-perceptron
+    """
 
     def __init__(
         self,
@@ -54,8 +47,6 @@ class GVP(nn.Layer):
         vectors_activation=nn.Sigmoid(),
     ):
         super().__init__()
-        self.dim_vectors_in = dim_vectors_in
-        self.dim_feats_in = dim_feats_in
         self.n_cp_feats = n_cp_feats
 
         dim_h = max(dim_vectors_in, dim_vectors_out)
@@ -89,14 +80,6 @@ class GVP(nn.Layer):
         self.scalar_to_vector_gates = nn.Linear(dim_feats_out, dim_vectors_out)
 
     def forward(self, feats: paddle.Tensor, vectors: paddle.Tensor):
-        n = feats.shape[1]
-        v, c = vectors.shape[1], vectors.shape[2]
-
-        if c != 3 or v != self.dim_vectors_in:
-            raise ValueError("vectors have wrong dimensions")
-        if n != self.dim_feats_in:
-            raise ValueError("scalar features have wrong dimensions")
-
         Vh = paddle.einsum("b v c, v h -> b h c", vectors, self.Wh)
 
         if self.n_cp_feats > 0:
@@ -116,33 +99,6 @@ class GVP(nn.Layer):
         gating = self.scalar_to_vector_gates(feats_out).unsqueeze(-1)
         vectors_out = self.vectors_activation(gating) * Vu
         return feats_out, vectors_out
-
-
-class _VDropout(nn.Layer):
-    """Vector channel dropout which drops whole vector channels together."""
-
-    def __init__(self, drop_rate):
-        super().__init__()
-        self.drop_rate = drop_rate
-
-    def forward(self, x):
-        if not self.training:
-            return x
-        prob = paddle.full(x.shape[:-1], 1 - self.drop_rate)
-        mask = paddle.bernoulli(prob).unsqueeze(-1)
-        return mask * x / (1 - self.drop_rate)
-
-
-class GVPDropout(nn.Layer):
-    """Separate dropout for scalars and vectors."""
-
-    def __init__(self, rate):
-        super().__init__()
-        self.vector_dropout = _VDropout(rate)
-        self.feat_dropout = nn.Dropout(rate)
-
-    def forward(self, feats, vectors):
-        return self.feat_dropout(feats), self.vector_dropout(vectors)
 
 
 class GVPLayerNorm(nn.Layer):
@@ -171,21 +127,16 @@ class GVPConv(nn.Layer):
         n_cp_feats: int,
         n_message_gvps: int,
         n_update_gvps: int,
-        rbf_dmax: float,
         rbf_dim: int,
         edge_feat_size: int,
         message_norm: Union[float, str],
         scalar_activation=nn.SiLU,
         vector_activation=nn.Sigmoid,
-        dropout: float = 0.0,
     ):
         super().__init__()
 
         self.scalar_size = scalar_size
         self.edge_feat_size = edge_feat_size
-        self.rbf_dmax = rbf_dmax
-        self.rbf_dim = rbf_dim
-        self.dropout_rate = dropout
         self.message_norm = message_norm
 
         if isinstance(message_norm, str) and message_norm not in ["mean", "sum"]:
@@ -236,7 +187,6 @@ class GVPConv(nn.Layer):
             )
         self.node_update = nn.LayerList(update_gvps)
 
-        self.dropout = GVPDropout(self.dropout_rate)
         self.message_layer_norm = GVPLayerNorm(self.scalar_size)
         self.update_layer_norm = GVPLayerNorm(self.scalar_size)
 
@@ -257,7 +207,7 @@ class GVPConv(nn.Layer):
         d: paddle.Tensor,
     ):
         scalar_message, vector_message = self.message(
-            scalar_feats, vec_feats, edge_feats, x_diff, d, src, dst
+            scalar_feats, vec_feats, edge_feats, x_diff, d, src
         )
 
         if isinstance(self.message_norm, str):
@@ -268,8 +218,6 @@ class GVPConv(nn.Layer):
         scalar_msg = self.agg_func(scalar_message, dst, dim=0, dim_size=num_nodes) / z
         vec_msg = self.agg_func(vector_message, dst, dim=0, dim_size=num_nodes) / z
 
-        scalar_msg, vec_msg = self.dropout(scalar_msg, vec_msg)
-
         scalar_feat = scalar_feats + scalar_msg
         vec_feat = vec_feats + vec_msg
         scalar_feat, vec_feat = self.message_layer_norm(scalar_feat, vec_feat)
@@ -277,14 +225,13 @@ class GVPConv(nn.Layer):
         scalar_residual, vec_residual = scalar_feat, vec_feat
         for gvp in self.node_update:
             scalar_residual, vec_residual = gvp(scalar_residual, vec_residual)
-        scalar_residual, vec_residual = self.dropout(scalar_residual, vec_residual)
         scalar_feat = scalar_feat + scalar_residual
         vec_feat = vec_feat + vec_residual
         scalar_feat, vec_feat = self.update_layer_norm(scalar_feat, vec_feat)
 
         return scalar_feat, vec_feat
 
-    def message(self, scalar_feats, vec_feats, edge_feats, x_diff, d, src, dst):
+    def message(self, scalar_feats, vec_feats, edge_feats, x_diff, d, src):
         vec_inputs = paddle.concat([x_diff.unsqueeze(1), vec_feats[src]], axis=1)
 
         scalar_inputs = [scalar_feats[src], d]

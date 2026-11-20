@@ -12,19 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""FlowMol molecule datasets backed by preprocessed npz splits.
-
-Every sample provides the endpoint features (COM-free positions, one-hot atom
-types, one-hot charges and upper-triangle one-hot bond types) plus the aligned
-position prior consumed by the flow matching training path.
-
-The property-prediction QM9Dataset (``ppmat/datasets/qm9_dataset.py``) is not
-reused: generation needs process_qm9.py tensors, not property labels.
-"""
+"""FlowMol molecule datasets backed by preprocessed npz splits."""
 
 from __future__ import annotations
 
 import os.path as osp
+from typing import Callable
+from typing import Optional
 
 import numpy as np
 from paddle.io import Dataset
@@ -33,10 +27,6 @@ from scipy.optimize import linear_sum_assignment
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.utils import download
 from ppmat.utils import logger
-
-DATASET_NAME = "flowmol_qm9"
-DATASET_URL = "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/qm9/flowmol_qm9.zip"
-DATASET_MD5 = "91a65706ed27c5cd1ebf92faa9dab201"
 
 N_CHARGES = 6
 N_BOND_TYPES = 4
@@ -244,21 +234,76 @@ def _resolve_split_path(path: str, name: str, url: str, md5: str) -> str:
 
 
 class FlowMolDataset(Dataset):
-    """FlowMol training dataset over a preprocessed npz split."""
+    """FlowMol Dataset Handler.
 
-    name = DATASET_NAME
-    url = DATASET_URL
-    md5 = DATASET_MD5
+    This class loads the preprocessed QM9 npz splits used by FlowMol training.
+    Each sample provides the endpoint features (COM-free positions, one-hot
+    atom types, one-hot charges and upper-triangle one-hot bond types) plus an
+    aligned Gaussian position prior.
+
+    **Dataset Overview**
+    - **Source**: QM9 molecules processed by the upstream ``process_qm9.py``.
+    - **Preprocessed Version**:
+    ```
+    ┌───────────────────┬─────────┬─────────┬─────────┐
+    │ Dataset Partition │ Train   │ Val     │ Test    │
+    ├───────────────────┼─────────┼─────────┼─────────┤
+    │ Sample Count      │ 96,334  │ 19,775  │ 12,903  │
+    └───────────────────┴─────────┴─────────┴─────────┘
+    ```
+    Download preprocessed data:
+    https://paddle-org.bj.bcebos.com/paddlematerials/datasets/qm9/flowmol_qm9.zip
+
+    **Data Format**
+    Each split is one npz archive. Let ``N`` be the number of atoms, ``M`` the
+    number of bonds and ``K`` the number of atom types.
+
+    | NPZ key | Shape | Description |
+    |---------|-------|-------------|
+    | ``positions`` | ``[N, 3]`` | Cartesian atom positions |
+    | ``atom_types`` | ``[N, K]`` | One-hot atom types |
+    | ``atom_charges`` | ``[N]`` | Integer formal charges |
+    | ``bond_types`` | ``[M]`` | Integer bond orders |
+    | ``bond_idxs`` | ``[M, 2]`` | Bonded atom index pairs |
+    | ``node_idx_array`` | ``[S, 2]`` | Per-molecule node slice |
+    | ``edge_idx_array`` | ``[S, 2]`` | Per-molecule bond slice |
+
+    Args:
+        path (str, optional): Path to one split npz file. If the file does not
+            exist, the prepared FlowMol QM9 archive is downloaded automatically.
+            Defaults to "./data/flowmol_qm9/train_data_processed.npz".
+        atom_map (list, optional): Atom symbols in one-hot order. Defaults to None.
+        fake_atom_p (float, optional): Probability used to append up to
+            ``ceil(num_atoms * fake_atom_p)`` fake atoms. Defaults to 0.0.
+        fake_atom_std (float, optional): Standard deviation of the fake-atom
+            position offsets. Defaults to 1.0.
+        prior_std (float, optional): Standard deviation of the Gaussian position
+            prior. Defaults to 1.0.
+        prior_align (bool, optional): Whether to align the prior to the endpoint
+            with Hungarian matching and Kabsch. Defaults to True.
+        seed (int, optional): Random seed for fake atoms and the position prior.
+            Defaults to None.
+        transforms (Optional[Callable], optional): Preprocess transforms for each
+            sample. Defaults to None.
+    """
+
+    name = "flowmol_qm9"
+    url = (
+        "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/qm9/"
+        "flowmol_qm9.zip"
+    )
+    md5 = "91a65706ed27c5cd1ebf92faa9dab201"
 
     def __init__(
         self,
         path: str = "./data/flowmol_qm9/train_data_processed.npz",
-        atom_map: list = None,
+        atom_map: Optional[list] = None,
         fake_atom_p: float = 0.0,
         fake_atom_std: float = 1.0,
         prior_std: float = 1.0,
         prior_align: bool = True,
-        seed: int = None,
+        seed: Optional[int] = None,
+        transforms: Optional[Callable] = None,
     ):
         super().__init__()
 
@@ -273,6 +318,7 @@ class FlowMolDataset(Dataset):
         self.prior_std = prior_std
         self.prior_align = prior_align
         self.rng = np.random.RandomState(seed)
+        self.transforms = transforms
 
         path = _resolve_split_path(path, self.name, self.url, self.md5)
         self.path = path
@@ -286,10 +332,14 @@ class FlowMolDataset(Dataset):
             self.node_idx_array = data["node_idx_array"]
             self.edge_idx_array = data["edge_idx_array"]
 
+        self.num_samples = self.node_idx_array.shape[0]
+        logger.info(f"Load {self.num_samples} samples from {path}")
+
     def __len__(self):
-        return self.node_idx_array.shape[0]
+        return self.num_samples
 
     def __getitem__(self, idx):
+        """Get item at index idx."""
         node_start, node_end = self.node_idx_array[idx]
         edge_start, edge_end = self.edge_idx_array[idx]
 
@@ -352,21 +402,34 @@ class FlowMolDataset(Dataset):
             # upper and lower triangle edges of a pair share the bond one-hot
             "bond_types": ConcatData(np.concatenate((bond_types, bond_types), axis=0)),
         }
-        return {
+        data = {
             "structure_array": structure_array,
             "prior_positions": ConcatData(prior_positions),
+            "id": idx,
         }
+        data = self.transforms(data) if self.transforms is not None else data
+        return data
 
 
 class _FlowMolAtomCountDataset(Dataset):
-    """Atom-count sampling shared by the FlowMol sampling datasets."""
+    """Atom-count sampling shared by the FlowMol sampling datasets.
+
+    Args:
+        n_atoms (np.ndarray): Atom counts to sample from.
+        n_atom_counts (np.ndarray): Histogram counts aligned with ``n_atoms``.
+        total_num (int, optional): Number of sampled molecules. Defaults to None.
+        seed (int, optional): Random seed. Defaults to None.
+        transforms (Optional[Callable], optional): Preprocess transforms for each
+            sample. Defaults to None.
+    """
 
     def __init__(
         self,
         n_atoms: np.ndarray,
         n_atom_counts: np.ndarray,
-        total_num: int = None,
-        seed: int = None,
+        total_num: Optional[int] = None,
+        seed: Optional[int] = None,
+        transforms: Optional[Callable] = None,
     ):
         super().__init__()
 
@@ -376,6 +439,7 @@ class _FlowMolAtomCountDataset(Dataset):
             raise ValueError("seed must be provided")
 
         self.total_num = total_num
+        self.transforms = transforms
         probs = n_atom_counts / n_atom_counts.sum()
         rng = np.random.RandomState(seed)
         self.sampled_num_atoms = rng.choice(n_atoms, size=total_num, p=probs).astype(
@@ -386,30 +450,58 @@ class _FlowMolAtomCountDataset(Dataset):
         return self.total_num
 
     def __getitem__(self, idx):
-        return {
+        """Get item at index idx."""
+        data = {
             "structure_array": {
                 "num_atoms": int(self.sampled_num_atoms[idx]),
-            }
+            },
+            "id": idx,
         }
+        data = self.transforms(data) if self.transforms is not None else data
+        return data
 
 
 class FlowMolSamplingDataset(_FlowMolAtomCountDataset):
-    """Sampling inputs for FlowMol: atom counts drawn from the train histogram.
+    """FlowMol sampling dataset from the QM9 atom-count histogram.
 
-    ``path`` points at the atom-count histogram npz of the training split;
-    the histogram package is downloaded through the shared pipeline when the
-    file is missing.
+    Sampling ignores training molecules and draws only atom counts, from which
+    the model generates new molecules of those sizes.
+
+    **Dataset Overview**
+    - **Source**: Atom-count histogram of the QM9 training split.
+    - **Preprocessed Version**:
+      ``train_data_n_atoms_histogram.npz`` in the FlowMol QM9 archive.
+
+    **Data Format**
+
+    | NPZ key | Shape | Description |
+    |---------|-------|-------------|
+    | ``n_atoms`` | ``[S]`` | Atom counts |
+    | ``n_atom_counts`` | ``[S]`` | Molecule count of each atom count |
+
+    Args:
+        path (str, optional): Path to the histogram npz. If the file does not
+            exist, the FlowMol QM9 archive is downloaded automatically. Defaults
+            to "./data/flowmol_qm9/train_data_n_atoms_histogram.npz".
+        total_num (int, optional): Number of sampled molecules. Defaults to None.
+        seed (int, optional): Random seed. Defaults to None.
+        transforms (Optional[Callable], optional): Preprocess transforms for each
+            sample. Defaults to None.
     """
 
-    name = DATASET_NAME
-    url = DATASET_URL
-    md5 = DATASET_MD5
+    name = "flowmol_qm9"
+    url = (
+        "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/qm9/"
+        "flowmol_qm9.zip"
+    )
+    md5 = "91a65706ed27c5cd1ebf92faa9dab201"
 
     def __init__(
         self,
         path: str = "./data/flowmol_qm9/train_data_n_atoms_histogram.npz",
-        total_num: int = None,
-        seed: int = None,
+        total_num: Optional[int] = None,
+        seed: Optional[int] = None,
+        transforms: Optional[Callable] = None,
     ):
         path = _resolve_split_path(path, self.name, self.url, self.md5)
         self.path = path
@@ -418,19 +510,35 @@ class FlowMolSamplingDataset(_FlowMolAtomCountDataset):
             n_atoms = hist["n_atoms"]
             n_atom_counts = hist["n_atom_counts"]
 
-        super().__init__(n_atoms, n_atom_counts, total_num, seed)
+        logger.info(f"Load {n_atoms.shape[0]} atom-count bins from {path}")
+        super().__init__(n_atoms, n_atom_counts, total_num, seed, transforms)
 
 
 class FlowMol3GeomSamplingDataset(_FlowMolAtomCountDataset):
-    """Sampling inputs of the released FlowMol3 model (GEOM atom histogram).
+    """FlowMol3 sampling dataset from the inlined GEOM atom-count histogram.
 
-    The histogram is inlined from the released package, so this dataset needs
-    no download.
+    The released FlowMol3 model is trained on GEOM-Drugs; its atom-count
+    histogram is inlined, so this dataset needs no download.
+
+    **Dataset Overview**
+    - **Source**: GEOM training split used by the released FlowMol3 model.
+    - **Histogram**: 157 atom counts covering 5,730,535 molecules.
+
+    Args:
+        total_num (int, optional): Number of sampled molecules. Defaults to None.
+        seed (int, optional): Random seed. Defaults to None.
+        transforms (Optional[Callable], optional): Preprocess transforms for each
+            sample. Defaults to None.
     """
 
-    def __init__(self, total_num: int = None, seed: int = None):
+    def __init__(
+        self,
+        total_num: Optional[int] = None,
+        seed: Optional[int] = None,
+        transforms: Optional[Callable] = None,
+    ):
         n_atoms = np.array(sorted(_FLOWMOL3_GEOM_ATOM_COUNTS), dtype="int64")
         n_atom_counts = np.array(
             [_FLOWMOL3_GEOM_ATOM_COUNTS[n] for n in n_atoms], dtype="int64"
         )
-        super().__init__(n_atoms, n_atom_counts, total_num, seed)
+        super().__init__(n_atoms, n_atom_counts, total_num, seed, transforms)

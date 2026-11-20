@@ -12,22 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Interpolant scheduler for FlowMol flow matching."""
-
-from __future__ import annotations
-
 import paddle
 
 
 class FlowMolInterpolantScheduler:
     """Schedules the interpolation progress alpha(t) of every feature.
 
-    Not reused: the existing noise/transition schedulers act on discrete
-    timesteps and expose neither continuous alpha(t) nor its analytic derivative.
+    The existing noise/transition schedulers act on discrete timesteps and
+    expose neither continuous alpha(t) nor its analytic derivative.
 
-    ``schedule_type`` may be a single schedule name applied to all features or
-    a per-feature mapping. Cosine schedules additionally require the ``nu``
-    exponent of every feature in ``cosine_params``.
+    Args:
+        feature_names (list): Feature names in interpolation order.
+        schedule_type (str | dict): A single schedule name applied to every
+            feature, or a per-feature mapping of ``"cosine"``/``"linear"``.
+        cosine_params (dict): ``nu`` exponent of every cosine-scheduled feature.
     """
 
     supported_schedule_types = ["cosine", "linear"]
@@ -58,11 +56,6 @@ class FlowMolInterpolantScheduler:
         for feat, feat_schedule_type in self.schedule_dict.items():
             if feat_schedule_type == "cosine" and feat not in self.cosine_params:
                 raise ValueError(f"must specify cosine_params for feature {feat}")
-
-    def interpolant_weights(self, t: paddle.Tensor):
-        """Return the weights of the prior and the endpoint at time ``t``."""
-        alpha_t = self.alpha_t(t)
-        return 1 - alpha_t, alpha_t
 
     def loss_weights(self, t: paddle.Tensor) -> paddle.Tensor:
         """Time-dependent loss weights; small at the start of the trajectory."""
