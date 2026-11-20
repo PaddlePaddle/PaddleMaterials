@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from typing import Optional
+
 import numpy as np
 import paddle
 import paddle.nn as nn
 
+from ppmat.models.common.activation import swish
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
 from ppmat.models.common.time_embedding import SinusoidalTimeEmbeddings
@@ -27,19 +30,39 @@ from ppmat.utils import logger
 from ppmat.utils.crystal import lattices_to_params_shape_numpy
 
 
+class _MiADSiLU(nn.Silu):
+    def forward(self, x):
+        # Paddle 3.3 CPU SiLU backward overflows for large negative inputs.
+        if x.place.is_cpu_place() and paddle.is_grad_enabled():
+            return swish(x)
+        return super().forward(x)
+
+
 class MiADCSPNet(CSPNet):
-    """CSPNet with block-diagonal edge generation (avoids GPU crashes) and
-    without the ``prop_mlp`` sub-layers absent from the MiAD checkpoint.
+    """CSPNet with block-diagonal fc edges and MiAD-compatible sub-layers.
+
+    Block-diagonal adjacency avoids the meshgrid-based path that crashes on GPU.
+    The prop_mlp sub-layers are dropped because the MiAD checkpoint has none, and
+    SiLU is swapped for the CPU-safe variant.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         for i in range(self.num_layers):
             delattr(getattr(self, "csp_layer_%d" % i), "prop_mlp")
+        activation = _MiADSiLU()
+        self.act_fn = activation
+        for layer in self.sublayers():
+            if isinstance(layer, nn.Sequential):
+                for index, child in enumerate(layer):
+                    if isinstance(child, nn.Silu):
+                        layer[index] = activation
 
-    def gen_edges(self, num_atoms, frac_coords):
-        lis = [paddle.ones([int(n), int(n)], dtype="int64") for n in num_atoms]
-        fc_graph = paddle.block_diag(lis)
+    def gen_edges(self, num_atoms: paddle.Tensor, frac_coords: paddle.Tensor):
+        adjacency_blocks = [
+            paddle.ones([int(n), int(n)], dtype="int64") for n in num_atoms
+        ]
+        fc_graph = paddle.block_diag(adjacency_blocks)
         fc_edges = paddle.nonzero(fc_graph).t()
         return fc_edges, frac_coords[fc_edges[1]] - frac_coords[fc_edges[0]]
 
@@ -48,21 +71,6 @@ def _to_numpy(x):
     if hasattr(x, "numpy"):
         return x.numpy()
     return np.asarray(x)
-
-
-def _build_batch_idx(num_atoms_np):
-    """Per-atom batch indices from per-crystal atom counts."""
-    num_atoms_np = np.asarray(num_atoms_np).flatten().astype("int64")
-    batch_idx_np = np.concatenate(
-        [np.full(int(n), i) for i, n in enumerate(num_atoms_np)]
-    ).astype("int64")
-    return batch_idx_np, len(num_atoms_np)
-
-
-def _parse_num_atoms_to_per_crystal(num_atoms_data):
-    """Convert per-crystal atom counts to an int64 tensor and numpy array."""
-    num_atoms_np = num_atoms_data.numpy().flatten().astype("int64")
-    return paddle.to_tensor(num_atoms_np), num_atoms_np
 
 
 def _extract_x0(batch, mirage_num_atoms=None):
@@ -74,10 +82,7 @@ def _extract_x0(batch, mirage_num_atoms=None):
     atom_types_np = _to_numpy(sa["atom_types"]).flatten().astype("int64")
     lattice_np = _to_numpy(sa["lattice"]).astype("float32")
     if lattice_np.ndim == 3:
-        if lattice_np.shape[0] == 1:
-            lattice_np = lattice_np.reshape(3, 3)
-        else:
-            lattice_np = lattice_np.reshape(-1, 3)
+        lattice_np = lattice_np.reshape(-1, 3)
     batch_size = len(num_atoms_np)
     total_atoms = int(num_atoms_np.sum())
     if frac_coords_np.shape[0] != total_atoms or atom_types_np.shape[0] != total_atoms:
@@ -96,7 +101,7 @@ def _extract_x0(batch, mirage_num_atoms=None):
         padded_types = []
         padded_num_atoms = []
         offset = 0
-        for i, n in enumerate(num_atoms_np):
+        for n in num_atoms_np:
             n = int(n)
             n_m = max(int(mirage_num_atoms), n)
             padded_frac.append(frac_coords_np[offset : offset + n])
@@ -110,16 +115,15 @@ def _extract_x0(batch, mirage_num_atoms=None):
         atom_types_np = np.concatenate(padded_types)
         num_atoms_np = np.array(padded_num_atoms, dtype="int64")
         total_atoms = int(num_atoms_np.sum())
-        batch_size = len(num_atoms_np)
-    batch_idx_np, _ = _build_batch_idx(num_atoms_np)
     batch["x0"] = [
         paddle.to_tensor(lattice_np.reshape(batch_size, 3, 3)),
         paddle.to_tensor(frac_coords_np.reshape(total_atoms, 3)),
         paddle.to_tensor(atom_types_np.reshape(total_atoms)),
     ]
     batch["num_atoms"] = paddle.to_tensor(num_atoms_np)
-    batch["batch_idx"] = paddle.to_tensor(batch_idx_np)
-    batch["atom_types"] = paddle.to_tensor(atom_types_np)
+    batch["batch_idx"] = paddle.repeat_interleave(
+        paddle.arange(batch_size), repeats=batch["num_atoms"]
+    )
     batch["batch_size"] = batch_size
     return batch
 
@@ -141,16 +145,13 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
 
     def __init__(
         self,
-        model_cfg=None,
-        diffusion_cfg=None,
-        execution_backend="eager",
-        runtime_options=None,
-    ):
+        model_cfg: dict,
+        diffusion_cfg: dict,
+        execution_backend: str = "eager",
+        runtime_options: Optional[dict] = None,
+    ) -> None:
         super().__init__()
         self._init_runtime(execution_backend, runtime_options)
-
-        model_cfg = model_cfg or {}
-        diffusion_cfg = diffusion_cfg or {}
 
         self.mirage_num_atoms = model_cfg.get("mirage_num_atoms", None)
         model_cfg = dict(model_cfg)
@@ -178,6 +179,12 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
             raise TypeError(f"Unknown MiAD model parameters: {sorted(unknown_keys)}")
         cspnet_kwargs = {k: v for k, v in model_cfg.items() if k in _cspnet_keys}
         self.decoder = MiADCSPNet(**cspnet_kwargs)
+        if not self.decoder.smooth or not self.decoder.pred_type:
+            raise ValueError("MiAD requires smooth=True and pred_type=True")
+        if self.decoder.edge_style != "fc":
+            raise ValueError("MiAD only supports edge_style='fc'")
+        if self.decoder.num_layers < 1:
+            raise ValueError("MiAD requires at least one message-passing layer")
 
         self.config = diffusion_cfg
         self.cont_time = self.config["cont_time"]
@@ -186,15 +193,28 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
             raise ValueError("num_steps must be a positive integer")
         # Official default eps=1e-3.
         self.eps = float(self.config.get("eps", 1e-3))
-        self.time_embedding = SinusoidalTimeEmbeddings(
-            self.config.get("time_embed_dim", 256)
+        time_embed_dim = self.config.get("time_embed_dim", 256)
+        latent_dim = (
+            self.decoder.atom_latent_emb.weight.shape[0]
+            - self.decoder.node_embedding.weight.shape[1]
         )
+        if (
+            type(time_embed_dim) is not int
+            or time_embed_dim < 4
+            or time_embed_dim % 2
+            or time_embed_dim != latent_dim
+        ):
+            raise ValueError(
+                "time_embed_dim must be even, at least 4, and match latent_dim"
+            )
+        self.time_embedding = SinusoidalTimeEmbeddings(time_embed_dim)
         self.timestep_sampler = UniformTimestepSampler(
             min_t=self.eps, max_t=self.num_steps - 1
         )
 
-        lat_cfg = self.config["lat_diffusion"]
-        self.lat_scheduler = build_scheduler(lat_cfg["scheduler_cfg"])
+        self.lat_scheduler = build_scheduler(
+            self.config["lat_diffusion"]["scheduler_cfg"]
+        )
 
         frac_cfg = self.config["frac_diffusion"]
         self.frac_scheduler = build_scheduler(frac_cfg["scheduler_cfg"])
@@ -204,6 +224,8 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
         self.sb = self.frac_scheduler.sigma_min
 
         self.type_diffusion = build_scheduler(self.config["type_diffusion"])
+        if self.type_diffusion.num_types != self.decoder.num_classes:
+            raise ValueError("Type diffusion num_types must match decoder num_classes")
         schedule_lengths = (
             len(self.lat_scheduler.betas),
             len(self.sigmas_t),
@@ -216,12 +238,9 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
         # Official checkpoints: no "decoder." prefix and PyTorch (out, in)
         # Linear weights. Adapt per key.
         linear_param_names = set()
-        for module_name, module in self.decoder.named_modules():
+        for module_name, module in self.decoder.named_sublayers():
             if isinstance(module, nn.Linear):
-                name = (
-                    f"decoder.{module_name}.weight" if module_name else "decoder.weight"
-                )
-                linear_param_names.add(name)
+                linear_param_names.add(f"decoder.{module_name}.weight")
         adapted = {}
         for k, v in state_dict.items():
             if k.startswith("decoder."):
@@ -324,9 +343,9 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
 
         frac_noise = paddle.randn(f0.shape)
         batch["frac_noise"] = frac_noise
-        ft = (f0 + self.sigmas_t[t1_idx] * frac_noise) % 1.0
+        ft = self.frac_scheduler.add_noise(f0, frac_noise, t1_idx) % 1.0
 
-        at = self.type_diffusion.forward_step_sample(a0, t[1], batch)
+        at = self.type_diffusion.forward_step_sample(a0, t[1])
 
         return [lt, ft, at]
 
@@ -339,7 +358,7 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
         lt_1 = self._lat_reverse(l_pred, lt, t[0])
         ft_1 = self._frac_reverse_part2(f_pred, ft_05, t[1])
 
-        at_1 = self.type_diffusion.reverse_step_sample(a_pred, at, t[1], batch)
+        at_1 = self.type_diffusion.reverse_step_sample(a_pred, at, t[1])
         return [lt_1, ft_1, at_1]
 
     def _lat_reverse(self, pred, xt, t):
@@ -356,6 +375,10 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
         return xt + drift + diffusion
 
     def _frac_reverse_part2(self, pred, xt, t):
+        # Not delegated to ScoreSdeVeSchedulerWrapped.step_pred: that predictor
+        # uses an adjacent sigma of zero at t=0, which injects noise on the last
+        # step, while the official MiAD schedule clamps to sigma_min and stays
+        # noise-free.
         t_idx = t.cast("int64")
         st = self.sigmas_t[t_idx]
         st_1 = self.sigmas_t[paddle.maximum(t_idx - 1, paddle.to_tensor(0))]
@@ -374,10 +397,14 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
             time_emb, at, ft, lt, batch["num_atoms"], batch["batch_idx"]
         )
 
-    def _output_transform(self, x0, batch):
-        return [x0[0], x0[1], self.type_diffusion.output_transform(x0[2], batch)]
+    def forward(self, batch: dict) -> dict:
+        """Return diffusion loss and labels; use streaming metrics for generation.
 
-    def forward(self, batch, **kwargs):
+        Per-property compute_metric_func_dict is not applicable.
+        """
+        labels = {
+            key: value for key, value in batch.items() if key != "structure_array"
+        }
         batch = _extract_x0(batch, mirage_num_atoms=self.mirage_num_atoms)
         batch["t"] = self._time_sample(batch)
         batch["xt"] = self._forward_step_sample(batch["x0"], batch["t"], batch)
@@ -415,10 +442,15 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
         ).mean()
         loss = loss + loss_type
 
-        return {"loss_dict": {"loss": loss}}
+        return {
+            "loss_dict": {"loss": loss},
+            "label_dict": labels,
+        }
 
     @paddle.no_grad()
-    def sample(self, batch_data, num_inference_steps=None):
+    def sample(
+        self, batch_data: dict, num_inference_steps: Optional[int] = None
+    ) -> dict:
         if num_inference_steps is not None and (
             isinstance(num_inference_steps, bool)
             or not isinstance(num_inference_steps, int)
@@ -440,19 +472,21 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
                         f"batch_idx provided but missing required key '{key}'"
                     )
         elif num_atoms_data is not None:
-            num_atoms, num_atoms_np = _parse_num_atoms_to_per_crystal(num_atoms_data)
-            batch_idx_np, batch_size = _build_batch_idx(num_atoms_np)
+            num_atoms = num_atoms_data.flatten().cast("int64")
+            batch_size = num_atoms.shape[0]
             batch_data = {
                 **batch_data,
                 "num_atoms": num_atoms,
-                "batch_idx": paddle.to_tensor(batch_idx_np),
+                "batch_idx": paddle.repeat_interleave(
+                    paddle.arange(batch_size), repeats=num_atoms
+                ),
                 "batch_size": batch_size,
             }
 
         batch = batch_data
         prior_at = self.type_diffusion.prior_sample(batch)
         na = batch["num_atoms"]
-        total = int(na.sum()) if na.ndim > 0 else int(na)
+        total = int(na.sum())
         batch["xt"] = [
             paddle.randn([batch["batch_size"], 3, 3], dtype="float32"),
             paddle.rand([total, 3], dtype="float32"),
@@ -462,23 +496,16 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
             t = paddle.full([batch["batch_size"]], t_val, dtype="float32")
             batch["t"] = [t, t.repeat_interleave(batch["num_atoms"])]
             batch["xt"] = self._reverse_step_sample(batch["xt"], batch["t"], batch)
-        batch["xt"] = self._output_transform(batch["xt"], batch)
-        batch["x0_prediction"] = batch["xt"]
-
-        lattices, frac_coords, atom_types = batch["x0_prediction"]
+        lattices, frac_coords, atom_types = batch["xt"]
+        atom_types = self.type_diffusion.output_transform(atom_types)
 
         result = []
-        num_atoms = batch_data.get("num_atoms", None)
-        batch_size = batch_data.get("batch_size", lattices.shape[0])
+        num_atoms = batch["num_atoms"]
+        batch_size = batch["batch_size"]
 
         start_idx = 0
         for i in range(batch_size):
-            if num_atoms is not None:
-                n = int(num_atoms[i])
-            else:
-                n = frac_coords.shape[0]
-                if i > 0:
-                    break
+            n = int(num_atoms[i])
             lat_np = _to_numpy(lattices[i])
             fc_np = _to_numpy(frac_coords[start_idx : start_idx + n])
             at_np = _to_numpy(atom_types[start_idx : start_idx + n])
@@ -490,11 +517,8 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
                 n = int(valid_mask.sum())
             else:
                 # All-mirage fallback keeps the structure non-empty.
-                at_np = np.where(
-                    at_np == self._MIRAGE_TYPE, self._FALLBACK_ATOMIC_NUM, at_np
-                )
-            lat_for_params = lat_np.reshape(1, 3, 3) if lat_np.ndim == 2 else lat_np
-            lengths, angles = lattices_to_params_shape_numpy(lat_for_params)
+                at_np = np.full_like(at_np, self._FALLBACK_ATOMIC_NUM)
+            lengths, angles = lattices_to_params_shape_numpy(lat_np.reshape(1, 3, 3))
             result.append(
                 {
                     "num_atoms": n,

@@ -32,6 +32,11 @@ $$
 L_t = \sqrt{\bar{\alpha}_t}\,L_0 + \sqrt{1 - \bar{\alpha}_t}\,\epsilon,\quad \epsilon \sim \mathcal{N}(0, I)
 $$
 
+Lattice matrices are unbounded. The MiAD scheduler disables DDPM sample
+clipping; image-style clipping to `[-1, 1]` would truncate the generated unit
+cell. This corrects the previous integration's sampling behavior while
+preserving checkpoint keys, shapes and the training noise schedule.
+
 #### 2) Fractional-coordinate diffusion on a torus
 
 Fractional coordinates live on a 3D torus $[0,1)^3$. Wrapped Normal noise is used:
@@ -52,6 +57,27 @@ During training, every crystal is padded to `model_cfg.mirage_num_atoms` atoms (
 
 ---
 
+## Dataset Description
+
+MiAD uses the MP-20 CSV splits provided by `MP20Dataset`. Each row contains a
+CIF structure and material properties. This unconditional model trains on atom
+types, fractional coordinates and lattice matrices; material-property columns
+are not conditioning inputs. The configuration converts CIFs to primitive,
+Niggli-reduced structures and pads training structures to 25 atoms.
+
+| Dataset | Train | Validation | Test |
+| --- | --- | --- | --- |
+| MP-20 | 27,136 | 9,047 | 9,046 |
+
+Download the [MP-20 archive](https://paddle-org.bj.bcebos.com/paddlematerial/datasets/mp_20/mp_20.zip)
+and place `train.csv`, `val.csv` and `test.csv` under `data/mp_20/`.
+When a configured split is missing, `MP20Dataset` downloads and extracts the
+archive into the framework dataset cache. For novelty evaluation, point
+`Sample.metrics.__init_params__.reference_file_path` to the actual training
+CSV; the metric requires that explicit file to exist.
+
+---
+
 ## Results
 
 | Model | Dataset | Config | Checkpoint / Log |
@@ -60,26 +86,11 @@ During training, every crystal is padded to `model_cfg.mirage_num_atoms` atoms (
 
 ### Integration validation
 
-Validated on 2026-11-16 with Paddle 3.3.0 and an NVIDIA GeForce RTX 5090 D:
-source baseline `6fd4b7b` plus the MiAD changes in this PR.
-
-```bash
-PPMAT_RUN_CINN_WORKFLOW_TESTS=1 python -m pytest test/miad/test_miad.py test/test_execution_backend.py test/test_ase_calculator.py -q
-```
-
-- Model, runtime-backend and ASE regression tests: 35 passed, including the
-  real GPU CINN training/forward comparison at `atol=rtol=2e-5`.
-- Registered `miad_mp20` weights: eager and CINN each completed 1000-step
-  sampling through `StructureSampler.sample_by_num_atoms(20)` and saved a CIF;
-  the registered denoising boundary agreed at `atol=rtol=2e-5`.
-- Registered weights completed one CINN training update on four real MP-20
-  training structures; every trainable parameter had a finite gradient and
-  all parameters remained finite after the optimizer step.
-- Full-schedule eager loss, gradients and sampled arrays remained bitwise
-  identical to the implementation before the sampling-step validation fix.
-
-These checks establish integration and numerical regression, not full-data
-convergence or reproduction of the paper's generation-quality results.
+The integration covers registered-weight loading, real-data training, Trainer
+checkpoint restoration, and structure sampling. Full-data convergence and the
+paper's generation-quality results have not been reproduced. CINN uses the
+`denoise_step` boundary; GPU qualification must be repeated when the numerical
+path or runtime implementation changes.
 
 ---
 
@@ -96,7 +107,7 @@ python structure_generation/train.py -c structure_generation/configs/miad/miad_m
 
 ```bash
 # Adjust program behavior on the fly using command-line parameters without modifying the configuration file directly.
-# Example: --Global.do_eval=True
+# Example: Global.do_eval=True
 python structure_generation/train.py -c structure_generation/configs/miad/miad_mp20.yaml Global.do_eval=True Global.do_train=False Global.do_test=False Trainer.pretrained_model_path='path/to/model.pdparams'
 ```
 

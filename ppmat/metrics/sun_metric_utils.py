@@ -173,7 +173,6 @@ class SUNMetric(StreamingMetricBase):
         attempt_supercell: bool = False,
         cache_dir: Optional[str] = None,
     ):
-        self.gt_file_path = gt_file_path
         self.reference_file_path = reference_file_path or gt_file_path
         self.stol = stol
         self.angle_tol = angle_tol
