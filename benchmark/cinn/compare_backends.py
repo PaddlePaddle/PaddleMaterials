@@ -165,6 +165,9 @@ def compare_scalars(eager, cinn) -> dict:
         if left is None or right is None:
             values[key] = {"status": "not_compared"}
             continue
+        if not isinstance(left, (int, float)) or not isinstance(right, (int, float)):
+            values[key] = {"status": "not_compared"}
+            continue
         absolute = abs(left - right)
         relative = absolute / max(abs(left), EPSILON)
         values[key] = {
@@ -234,7 +237,16 @@ def compare(root: Path, models: list[str] | None = None) -> dict:
                 "precision_relative_l2_error": precision["relative_l2_error"],
             }
         )
-        extra = compare_scalars(eager and eager.get("loss"), cinn and cinn.get("loss"))
+        extra = compare_scalars(
+            {
+                **(eager and eager.get("loss") or {}),
+                **(eager and eager.get("metrics") or {}),
+            },
+            {
+                **(cinn and cinn.get("loss") or {}),
+                **(cinn and cinn.get("metrics") or {}),
+            },
+        )
         row.update(
             {
                 "loss_metric_status": extra["status"],

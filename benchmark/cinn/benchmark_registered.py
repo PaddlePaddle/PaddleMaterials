@@ -278,8 +278,33 @@ def sfin_test_image(model_name: str, target_name: str):
     return None, None
 
 
+def collect_sfin_loss(workflow, model_name: str, prediction) -> dict:
+    """Return the SFIN reconstruction loss for one prediction."""
+
+    model = getattr(workflow, "model", None)
+    if model is None or not isinstance(prediction, dict):
+        return {}
+    target_name = getattr(model, "target_name", None)
+    if target_name not in prediction:
+        return {}
+
+    _, reference = sfin_test_image(model_name, target_name)
+    if reference is None:
+        return {}
+    try:
+        pred = paddle.to_tensor(prediction[target_name])
+        reference_tensor = paddle.to_tensor(reference)
+        with paddle.no_grad():
+            loss = model.criterion(pred, reference_tensor) * float(
+                getattr(model, "loss_weight", 1.0)
+            )
+    except Exception:
+        return {}
+    return {"loss": as_float(loss)}
+
+
 def collect_sfin_metrics(workflow, model_name: str, prediction) -> dict:
-    """Return loss, PSNR and SSIM for one SFIN prediction."""
+    """Return PSNR and SSIM for one SFIN prediction."""
 
     model = getattr(workflow, "model", None)
     if model is None or not isinstance(prediction, dict):
@@ -298,10 +323,6 @@ def collect_sfin_metrics(workflow, model_name: str, prediction) -> dict:
             pred = pred.unsqueeze(0)
         if reference_tensor.ndim == 3:
             reference_tensor = reference_tensor.unsqueeze(0)
-        with paddle.no_grad():
-            loss = model.criterion(pred, reference_tensor) * float(
-                getattr(model, "loss_weight", 1.0)
-            )
         from ppmat.metrics.sfin_metric import calc_psnr
         from ppmat.metrics.sfin_metric import calc_ssim
 
@@ -309,7 +330,7 @@ def collect_sfin_metrics(workflow, model_name: str, prediction) -> dict:
         ssim = as_float(calc_ssim(pred, reference_tensor))
     except Exception:
         return {}
-    return {"loss": as_float(loss), "psnr": psnr, "ssim": ssim}
+    return {"psnr": psnr, "ssim": ssim}
 
 
 def git_revision(name: str) -> str | None:
@@ -412,20 +433,28 @@ def main() -> None:
             prediction = to_jsonable(first_output)
         except (TypeError, ValueError, RuntimeError) as error:
             prediction_error = str(error)
+        extra_loss = {}
+        extra_metrics = {}
         try:
             if args.model_name.startswith("sfin_"):
+                extra_loss = collect_sfin_loss(
+                    workflow,
+                    args.model_name,
+                    first_output,
+                )
                 extra_metrics = collect_sfin_metrics(
                     workflow,
                     args.model_name,
                     first_output,
                 )
             else:
-                extra_metrics = collect_loss(
+                extra_loss = collect_loss(
                     workflow,
                     args.model_name,
                     loss_input,
                 )
         except Exception:
+            extra_loss = {}
             extra_metrics = {}
         warm_seconds = []
         for _ in range(args.repeats):
@@ -447,7 +476,8 @@ def main() -> None:
                 "runtime_keys": compiled_runtime_keys,
                 "prediction": prediction,
                 "prediction_error": prediction_error,
-                "loss": extra_metrics,
+                "loss": extra_loss,
+                "metrics": extra_metrics,
             }
         )
     except Exception as error:
