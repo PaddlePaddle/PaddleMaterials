@@ -868,7 +868,7 @@ class SmoothBesselBasis(paddle.nn.Layer):
                 (paddle.arange(start=0, end=max_n).astype(dtype="float32") + 1)
                 * PI
                 / r_max
-            ).reshape(1, -1),
+            ).reshape([1, -1]),
         )
         self.register_buffer(
             name="n_2_pi_cutoff",
@@ -876,7 +876,7 @@ class SmoothBesselBasis(paddle.nn.Layer):
                 (paddle.arange(start=0, end=max_n).astype(dtype="float32") + 2)
                 * PI
                 / r_max
-            ).reshape(1, -1),
+            ).reshape([1, -1]),
         )
         self.register_buffer(name="r_max", tensor=paddle.to_tensor(data=r_max))
 

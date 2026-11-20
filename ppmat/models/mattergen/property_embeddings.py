@@ -286,7 +286,7 @@ class ChemicalSystemMultiHotEmbedding(paddle.nn.Layer):
         )
         chemical_system_condition = paddle.zeros(shape=MAX_ATOMIC_NUM + 1)
         chemical_system_condition[chemical_system_numbers] = 1.0
-        return chemical_system_condition.reshape(1, -1)
+        return chemical_system_condition.reshape([1, -1])
 
     @staticmethod
     def sequences_to_multi_hot(

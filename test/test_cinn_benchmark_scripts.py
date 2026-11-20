@@ -33,19 +33,26 @@ def load_script(name: str):
 def test_supported_models_cover_every_qualified_registered_weight():
     runner = load_script("run_registry_matrix")
     models = runner.supported_models()
-
-    assert len(MODEL_REGISTRY) == 74
-    assert len(models) == 65
-    assert set(MODEL_REGISTRY) - set(models) == {
-        name for name in MODEL_REGISTRY if name.startswith("infgcn_")
+    expected_models = {
+        name for name in MODEL_REGISTRY if not name.startswith("infgcn_")
     }
+
+    assert len(models) == len(expected_models)
+    assert set(models) == expected_models
 
 
 def test_valid_result_requires_matching_success_record(tmp_path):
     runner = load_script("run_registry_matrix")
     result_path = tmp_path / "result.json"
     result_path.write_text(
-        json.dumps({"model": "chgnet_mptrj", "backend": "cinn", "status": "passed"}),
+        json.dumps(
+            {
+                "model": "chgnet_mptrj",
+                "backend": "cinn",
+                "status": "passed",
+                "prediction": {"energy": [1.0]},
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -84,4 +91,143 @@ def test_compare_selected_models_ignores_stale_results(tmp_path):
 
     output_path = tmp_path / "comparison.csv"
     comparison.write_csv(output_path, summary["results"])
-    assert output_path.read_text(encoding="utf-8").startswith("model,family,")
+    assert output_path.read_text(encoding="utf-8").startswith("model,eager_status,")
+
+
+def test_compare_computes_prediction_errors(tmp_path):
+    comparison = load_script("compare_backends")
+    eager_dir = tmp_path / "eager"
+    cinn_dir = tmp_path / "cinn"
+    eager_dir.mkdir()
+    cinn_dir.mkdir()
+
+    records = {
+        "eager": {
+            "model": "chgnet_mptrj",
+            "backend": "eager",
+            "status": "passed",
+            "first_seconds": 1.0,
+            "warm_median_seconds": 0.02,
+            "prediction": {
+                "energy": [1.0, 2.0],
+                "forces": [[0.0, 0.1], [0.2, 0.3]],
+            },
+        },
+        "cinn": {
+            "model": "chgnet_mptrj",
+            "backend": "cinn",
+            "status": "passed",
+            "first_seconds": 1.0,
+            "warm_median_seconds": 0.01,
+            "prediction": {
+                "energy": [1.0 + 1e-5, 2.0 - 1e-5],
+                "forces": [[0.0, 0.1 + 1e-5], [0.2, 0.3 - 1e-5]],
+            },
+        },
+    }
+    for directory, record in (
+        (eager_dir, records["eager"]),
+        (cinn_dir, records["cinn"]),
+    ):
+        (directory / "chgnet_mptrj.json").write_text(
+            json.dumps(record),
+            encoding="utf-8",
+        )
+
+    summary = comparison.compare(tmp_path, ["chgnet_mptrj"])
+    row = summary["results"][0]
+
+    assert row["precision_status"] == "passed"
+    assert row["precision_matched_fields"] == 2
+    assert abs(row["precision_max_abs_error"] - 1e-5) < 1e-12
+    assert abs(row["precision_max_relative_error"] - 1e-4) < 1e-12
+    assert summary["precision_compared"] == 1
+
+    output_path = tmp_path / "comparison.csv"
+    comparison.write_csv(output_path, summary["results"])
+    header = output_path.read_text(encoding="utf-8").splitlines()[0]
+    assert "precision_max_abs_error" in header
+
+
+def test_prediction_serialization_converts_arrays_and_tensors():
+    benchmark = load_script("benchmark_registered")
+    value = {
+        "energy": benchmark.np.array([1.0, 2.0]),
+        "tensor": benchmark.paddle.to_tensor([3.0, 4.0]),
+    }
+
+    assert benchmark.to_jsonable(value) == {
+        "energy": [1.0, 2.0],
+        "tensor": [3.0, 4.0],
+    }
+
+
+def test_compare_reports_loss_and_metric_differences(tmp_path):
+    comparison = load_script("compare_backends")
+    eager_dir = tmp_path / "eager"
+    cinn_dir = tmp_path / "cinn"
+    eager_dir.mkdir()
+    cinn_dir.mkdir()
+
+    records = {
+        "eager": {
+            "model": "sfin_bf_enhance",
+            "backend": "eager",
+            "status": "passed",
+            "first_seconds": 1.0,
+            "warm_median_seconds": 0.02,
+            "prediction": {"gt_enhance": [[1.0, 2.0]]},
+            "loss": {"loss": 1.0, "psnr": 30.0, "ssim": 0.9},
+        },
+        "cinn": {
+            "model": "sfin_bf_enhance",
+            "backend": "cinn",
+            "status": "passed",
+            "first_seconds": 1.0,
+            "warm_median_seconds": 0.01,
+            "prediction": {"gt_enhance": [[1.0, 2.0]]},
+            "loss": {"loss": 1.1, "psnr": 29.5, "ssim": 0.89},
+        },
+    }
+    for directory, record in (
+        (eager_dir, records["eager"]),
+        (cinn_dir, records["cinn"]),
+    ):
+        (directory / "sfin_bf_enhance.json").write_text(
+            json.dumps(record),
+            encoding="utf-8",
+        )
+
+    summary = comparison.compare(tmp_path, ["sfin_bf_enhance"])
+    row = summary["results"][0]
+
+    assert row["loss_metric_status"] == "passed"
+    assert summary["loss_metric_compared"] == 1
+    assert abs(row["loss_metric"]["loss"]["abs_error"] - 0.1) < 1e-9
+    assert row["loss_metric"]["psnr"]["eager"] == 30.0
+
+    output_path = tmp_path / "comparison.csv"
+    comparison.write_csv(output_path, summary["results"])
+    header = output_path.read_text(encoding="utf-8").splitlines()[0]
+    assert "loss_metric_status" in header
+
+
+def test_collect_loss_requires_a_labeled_graph():
+    benchmark = load_script("benchmark_registered")
+
+    class Model:
+        property_names = ["energy"]
+
+        def forward(self, batch, return_loss=True, return_prediction=True):
+            return {"loss_dict": {"loss": benchmark.paddle.to_tensor(1.0)}}
+
+    class Workflow:
+        model = Model()
+
+    class Graph:
+        y = None
+
+    assert benchmark.collect_loss(Workflow(), "chgnet_mptrj", Graph()) == {}
+
+    Graph.y = benchmark.paddle.to_tensor([1.0])
+    assert benchmark.collect_loss(Workflow(), "chgnet_mptrj", Graph()) == {"loss": 1.0}
