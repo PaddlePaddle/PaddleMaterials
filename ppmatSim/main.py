@@ -21,7 +21,6 @@ from hydra.utils import instantiate
 from omegaconf import DictConfig
 from omegaconf import OmegaConf
 
-from ppmat.predictor import BasePredictor
 from ppmat.predictor.structures import build_init_structures
 from ppmat.utils import logger
 
@@ -40,9 +39,19 @@ def main(cfg: DictConfig):
 
     # Initialize the model
     load_model = instantiate(cfg.Model)
-    predictor = BasePredictor(
-        work_dir=cfg.Run.work_dir, device=cfg.device, **load_model
-    )
+    if cfg.get("Predictor") is None:
+        from ppmat.predictor import BasePredictor
+
+        predictor = BasePredictor(
+            work_dir=cfg.Run.work_dir, device=cfg.device, **load_model
+        )
+    else:
+        predictor = instantiate(
+            cfg.Predictor,
+            work_dir=cfg.Run.work_dir,
+            device=cfg.device,
+            **load_model,
+        )
 
     # Detect interface type and interface object
     if cfg.get("Calculator") is not None:

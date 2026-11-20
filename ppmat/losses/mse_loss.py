@@ -38,3 +38,13 @@ class MSELoss(nn.Layer):
 
         loss = F.mse_loss(pred, label, self.reduction)
         return loss
+
+
+class MaskMSELoss(nn.Layer):
+    r"""Mean squared error over valid entries selected by a boolean mask."""
+
+    def forward(self, pred, label, mask) -> paddle.Tensor:
+        diff = paddle.square(pred - label)
+        mask = paddle.cast(mask, pred.dtype)
+        denom = paddle.clip(paddle.sum(mask), min=1.0)
+        return paddle.sum(diff * mask) / denom

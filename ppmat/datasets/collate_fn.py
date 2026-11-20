@@ -91,6 +91,17 @@ class DefaultCollator(object):
         )
 
 
+class DeepHCollator(DefaultCollator):
+    """Batch DeepH node, edge and LCMP indices using the existing Data protocol."""
+
+    def __call__(self, batch):
+        data = super().__call__(batch).to_dict()
+        return {
+            key: paddle.to_tensor(value) if isinstance(value, np.ndarray) else value
+            for key, value in data.items()
+        }
+
+
 class RadiusGraphCollator:
     """Collate PGL radius graphs and offset their edge-based triplet indices."""
 
