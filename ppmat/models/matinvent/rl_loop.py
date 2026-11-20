@@ -46,6 +46,8 @@ class MatInvent:
     has_type_diffusion = False
     early_stop_cfg = None
     anchor_batch = None
+    anchor_dataset = None
+    anchor_resample = False
     probe_batch = None
     anchor_loss_weight = 0.0
     anchor_every_n_steps = 1
@@ -125,6 +127,8 @@ class MatInvent:
                 if int(early_stop_cfg.get(key, 1)) <= 0:
                     raise ValueError(f"early_stop_cfg.{key} must be positive")
         self.anchor_batch = None
+        self.anchor_dataset = None
+        self.anchor_resample = False
         self.probe_batch = None
         self.anchor_loss_weight = 0.0
         self.anchor_every_n_steps = 1
@@ -136,7 +140,10 @@ class MatInvent:
         self.last_valid_ratio = None
         self.last_div_ratio = None
         if anchor_cfg is not None and anchor_cfg.get("enabled", False):
-            self.anchor_batch = self._build_mp20_batch(anchor_cfg, "Anchor batch")
+            self.anchor_dataset, self.anchor_batch = self._load_mp20_batch(
+                anchor_cfg, "Anchor batch"
+            )
+            self.anchor_resample = bool(anchor_cfg.get("resample", False))
             self.anchor_loss_weight = float(anchor_cfg.get("loss_weight", 0.5))
             self.anchor_every_n_steps = int(anchor_cfg.get("every_n_steps", 1))
         probe_cfg = (self.early_stop_cfg or {}).get("probe_cfg")
@@ -144,7 +151,7 @@ class MatInvent:
             probe_cfg = anchor_cfg.get("probe_cfg")
         if probe_cfg is not None or self.anchor_batch is not None:
             self.probe_batch = (
-                self._build_mp20_batch(probe_cfg, "Probe batch")
+                self._load_mp20_batch(probe_cfg, "Probe batch")[1]
                 if probe_cfg is not None
                 else self.anchor_batch
             )
@@ -155,26 +162,40 @@ class MatInvent:
         os.makedirs(ckpt_dir, exist_ok=True)
         paddle.save(model.state_dict(), os.path.join(ckpt_dir, "model.pdparams"))
 
-    def _build_mp20_batch(self, cfg, label):
-        from ppmat.datasets.collate_fn import DefaultCollator
+    def _load_mp20_batch(self, cfg, label):
         from ppmat.datasets.mp20_dataset import MP20Dataset
+        from ppmat.datasets.transform import build_transforms
 
         dataset = MP20Dataset(
             path=cfg["data_path"],
             build_structure_cfg=cfg["build_structure_cfg"],
             cache_path=cfg.get("cache_path"),
+            transforms=build_transforms(cfg.get("transforms")),
         )
         num_samples = min(int(cfg.get("num_samples", 4)), len(dataset))
         if num_samples <= 0:
             raise ValueError("anchor_cfg.num_samples must select at least one sample")
-        batch = DefaultCollator()([dataset[i] for i in range(num_samples)])
         logger.info(f"{label}: {num_samples} MP20 samples")
+        return dataset, self._collate_mp20_batch(dataset, range(num_samples))
+
+    @staticmethod
+    def _collate_mp20_batch(dataset, indices):
+        from ppmat.datasets.collate_fn import DefaultCollator
+
+        batch = DefaultCollator()([dataset[int(i)] for i in indices])
         return paddle.utils.map_structure(
             lambda value: paddle.to_tensor(value)
             if isinstance(value, np.ndarray)
             else value,
             batch,
         )
+
+    def _anchor_training_batch(self):
+        if not self.anchor_resample:
+            return self.anchor_batch
+        count = int(self.anchor_batch["structure_array"]["num_atoms"].shape[0])
+        indices = np.random.choice(len(self.anchor_dataset), size=count, replace=False)
+        return self._collate_mp20_batch(self.anchor_dataset, indices)
 
     def _probe_anchor(self):
         if self.probe_batch is None:
@@ -389,7 +410,9 @@ class MatInvent:
                         and self.anchor_loss_weight > 0
                         and (t + 1) % self.anchor_every_n_steps == 0
                     ):
-                        anchor_loss = self.agent(self.anchor_batch)["loss_dict"]["loss"]
+                        anchor_loss = self.agent(self._anchor_training_batch())[
+                            "loss_dict"
+                        ]["loss"]
                         objective = objective + self.anchor_loss_weight * anchor_loss
                         anchor_all += float(anchor_loss)
                         anchor_count += 1

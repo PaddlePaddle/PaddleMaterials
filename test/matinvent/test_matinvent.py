@@ -46,7 +46,6 @@ from ppmat.datasets.build_structure import BuildStructure
 from ppmat.models import MODEL_REGISTRY
 from ppmat.models import build_model
 from ppmat.models.diffcsp.diffcsp import DiffCSP
-from ppmat.models.matinvent.dataset import RLDataset
 from ppmat.models.matinvent.dataset import create_rl_dataloader
 from ppmat.models.matinvent.diffcsp import MatinventDiffCSP
 from ppmat.models.matinvent.mattergen import MatinventMatterGen
@@ -1066,13 +1065,31 @@ class TestRLTraining:
         for key, value in loop.agent.state_dict().items():
             np.testing.assert_array_equal(value.numpy(), initial[key].numpy())
 
-    @pytest.mark.parametrize("mode", ["plain", "anchor", "qualification"])
+    @pytest.mark.parametrize(
+        "mode",
+        [
+            "plain",
+            "mattergen_full_schedule",
+            "diffcsp_full_schedule",
+            "anchor",
+            "anchor_polar",
+            "anchor_resample",
+            "qualification",
+        ],
+    )
     def test_before_train_writes_checkpoints(self, monkeypatch, tmp_path, mode):
-        with_anchor = mode == "anchor"
-        small_cfg = _tiny_backbone_cfg("diffcsp")
-        package_name, package_dir = _write_model_package(tmp_path, "diffcsp", small_cfg)
+        with_anchor = mode in {"anchor", "anchor_polar", "anchor_resample"}
+        model_type = (
+            "mattergen"
+            if mode in {"mattergen_full_schedule", "anchor_polar"}
+            else "diffcsp"
+        )
+        small_cfg = _tiny_backbone_cfg(model_type)
+        package_name, package_dir = _write_model_package(
+            tmp_path, model_type, small_cfg
+        )
 
-        config = _load_config("diffcsp")
+        config = _load_config(model_type)
         config["Model"]["__init_params__"]["backbone_cfg"] = small_cfg
         output_dir = str(tmp_path / "output")
         config["Trainer"]["output_dir"] = output_dir
@@ -1080,14 +1097,38 @@ class TestRLTraining:
         rl_cfg["pretrained_model_name"] = package_name
         rl_cfg["rl_epoch"] = 1
         rl_cfg["save_freq"] = 1
+        rl_cfg["anchor_cfg"] = None
         rl_cfg["replay_cfg"] = None
         rl_cfg["div_filter_cfg"]["enabled"] = False
         rl_cfg["sample_cfg"].update(
             {"batch_size": 1, "num_batches": 1, "num_inference_steps": 2}
         )
-        rl_cfg["finetune_cfg"].update(
-            {"batch_size": 2, "epochs": 1, "timesteps": 1, "accum_steps": 1}
-        )
+        if mode.endswith("_full_schedule"):
+            finetune_cfg = rl_cfg["finetune_cfg"]
+            assert finetune_cfg["timesteps"] == config["Global"]["num_train_timesteps"]
+            assert finetune_cfg["timesteps"] == 1000
+            assert finetune_cfg["accum_steps"] == 50
+            assert finetune_cfg["epochs"] == 3
+            noise_times = []
+            add_noise = MatInvent._add_noise_to_model
+            optimizer_steps = []
+            optimizer_step = paddle.optimizer.Adam.step
+
+            def checked_add_noise(loop, backbone, batch, timestep):
+                result = add_noise(loop, backbone, batch, timestep)
+                noise_times.append(float(result[2][0]))
+                return result
+
+            def checked_optimizer_step(optimizer):
+                optimizer_steps.append(1)
+                return optimizer_step(optimizer)
+
+            monkeypatch.setattr(MatInvent, "_add_noise_to_model", checked_add_noise)
+            monkeypatch.setattr(paddle.optimizer.Adam, "step", checked_optimizer_step)
+        else:
+            rl_cfg["finetune_cfg"].update(
+                {"batch_size": 2, "epochs": 1, "timesteps": 1, "accum_steps": 1}
+            )
         structures = [_make_structure(["Si", "O"], [[0, 0, 0], [0.3, 0.4, 0.2]])]
         invalid = _make_structure(
             ["Na", "Cl", "Cl"], [[0, 0, 0], [0.3, 0.4, 0.2], [0.7, 0.7, 0.6]]
@@ -1172,23 +1213,49 @@ class TestRLTraining:
             )
         if with_anchor:
             rl_cfg["finetune_cfg"]["timesteps"] = 6
-            dataset = RLDataset(structures, np.ones(1))
-            monkeypatch.setattr(
-                "ppmat.datasets.mp20_dataset.MP20Dataset", lambda **kwargs: dataset
+            anchor_structure = Structure(
+                [[5.0, 0, 0], [1.0, 4.0, 0], [0.5, 0.3, 6.0]],
+                ["Si", "O"],
+                [[0, 0, 0], [0.3, 0.4, 0.2]],
             )
+            anchor_path = tmp_path / "anchor.csv"
+            anchor_structures = [anchor_structure]
+            if mode == "anchor_resample":
+                for scale in (1.1, 1.2):
+                    structure = anchor_structure.copy()
+                    structure.scale_lattice(structure.volume * scale)
+                    anchor_structures.append(structure)
+            pd.DataFrame({"cif": [s.to(fmt="cif") for s in anchor_structures]}).to_csv(
+                anchor_path, index=False
+            )
+            parse_cfg = {
+                "format": "cif_str",
+                "niggli": False,
+                "primitive": False,
+                "num_cpus": 1,
+            }
             rl_cfg["anchor_cfg"] = {
                 "enabled": True,
-                "data_path": "anchor.csv",
-                "build_structure_cfg": {"format": "cif_str"},
+                "data_path": str(anchor_path),
+                "build_structure_cfg": parse_cfg,
                 "num_samples": 1,
                 "loss_weight": 0.5,
                 "every_n_steps": 1,
                 "probe_cfg": {
-                    "data_path": "validation.csv",
-                    "build_structure_cfg": {"format": "cif_str"},
+                    "data_path": str(anchor_path),
+                    "build_structure_cfg": parse_cfg,
                     "num_samples": 1,
                 },
             }
+            if mode == "anchor_polar":
+                transforms = [
+                    {
+                        "__class_name__": "LatticePolarDecomposition",
+                        "__init_params__": {},
+                    }
+                ]
+                rl_cfg["anchor_cfg"]["transforms"] = transforms
+                rl_cfg["anchor_cfg"]["probe_cfg"]["transforms"] = transforms
             rl_cfg["early_stop_cfg"] = {
                 "enabled": True,
                 "probe_every": 1,
@@ -1196,11 +1263,33 @@ class TestRLTraining:
                 "probe_draws": 1,
                 "max_loss_ratio": 1e-8,
             }
+            anchor_calls = []
+            if mode == "anchor_resample":
+                rl_cfg["anchor_cfg"]["resample"] = True
+                rl_cfg["early_stop_cfg"]["probe_every_updates"] = 2
+                training_batch = MatInvent._anchor_training_batch
+
+                def checked_training_batch(loop):
+                    batch = training_batch(loop)
+                    assert batch is not loop.anchor_batch
+                    anchor_calls.append(batch)
+                    return batch
+
+                monkeypatch.setattr(
+                    MatInvent, "_anchor_training_batch", checked_training_batch
+                )
             probe_method = MatInvent._probe_anchor
             probe_calls = []
 
             def checked_probe(loop):
                 assert loop.probe_batch is not loop.anchor_batch
+                if mode == "anchor_polar":
+                    for batch in (loop.anchor_batch, loop.probe_batch):
+                        lattice = batch["structure_array"]["lattice"].numpy()
+                        np.testing.assert_allclose(
+                            lattice, lattice.transpose(0, 2, 1), atol=1e-6
+                        )
+                        assert abs(lattice[0, 0, 1]) > 0.1
                 numpy_state = np.random.get_state()
                 paddle_state = paddle.get_rng_state()
                 expected = paddle.rand([3]).numpy()
@@ -1233,8 +1322,20 @@ class TestRLTraining:
 
         model = build_model(config["Model"])
         model.before_train(_FakeTrainer(output_dir))
+        if mode.endswith("_full_schedule"):
+            time_grid = (
+                np.linspace(1.0, 0.001, 1000)
+                if model_type == "mattergen"
+                else np.arange(999, -1, -1)
+            )
+            expected_times = np.tile(time_grid, 3)
+            np.testing.assert_allclose(noise_times, expected_times, atol=1e-7)
+            assert len(optimizer_steps) == 60
         if with_anchor:
             assert len(probe_calls) == 3
+            if mode == "anchor_resample":
+                assert len(anchor_calls) == 2
+                assert anchor_calls[0] is not anchor_calls[1]
 
         model_dir = os.path.join(output_dir, "models")
         initial = paddle.load(str(package_dir / "checkpoints" / _WEIGHTS_NAME))

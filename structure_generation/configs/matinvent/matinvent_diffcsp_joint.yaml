@@ -27,11 +27,11 @@ Model:
     rl_cfg:
       pretrained_model_name: matinvent_diffcsp_mp20_joint
       pretrained_model_path: null
-      rl_epoch: 120
-      topk_ratio: 0.5
+      rl_epoch: 3
+      topk_ratio: 0.125
       save_freq: 100
       sample_cfg:
-        batch_size: 192
+        batch_size: 32
         num_batches: 1
         num_inference_steps: ${Global.rl_num_inference_steps}
         max_num: 16
@@ -46,6 +46,17 @@ Model:
           __class_name__: Adam
           __init_params__:
             lr: 1.0e-05
+      anchor_cfg:
+        enabled: true
+        resample: true
+        data_path: ./data/mp_20/train.csv
+        cache_path: ./data/mp_20_cache/train
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+        num_samples: 32
+        loss_weight: 4.0
+        every_n_steps: 4
       reward_cfg:
         reward_threshold: 0.8
         reduce: mean
