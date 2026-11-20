@@ -1,0 +1,106 @@
+Global:
+  do_eval: True
+
+Model:
+  __class_name__: Chemeleon2VAEModule
+  __init_params__:
+    encoder:
+      __class_name__: Chemeleon2TransformerEncoder
+      __init_params__:
+        max_num_elements: 100
+        d_model: 512
+        nhead: 8
+        dim_feedforward: 2048
+        activation: gelu
+        dropout: 0.0
+        num_layers: 8
+    decoder:
+      __class_name__: Chemeleon2TransformerDecoder
+      __init_params__:
+        max_num_elements: 100
+        d_model: 512
+        nhead: 8
+        dim_feedforward: 2048
+        activation: gelu
+        dropout: 0.0
+        num_layers: 8
+    latent_dim: 8
+    loss_weights:
+      atom_types: 1.0
+      lengths: 1.0
+      angles: 10.0
+      frac_coords: 10.0
+      kl: 1.0e-05
+      fa: 0.0
+    augmentation:
+      translate: false
+      rotate: false
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/train.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 32
+  val:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/val.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 32
+  test:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/test.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 32
+
+Trainer:
+  max_epochs: 100
+  seed: 42
+  output_dir: ./output/chemeleon2_vae
+  save_freq: 500
+  log_freq: 20
+  start_eval_epoch: 1
+  eval_freq: 100
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'epoch'
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: 'loss'
+  greater_is_better: False
+
+Optimizer:
+  __class_name__: AdamW
+  __init_params__:
+    lr: 0.0001
+    weight_decay: 0.0

@@ -21,6 +21,12 @@ from typing import Optional
 
 from omegaconf import OmegaConf
 
+from ppmat.models.chemeleon2 import Chemeleon2LDMModule
+from ppmat.models.chemeleon2 import Chemeleon2VAEModule
+from ppmat.models.chemeleon2.ldm_module import Chemeleon2ConditionModule
+from ppmat.models.chemeleon2.ldm_module.dit import Chemeleon2DiT
+from ppmat.models.chemeleon2.vae_module.decoder import Chemeleon2TransformerDecoder
+from ppmat.models.chemeleon2.vae_module.encoder import Chemeleon2TransformerEncoder
 from ppmat.models.chgnet.chgnet import CHGNet
 from ppmat.models.chgnet.chgnet_graph_converter import CHGNetGraphConverter
 from ppmat.models.comformer.comformer import iComformer
@@ -73,6 +79,12 @@ __all__ = [
     "DiffPrior",
     "DiffNMR",
     "InfGCN",
+    "Chemeleon2VAEModule",
+    "Chemeleon2LDMModule",
+    "Chemeleon2DiT",
+    "Chemeleon2ConditionModule",
+    "Chemeleon2TransformerDecoder",
+    "Chemeleon2TransformerEncoder",
     "SFIN",
     "SphereNet",
 ]
@@ -147,6 +159,8 @@ MODEL_REGISTRY = {
     "sfin_haadf_detect": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/spectrum_enhancement/sfin/sfin_haadf_detect.zip",
     "sfin_bf_enhance": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/spectrum_enhancement/sfin/sfin_bf_enhance.zip",
     "sfin_bf_detect": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/spectrum_enhancement/sfin/sfin_bf_detect.zip",
+    "chemeleon2_vae": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/Chemeleon2/chemeleon2_vae.zip",
+    "chemeleon2_ldm": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/Chemeleon2/chemeleon2_ldm.zip",
     "spherenet_qm9_mu": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/spherenet/spherenet_qm9_mu.zip",
     "spherenet_qm9_alpha": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/spherenet/spherenet_qm9_alpha.zip",
     "spherenet_qm9_homo": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/spherenet/spherenet_qm9_homo.zip",
