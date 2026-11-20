@@ -6,28 +6,28 @@ Machine Learning Electronic Structure (MLES) is an emerging paradigm in computat
 
 ## 2.Models Matrix
 
-| **Supported Functions**                      | **[InfGCN](./configs/infgcn/README.md)** |
-| -------------------------------------------- | :--------: |
-| **Forward Prediction · Materials Properties**|            |
-| Electron density                             |      ✅    |
-| **ML Capabilities · Training**               |            |
-| Single-GPU                                   |      ✅    |
-| Distributed training                         |      ✅    |
-| Mixed precision (AMP)                        |      —     |
-| Fine-tuning                                  |      ✅    |
-| Uncertainty / Active Learning                |      —     |
-| Dynamic→Static graphs                        |      —     |
-| Compiler (CINN) opt.                         |      —     |
-| **ML Capabilities · Predict**                |            |
-| Distillation / Pruning                       |      —     |
-| Standard inference                           |      ✅    |
-| Distributed inference                        |      —     |
-| Compiler-level inference                     |      —     |
-| **Datasets**                                 |            |
-| **Materials Project**                        |            |
-| MP_EC                                        |      ✅    |
-| MD17_EC                                      |      ✅    |
-| QM9_EC                                       |      ✅    |
-| OMol25_EC                                    |      ✅    |
+| **Supported Functions**                      | **[InfGCN](./configs/infgcn/README.md)** | **[GPWNO](./configs/gpwno/README.md)** |
+| -------------------------------------------- | :--------: | :--------: |
+| **Forward Prediction · Materials Properties**|            |            |
+| Electron density                             |      ✅    |      ✅    |
+| **ML Capabilities · Training**               |            |            |
+| Single-GPU                                   |      ✅    |      ✅    |
+| Distributed training                         |      ✅    |      ✅    |
+| Mixed precision (AMP)                        |      —     |      —     |
+| Fine-tuning                                  |      ✅    |      ✅    |
+| Uncertainty / Active Learning                |      —     |      —     |
+| Dynamic→Static graphs                        |      —     |      —     |
+| Compiler (CINN) opt.                         |      —     |      —     |
+| **ML Capabilities · Predict**                |            |            |
+| Distillation / Pruning                       |      —     |      —     |
+| Standard inference                           |      ✅    |      ✅    |
+| Distributed inference                        |      —     |      —     |
+| Compiler-level inference                     |      —     |      —     |
+| **Datasets**                                 |            |            |
+| **Materials Project**                        |            |            |
+| MP_EC                                        |      ✅    |      ✅    |
+| MD17_EC                                      |      ✅    |      ✅    |
+| QM9_EC                                       |      ✅    |      ✅    |
+| OMol25_EC                                    |      ✅    |      —     |
 
 **Legend:** ✅ Verified · 🧪 Implemented, pending validation · 🚧 In development · `-` Not supported · 🌟 Original Work

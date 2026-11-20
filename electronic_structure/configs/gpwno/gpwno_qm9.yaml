@@ -1,0 +1,169 @@
+Global:
+  do_train: True
+  do_eval: True
+  do_test: True
+  use_voxel: False
+  graph_converter:
+    __class_name__: RadiusGraphConverter
+    __init_params__:
+      cutoff: 3.0
+      max_num_neighbors: 32
+      inclusive_cutoff: true
+      include_distance: false
+  build_field_cfg:
+    format: chgcar
+    name: density
+    num_cpus: 10
+  cache_num_workers: 8
+
+Trainer:
+  # Keep the epoch ceiling above the official 80,000-step training budget.
+  max_epochs: 100
+  max_iter: 80000
+  seed: 42
+  output_dir: ./output/gpwno_qm9
+  save_freq: 1
+  log_freq: 1
+  start_eval_epoch: 0
+  eval_freq: 1
+  pretrained_model_path: null
+  pretrained_weight_name: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: 'O1'
+  eval_with_no_grad: True
+  gradient_accumulation_steps: 1
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: "mae"
+  greater_is_better: False
+  compute_metric_during_train: True
+  metric_strategy_during_eval: 'epoch'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: GPWNO
+  __init_params__:
+    n_atom_type: 5
+    num_radial: 16
+    num_spherical: 4
+    radial_embed_size: 64
+    radial_hidden_size: 128
+    num_radial_layer: 2
+    num_gcn_layer: 2
+    cutoff: 3.0
+    grid_cutoff: 0.75
+    probe_cutoff: 1.5
+    is_fc: false
+    gauss_start: 0.5
+    gauss_end: 5.0
+    residual: true
+    pbc: false
+    activation: norm
+    num_fourier: 40
+    num_fourier_time: 12
+    width: 16
+    fourier_mode: 0
+    padding: 4
+    use_max_cell: true
+    max_cell_size: 20
+    equivariant_frame: true
+    using_ff: true
+    model_sharing: false
+    num_local_gcn_layers: 3
+    num_spherical_RNO: 4
+    scalar_mask: true
+    mask_cutoff: 3.0
+
+Vocabulary: infgcn_qm9
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    lr:
+      __class_name__: ReduceOnPlateau
+      __init_params__:
+        learning_rate: 0.005
+        factor: 0.5
+        patience: 5
+        min_lr: 0.00001
+        by_epoch: True
+        indicator: "eval_loss"
+        indicator_name: "loss"
+    weight_decay: 0.000000000001
+    beta1: 0.9
+    beta2: 0.999
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: QM9DensityDataset
+      __init_params__:
+        path: ./data/qm9_data_split.json
+        split: "train"
+        build_field_cfg: ${Global.build_field_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+        cache_num_workers: ${Global.cache_num_workers}
+        overwrite: false
+        grid_sampler_cfg:
+          n_samples: 1024
+          sampling_mode: random
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 32
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+      collate_fn: DensityCollator
+  val:
+    dataset:
+      __class_name__: QM9DensityDataset
+      __init_params__:
+        path: ./data/qm9_data_split.json
+        split: "validation"
+        build_field_cfg: ${Global.build_field_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+        cache_num_workers: ${Global.cache_num_workers}
+        overwrite: false
+        grid_sampler_cfg:
+          n_samples: 2048
+          sampling_mode: random
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 32
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+      collate_fn: DensityCollator
+  test:
+    dataset:
+      __class_name__: QM9DensityDataset
+      __init_params__:
+        path: ./data/qm9_data_split.json
+        split: "test"
+        build_field_cfg: ${Global.build_field_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+        cache_num_workers: ${Global.cache_num_workers}
+        overwrite: false
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 8
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+      collate_fn: DensityCollator
+
+Predict:
+  graph_converter: ${Global.graph_converter}
+  build_field_cfg: ${Global.build_field_cfg}
+  grid_batch_size: 4096
