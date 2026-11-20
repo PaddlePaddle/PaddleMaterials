@@ -1,3 +1,4 @@
+import math
 from typing import Callable
 from typing import Optional
 
@@ -10,6 +11,7 @@ from ppmat.models.common.basis_utils import real_sph_harm
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
 from ppmat.utils.crystal import get_pbc_distances
+from ppmat.utils.pgl_compat import graph_count
 from ppmat.utils.scatter import scatter
 
 """This module is adapted from https://github.com/Open-Catalyst-Project/ocp/tree/master/ocpmodels/models
@@ -55,11 +57,8 @@ class BesselBasisLayer(paddle.nn.Layer):
             .numpy()
             .dtype,
             default_initializer=paddle.nn.initializer.Assign(
-                paddle.empty(
-                    shape=[
-                        num_radial,
-                    ]
-                )
+                paddle.arange(1, num_radial + 1, dtype=paddle.get_default_dtype())
+                * math.pi
             ),
         )
         self.freq.stop_gradient = False
@@ -106,15 +105,22 @@ class SphericalBasisLayer(paddle.nn.Layer):
         dist = dist / self.cutoff
         rbf = paddle.stack(x=[f(dist) for f in self.bessel_funcs], axis=1)
         rbf = self.envelope(dist).unsqueeze(axis=-1) * rbf
-        cbf = paddle.stack(
-            x=[
-                paddle.zeros_like(angle) + self.sph_funcs[0],
-                *(function(angle) for function in self.sph_funcs[1:]),
-            ],
-            axis=1,
-        )
+        # Unpacking a generator into a list literal compiles to
+        # list.extend(generator), which SOT does not support.
+        cbf_terms = [paddle.zeros_like(angle) + self.sph_funcs[0]]
+        for function in self.sph_funcs[1:]:
+            cbf_terms.append(function(angle))
+        cbf = paddle.stack(x=cbf_terms, axis=1)
         n, k = self.num_spherical, self.num_radial
-        out = (rbf[idx_kj].reshape([-1, n, k]) * cbf.reshape([-1, n, 1])).reshape(
+        # Adding rbf to zeros with index_add copies it exactly. CINN leaves index_add
+        # to the PHI kernel, so rbf is computed once per edge. Without this copy, CINN
+        # fuses the gather rbf[idx_kj] into the ops that produce rbf and evaluates
+        # all n * k Bessel functions once per triplet.
+        rbf = paddle.index_add(
+            paddle.zeros_like(rbf), paddle.arange(rbf.shape[0]), 0, rbf
+        )
+        rbf_kj = paddle.gather(rbf, idx_kj)
+        out = (rbf_kj.reshape([-1, n, k]) * cbf.reshape([-1, n, 1])).reshape(
             [-1, n * k]
         )
         return out
@@ -141,7 +147,8 @@ class EmbeddingBlock(paddle.nn.Layer):
     ) -> paddle.Tensor:
         x = self.emb(x)
         rbf = self.act(self.lin_rbf(rbf))
-        return self.act(self.lin(paddle.concat(x=[x[i], x[j], rbf], axis=-1)))
+        h = paddle.concat(x=[paddle.gather(x, i), paddle.gather(x, j), rbf], axis=-1)
+        return self.act(self.lin(h))
 
 
 class ResidualLayer(paddle.nn.Layer):
@@ -222,7 +229,7 @@ class InteractionPPBlock(paddle.nn.Layer):
         x_kj = self.act(self.lin_down(x_kj))
         sbf = self.lin_sbf1(sbf)
         sbf = self.lin_sbf2(sbf)
-        x_kj = x_kj[idx_kj] * sbf
+        x_kj = paddle.gather(x_kj, idx_kj) * sbf
         x_kj = scatter(x_kj, idx_ji, dim=0, dim_size=x.shape[0])
         x_kj = self.act(self.lin_up(x_kj))
         h = x_ji + x_kj
@@ -418,35 +425,58 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
         else:
             raise ValueError(f"Unknown loss type {loss_type}.")
 
-    def triplets(self, edge_index, num_nodes):
+    def triplets(self, edge_index, cell_offsets=None, num_nodes=None):
+        """Build the triplets k->j->i from the directed edges (row -> col).
+
+        The triplets of edge ji are listed in the order of ji, and for one ji in
+        the order of the index of kj. ``num_nodes`` is not used; it is kept for
+        backward compatibility.
+        """
         row, col = edge_index
-        value = paddle.arange(1, row.shape[0] + 1, dtype="int64")
-        # build matrix of edge ids per target
-        n = col.shape[0]
-        rows = paddle.arange(n).unsqueeze(1)
-        cols = paddle.arange(n).unsqueeze(0)
-        mask = (col.unsqueeze(1) == col.unsqueeze(0)) & (cols <= rows)
-        col_ = mask.astype("int64").sum(axis=1) - 1
-        mat = paddle.scatter_nd(
-            paddle.stack([col, col_], axis=1),
-            value,
-            shape=[num_nodes, col_.max().item() + 1],
-        )
-        idx_kj = mat[row][mat[row] > 0] - 1
-        tmp = paddle.nonzero(mat[row], as_tuple=False)
-        idx_ji = tmp[:, 0]
-        idx_k = paddle.index_select(row, idx_kj, axis=0)
-        idx_j = paddle.index_select(row, idx_ji, axis=0)
-        idx_i = paddle.index_select(col, idx_ji, axis=0)
-        mask2 = idx_i != idx_k
+        # The edges kj of edge ji are the edges into its source node j = row[ji]. A
+        # stable sort by target node puts the edges into each node next to each
+        # other, in edge order, and searchsorted finds where the run of node j
+        # starts and how long it is. This takes O(E log E + T log E) time and
+        # O(E + T) memory for E edges and T triplets; comparing every pair of edges
+        # takes O(E^2) of both.
+        order = paddle.argsort(col, stable=True)
+        sorted_col = paddle.gather(col, order)
+        start = paddle.searchsorted(sorted_col, row)
+        count = paddle.searchsorted(sorted_col, row, right=True) - start
+        # Triplet t belongs to the edge ji whose range [end - count, end) of the
+        # running total contains t, and takes the edge kj at the same position in
+        # the run of node j. The number of triplets stays a tensor; reading it back
+        # with .item() would break the SOT graph.
+        end = paddle.cumsum(count)
+        triplet = paddle.arange(paddle.sum(count), dtype=count.dtype)
+        idx_ji = paddle.searchsorted(end, triplet, right=True)
+        run_offset = start - (end - count)
+        idx_kj = paddle.gather(order, triplet + paddle.gather(run_offset, idx_ji))
+        idx_k = paddle.gather(row, idx_kj)
+        idx_i = paddle.gather(col, idx_ji)
+        if cell_offsets is None:
+            # Without cell offsets, only drop triplets whose two edges share an atom.
+            mask2 = idx_i != idx_k
+        else:
+            # A periodic image can bring i and k together, so keep i == k when the
+            # combined cell offset is non-zero.
+            cell_offset_kji = paddle.gather(cell_offsets, idx_kj) + paddle.gather(
+                cell_offsets, idx_ji
+            )
+            mask2 = (idx_i != idx_k) | paddle.any(cell_offset_kji != 0, axis=-1)
+        # Select once for all five arrays; every boolean-mask selection reads the
+        # number of selected entries back from the device.
+        keep = paddle.nonzero(mask2).squeeze(-1)
+        idx_kj = paddle.gather(idx_kj, keep)
+        idx_ji = paddle.gather(idx_ji, keep)
         return (
             col,
             row,
-            idx_i[mask2],
-            idx_j[mask2],
-            idx_k[mask2],
-            idx_kj[mask2],
-            idx_ji[mask2],
+            paddle.gather(idx_i, keep),
+            paddle.gather(row, idx_ji),
+            paddle.gather(idx_k, keep),
+            idx_kj,
+            idx_ji,
         )
 
     def normalize(self, tensor):
@@ -457,41 +487,53 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
 
     @runtime_boundary("forward")
     def _forward(self, data):
-        #  The data in data['graph'] is numpy.ndarray, convert it to paddle.Tensor
-        data["graph"] = data["graph"].tensor()
+        # Graph.tensor() converts the numpy arrays in place and returns the same
+        # graph. Writing it back into data would make SOT guard on the graph object
+        # and recompile for every new graph.
+        graph = data["graph"].tensor()
 
         # unpack graph dict
-        graph = data["graph"]
         batch = graph.graph_node_id
-        lattices = graph.node_feat["lattice"]
         pos = graph.node_feat["cart_coords"]
-        frac = graph.node_feat["frac_coords"]
         edge_index = graph.edges
-        to_jimages = graph.edge_feat["pbc_offset"]
-        num_atoms = graph.node_feat["num_atoms"]
-        num_bonds = graph.edge_feat["num_edges"]
         atom_types = graph.node_feat["atom_types"]
 
-        out = get_pbc_distances(
-            frac,
-            edge_index.T,
-            lattices,
-            to_jimages,
-            num_atoms,
-            num_bonds,
-            return_offsets=True,
-        )
-        edge_index = out["edge_index"]
-        dist = out["distances"]
-        offsets = out["offsets"]
-        j, i, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
-            edge_index, num_nodes=atom_types.shape[0]
+        if "lattice" in graph.node_feat:
+            lattices = graph.node_feat["lattice"]
+            frac = graph.node_feat["frac_coords"]
+            to_jimages = graph.edge_feat["pbc_offset"]
+            num_atoms = graph.node_feat["num_atoms"]
+            num_bonds = graph.edge_feat["num_edges"]
+            out = get_pbc_distances(
+                frac,
+                edge_index.T,
+                lattices,
+                to_jimages,
+                num_atoms,
+                num_bonds,
+                return_offsets=True,
+            )
+            edge_index = out["edge_index"]
+            dist = out["distances"]
+            offsets = out["offsets"]
+        else:
+            # Molecules have no periodic images.
+            edge_index = edge_index.T
+            to_jimages = paddle.zeros([edge_index.shape[1], 3], dtype="int64")
+            offsets = paddle.zeros([edge_index.shape[1], 3], dtype=pos.dtype)
+            dist = (
+                paddle.gather(pos, edge_index[0]) - paddle.gather(pos, edge_index[1])
+            ).norm(axis=-1)
+        i, j, idx_i, idx_j, idx_k, idx_kj, idx_ji = self.triplets(
+            edge_index, to_jimages, num_nodes=atom_types.shape[0]
         )
         # compute angles
-        pos_i = pos[idx_i]
-        pos_j = pos[idx_j]
-        pos_ji = pos_j - pos_i + offsets[idx_ji]
-        pos_kj = pos[idx_k] - pos_j + offsets[idx_kj]
+        # paddle.gather selects the same rows as tensor indexing with less eager
+        # overhead per call.
+        pos_i = paddle.gather(pos, idx_i)
+        pos_j = paddle.gather(pos, idx_j)
+        pos_ji = pos_j - pos_i + paddle.gather(offsets, idx_ji)
+        pos_kj = paddle.gather(pos, idx_k) - pos_j + paddle.gather(offsets, idx_kj)
         a = (pos_ji * pos_kj).sum(axis=-1)
         b = paddle.cross(pos_ji, pos_kj).norm(axis=-1)
         angle = paddle.atan2(b, a)
@@ -508,7 +550,11 @@ class DimeNetPlusPlus(RuntimeMixin, paddle.nn.Layer):
             P += out_block(x, rbf, i, num_nodes=pos.shape[0])
 
         # readout
-        energy = scatter(P, batch, dim=0, reduce=self.readout)
+        # Without dim_size, scatter() reads index.max() back from the device, which
+        # breaks the SOT graph.
+        energy = scatter(
+            P, batch, dim=0, dim_size=graph_count(graph), reduce=self.readout
+        )
         return energy
 
     def forward(self, data, return_loss=True, return_prediction=True):
