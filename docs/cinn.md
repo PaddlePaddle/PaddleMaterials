@@ -12,17 +12,22 @@ Execution:
   backend: cinn
   __init_params__:
     full_graph: false
+    dynamic_shape: true
 ```
 
-`Execution.__init_params__` is optional, and `full_graph` defaults to `false`.
-The same values can be supplied as command-line overrides, for example
-`Execution.backend=cinn`.
+`Execution.__init_params__` is optional; `full_graph` defaults to `false` and
+`dynamic_shape` to `true`. The same values can be supplied as command-line
+overrides, for example `Execution.backend=cinn`.
 
 - `full_graph: false` uses SOT capture and allows graph breaks.
 - `full_graph: true` uses AST conversion and requires the whole boundary to
   become one static program. Use it only for models marked **AST** below.
   Force and stress models need it, because SOT capture can split `paddle.grad`
   from its input; see the model README for the exact setting.
+- `dynamic_shape: true` compiles the axes that a boundary declares as dynamic
+  (see [Dynamic axes](#dynamic-axes)), so that one program serves every edge or
+  triplet count. It applies to AST capture in eval mode.
+  `dynamic_shape: false` compiles one program per input shape.
 
 CINN requires a CUDA device and a Paddle build with CINN enabled. AMP and
 distributed execution are not supported by this runtime.
@@ -36,6 +41,38 @@ distributed execution are not supported by this runtime.
 Compilation happens on the first boundary call. Runtimes are cached by backend,
 train/eval mode, and boundary name. Changing the backend or its options clears
 the cache.
+
+### Dynamic axes
+
+AST capture traces one static program per input shape, and CINN compiles each
+of them. A force model sees a new edge and triplet count at almost every MD or
+relaxation step, so without dynamic axes it recompiles at almost every step.
+A boundary declares the axes whose sizes change between calls:
+
+```python
+@runtime_boundary("forward", dynamic_dims={"edge_index": 1, "idx_kj": 0})
+def _runtime_forward(self, pos, edge_index, idx_kj):
+    ...
+```
+
+With `full_graph: true` and `dynamic_shape: true`, an eval-mode call passes
+`paddle.jit.to_static` an `InputSpec` in which these axes are `None`. Calls that
+differ only in declared axes share one program. A change in any other axis, such
+as the atom count, or in a non-tensor argument compiles a new program. `M3GNet`,
+`CHGNet` and the `SphereNet` potentials declare their edge, triplet and angle
+axes.
+
+Training keeps static shapes. A training batch also changes the atom count,
+which stays static, so dynamic edge axes would not remove its recompilation.
+The second-order force gradient of `SphereNet` training also relies on an
+empty-triplet branch that a static shape resolves while tracing.
+
+Inside a boundary with dynamic axes, a size such as `x.shape[0]` is a tensor
+while tracing. Do not branch on it (`if x.shape[0] == 0:`): AST conversion turns
+the branch into a `pd_op.if`, whose backward gave wrong `M3GNet` forces and
+which CINN failed to compile for `SphereNet`. Keep such shortcuts for sizes that
+are Python ints, and handle empty inputs without a branch, for example with a
+mask.
 
 Boundary names describe stable roles:
 

@@ -15,6 +15,8 @@
 import numpy as np
 import paddle
 
+from ppmat.utils.execution import compiled_execution
+from ppmat.utils.scatter import _resolve_dim_size
 from ppmat.utils.scatter import scatter
 from ppmat.utils.scatter import scatter_argmin
 from ppmat.utils.scatter import scatter_mean
@@ -118,9 +120,7 @@ def test_scatter_sum_supports_force_loss_parameter_gradients():
     coords = paddle.to_tensor(
         [[0.1, 0.2], [0.4, -0.2], [-0.3, 0.7]], stop_gradient=False
     )
-    weights = paddle.to_tensor(
-        [[0.2, 0.4], [0.6, 0.8]], stop_gradient=False
-    )
+    weights = paddle.to_tensor([[0.2, 0.4], [0.6, 0.8]], stop_gradient=False)
     groups = paddle.to_tensor([0, 1, 0], dtype="int64")
 
     messages = paddle.sin(coords @ weights)
@@ -164,3 +164,47 @@ def test_scatter_sum_first_order_handles_empty_input():
     result = scatter_sum_first_order(values, groups, dim_size=3)
 
     np.testing.assert_array_equal(result.numpy(), np.zeros([3, 2]))
+
+
+def test_resolve_dim_size_keeps_host_ints_and_reads_tensors():
+    index = paddle.to_tensor([0, 1], dtype="int64")
+    assert _resolve_dim_size(index, 5) == 5
+    assert type(_resolve_dim_size(index, np.int64(5))) is int
+    assert _resolve_dim_size(index, paddle.to_tensor(5)) == 5
+    assert _resolve_dim_size(index, None) == 2
+
+
+def test_compiled_execution_scatters_empty_rows_without_the_shortcut():
+    groups = paddle.empty([0], dtype="int64")
+    eager_values = paddle.empty([0, 2, 3], dtype="float32")
+    eager_values.stop_gradient = False
+    eager = scatter_sum(eager_values, groups, dim=0, dim_size=4)
+    (eager_grad,) = paddle.grad(eager.sum(), eager_values)
+
+    values = paddle.empty([0, 2, 3], dtype="float32")
+    values.stop_gradient = False
+    with compiled_execution():
+        result = scatter_sum(values, groups, dim=0, dim_size=4)
+    (grad,) = paddle.grad(result.sum(), values)
+
+    np.testing.assert_array_equal(result.numpy(), eager.numpy())
+    assert result.shape == [4, 2, 3]
+    assert grad.shape == eager_grad.shape == [0, 2, 3]
+
+
+def test_scatter_sum_dim_zero_one_dimensional_index_matches_broadcast_index():
+    rng = np.random.default_rng(3)
+    values_np = rng.normal(size=(6, 2, 3)).astype("float32")
+    groups_np = np.array([3, 0, 3, 1, 0, 3], dtype="int64")
+    results = []
+    for groups in (
+        paddle.to_tensor(groups_np),
+        paddle.to_tensor(np.broadcast_to(groups_np[:, None, None], (6, 2, 3)).copy()),
+    ):
+        values = paddle.to_tensor(values_np, stop_gradient=False)
+        out = scatter_sum(values, groups, dim=0, dim_size=4)
+        (grad,) = paddle.grad((out * out).sum(), values, create_graph=True)
+        (grad2,) = paddle.grad(grad.sum(), values)
+        results.append((out.numpy(), grad.numpy(), grad2.numpy()))
+    for a, b in zip(*results):
+        np.testing.assert_array_equal(a, b)
