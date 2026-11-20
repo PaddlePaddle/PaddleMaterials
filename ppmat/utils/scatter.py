@@ -19,6 +19,8 @@ from typing import Optional
 
 import paddle
 
+from ppmat.utils.execution import in_compiled_execution
+
 __all__ = [
     "scatter",
     "scatter_argmin",
@@ -53,6 +55,10 @@ def _normalize_dim(src: paddle.Tensor, dim: int) -> int:
 def _resolve_dim_size(index: paddle.Tensor, dim_size: Optional[int]) -> int:
     if dim_size is None:
         return 0 if index.numel() == 0 else int(index.max()) + 1
+    # type() keeps a dimension that SOT traces symbolically as it is; int() or
+    # isinstance() would make SOT specialize on its value.
+    if type(dim_size) is int:
+        return dim_size
     # No non-negative check here on purpose. Under AST conversion dim_size
     # arrives as a traced value that converts to -1, so the check fires during
     # conversion rather than on a bad call: M3GNet's registered checkpoints fail
@@ -123,9 +129,24 @@ def scatter_sum_first_order(
 
     dim_size = _resolve_dim_size(index, dim_size)
     out = _zeros(src, [dim_size, *src.shape[1:]])
-    if src.shape[0] == 0:
+    num_rows = src.shape[0]
+    # Only a known size can take the shortcut. A dynamic row count (compiled
+    # inference with dynamic axes) is a tensor while tracing, and branching on
+    # it would trace a cond; scatter_nd_add returns `out` for empty rows.
+    if isinstance(num_rows, int) and num_rows == 0:
         return out + src.sum() * 0
     return paddle.scatter_nd_add(out, index.reshape([-1, 1]), src)
+
+
+def _first_axis_index(index: paddle.Tensor) -> paddle.Tensor:
+    """Destination row of every source row, from an index broadcast to the source shape.
+
+    A dynamic row count is not a Python int while tracing, so the rows are taken
+    with flatten, which keeps that axis symbolic.
+    """
+    if isinstance(index.shape[0], int):
+        return index.reshape([index.shape[0], -1])[:, 0]
+    return index.flatten(1)[:, 0]
 
 
 def _scatter_sum(
@@ -136,7 +157,6 @@ def _scatter_sum(
 ) -> paddle.Tensor:
     dim = _normalize_dim(src, dim)
     dim_size = _resolve_dim_size(index, dim_size)
-    index = _broadcast(index, src, dim)
     size = list(src.shape)
     size[dim] = dim_size
     out = _zeros(src, size)
@@ -145,9 +165,15 @@ def _scatter_sum(
     # source rows while preserving the second-order gradients used by force
     # training. Other axes retain put_along_axis's broadcast semantics.
     if dim == 0:
-        if src.shape[0] == 0:
+        # Compiled execution skips the shortcut, which would branch on a traced
+        # dimension (a dynamic row count is a tensor while tracing); index_add
+        # returns `out` for empty rows.
+        if not in_compiled_execution() and src.shape[0] == 0:
             return out + src.sum() * 0
-        idx_1d = index.reshape([index.shape[0], -1])[:, 0]
+        if index.ndim == 1:
+            idx_1d = index
+        else:
+            idx_1d = _first_axis_index(_broadcast(index, src, dim))
         if src.dtype in _INDEX_ADD_DTYPES:
             return paddle.index_add(
                 x=out,
@@ -168,7 +194,7 @@ def _scatter_sum(
 
     return paddle.put_along_axis(
         arr=out,
-        indices=index,
+        indices=_broadcast(index, src, dim),
         values=src,
         axis=dim,
         reduce="add",
@@ -185,7 +211,7 @@ def _scatter_mean(
     result = _scatter_sum(src, index, dim, dim_size)
     index_dim = min(dim, index.ndim - 1)
 
-    ones = paddle.ones(index.shape, dtype=src.dtype).to(src.place)
+    ones = paddle.ones_like(index, dtype=src.dtype)
     count = _scatter_sum(ones, index, index_dim, result.shape[dim])
     count = paddle.clip(count, min=1)
     count = _broadcast(count, result, dim)

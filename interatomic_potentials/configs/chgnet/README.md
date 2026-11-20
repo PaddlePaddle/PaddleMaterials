@@ -206,10 +206,18 @@ Execution:
   backend: cinn
   __init_params__:
     full_graph: true
+    dynamic_shape: true  # default
 ```
 
 Without `full_graph`, CINN fails for force or stress predictions with an error about an input that
 does not appear in the backward graph. Energy-only predictions can use the default SOT capture.
+
+The boundary declares its bond (directed and undirected) and angle axes as dynamic. In eval mode
+these counts can change between calls, as they do at every MD or relaxation step, without a new
+compilation; a new atom count still compiles a new program. Set
+`Execution.__init_params__.dynamic_shape=false` to compile one program per input shape instead.
+Training keeps static shapes, because a training batch also changes the atom count. See [CINN
+execution backend](../../../docs/cinn.md) for details.
 
 ## Citation
 ```
