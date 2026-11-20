@@ -65,14 +65,11 @@ Model:
           sigma_max: 0.5
           sampling_eps: 0.001
       atom_noise_scheduler_cfg:
-        __class_name__: D3PMUniformDiffusion
+        __class_name__: D3PMUniformScheduler
         __init_params__:
           loss_scale: 1000
-          scheduler_cfg:
-            __class_name__: D3PMUniformScheduler
-            __init_params__:
-              num_train_timesteps: ${Global.num_train_timesteps}
-              num_types: ${Global.num_atom_types}
+          num_train_timesteps: ${Global.num_train_timesteps}
+          num_types: ${Global.num_atom_types}
 
 Optimizer:
   __class_name__: Adam

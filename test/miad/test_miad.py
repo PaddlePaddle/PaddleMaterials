@@ -74,39 +74,29 @@ TINY_DIFFUSION_CFG = {
     "num_steps": 10,
     "time_embed_dim": 32,
     "eps": 1e-3,
-    "lat_diffusion": {
-        "scheduler_cfg": {
-            "__class_name__": "DDPMScheduler",
-            "__init_params__": {
-                "num_train_timesteps": 10,
-                "beta_schedule": "clipped_cosine",
-                "clip_sample": False,
-            },
+    "lattice_noise_scheduler_cfg": {
+        "__class_name__": "CosineDDPMScheduler",
+        "__init_params__": {
+            "num_train_timesteps": 10,
+            "clip_sample": False,
         },
     },
-    "frac_diffusion": {
-        "step_lr": 1e-5,
-        "scheduler_cfg": {
-            "__class_name__": "ScoreSdeVeSchedulerWrapped",
-            "__init_params__": {
-                "num_train_timesteps": 10,
-                "sigma_min": 0.005,
-                "sigma_max": 0.5,
-                "sampling_eps": 0.001,
-            },
+    "coord_noise_scheduler_cfg": {
+        "__class_name__": "WrappedVESDEPCScheduler",
+        "__init_params__": {
+            "num_train_timesteps": 10,
+            "step_lr": 1e-5,
+            "sigma_min": 0.005,
+            "sigma_max": 0.5,
+            "sampling_eps": 0.001,
         },
     },
-    "type_diffusion": {
-        "__class_name__": "D3PMUniformDiffusion",
+    "atom_noise_scheduler_cfg": {
+        "__class_name__": "D3PMUniformScheduler",
         "__init_params__": {
             "loss_scale": 1000,
-            "scheduler_cfg": {
-                "__class_name__": "D3PMUniformScheduler",
-                "__init_params__": {
-                    "num_train_timesteps": 10,
-                    "num_types": 100,
-                },
-            },
+            "num_train_timesteps": 10,
+            "num_types": 100,
         },
     },
 }
@@ -328,9 +318,14 @@ class TestMiADConfig:
             "step_lr": legacy_coord["__init_params__"].pop("step_lr"),
             "scheduler_cfg": legacy_coord,
         }
-        legacy_diffusion["type_diffusion"] = legacy_diffusion.pop(
-            "atom_noise_scheduler_cfg"
-        )
+        legacy_atom = legacy_diffusion.pop("atom_noise_scheduler_cfg")
+        legacy_diffusion["type_diffusion"] = {
+            "__class_name__": "D3PMUniformDiffusion",
+            "__init_params__": {
+                "loss_scale": legacy_atom["__init_params__"].pop("loss_scale"),
+                "scheduler_cfg": legacy_atom,
+            },
+        }
         original_config = copy.deepcopy(legacy_config)
         paddle.seed(2026)
         legacy_model = build_model(legacy_config)

@@ -60,7 +60,12 @@ class WrappedVESDEPCScheduler(ScoreSdeVeSchedulerWrapped):
         self.sigmas_t = self.discrete_sigmas[:, None]
         self.sigmas_norm_t = self.discrete_sigmas_norm[:, None]
 
-    def step_correct_indexed(self, model_output, timestep, sample):
+    def step_correct_indexed(
+        self,
+        model_output: paddle.Tensor,
+        timestep: paddle.Tensor,
+        sample: paddle.Tensor,
+    ) -> SchedulerOutput:
         t_idx = timestep.cast("int64")
         st = self.sigmas_t[t_idx]
         snt = self.sigmas_norm_t[t_idx]
@@ -69,7 +74,12 @@ class WrappedVESDEPCScheduler(ScoreSdeVeSchedulerWrapped):
         diffusion = paddle.sqrt(2 * step_size) * paddle.randn(sample.shape)
         return SchedulerOutput(prev_sample=sample + drift + diffusion)
 
-    def step_pred_indexed(self, model_output, timestep, sample):
+    def step_pred_indexed(
+        self,
+        model_output: paddle.Tensor,
+        timestep: paddle.Tensor,
+        sample: paddle.Tensor,
+    ) -> SchedulerOutput:
         t_idx = timestep.cast("int64")
         st = self.sigmas_t[t_idx]
         # Clamping to sigma_min makes the last step's drift and diffusion zero.
@@ -82,7 +92,9 @@ class WrappedVESDEPCScheduler(ScoreSdeVeSchedulerWrapped):
         ) * paddle.randn(sample.shape)
         return SchedulerOutput(prev_sample=(sample + drift + diffusion) % 1.0)
 
-    def score_target(self, noise, timestep):
+    def score_target(
+        self, noise: paddle.Tensor, timestep: paddle.Tensor
+    ) -> paddle.Tensor:
         t_idx = timestep.cast("int64")
         st = self.sigmas_t[t_idx]
         snt = self.sigmas_norm_t[t_idx]
@@ -96,13 +108,28 @@ def _sample_categorical(probs: paddle.Tensor) -> paddle.Tensor:
 
 
 class D3PMUniformScheduler:
+    """D3PM with uniform transitions and a cosine retention schedule.
+
+    Args:
+        num_train_timesteps (int): Number of diffusion steps.
+        num_types (int): Number of categorical atom types.
+        s (float): Offset of the cosine retention schedule.
+        loss_scale (float): Multiplier for the per-atom KL loss.
+        kl_eps (float): Numerical offset inside KL logarithms.
+    """
+
     def __init__(
         self,
         num_train_timesteps: int = 1000,
         num_types: int = 100,
         s: float = 0.008,
-    ):
+        loss_scale: float = 1000,
+        kl_eps: float = 1e-4,
+    ) -> None:
+        self.num_train_timesteps = num_train_timesteps
         self.num_types = num_types
+        self.loss_scale = loss_scale
+        self.kl_eps = kl_eps
 
         discretization = paddle.arange(1, num_train_timesteps + 1, dtype="float64")
         f_t = paddle.cos(
@@ -144,28 +171,6 @@ class D3PMUniformScheduler:
         self.cumprod_Q_t = cumprod_Q_t
         self.cumprod_Q_t_1 = cumprod_Q_t_1
 
-
-class D3PMUniformDiffusion:
-    """D3PM diffusion process over discrete categorical variables with a
-    uniform transition kernel (forward noising, reverse sampling, prior
-    sampling, and per-atom KL loss)."""
-
-    def __init__(
-        self, scheduler_cfg: dict, loss_scale: float = 1000, kl_eps: float = 1e-4
-    ) -> None:
-        # Deferred import: build_scheduler is defined in ppmat.schedulers.__init__,
-        # which imports this module.
-        from ppmat.schedulers import build_scheduler
-
-        self.scheduler = build_scheduler(scheduler_cfg)
-        self.num_types = self.scheduler.num_types
-        self.Q_t = self.scheduler.Q_t
-        self.cumprod_Q_t = self.scheduler.cumprod_Q_t
-        self.cumprod_Q_t_1 = self.scheduler.cumprod_Q_t_1
-
-        self.loss_scale = loss_scale
-        self.kl_eps = kl_eps
-
     def to_domain(self, atom_types: paddle.Tensor) -> paddle.Tensor:
         return F.one_hot(atom_types, num_classes=self.num_types).cast("float32")
 
@@ -177,7 +182,7 @@ class D3PMUniformDiffusion:
     def prediction_to_domain(prediction: paddle.Tensor) -> paddle.Tensor:
         return F.softmax(prediction, axis=-1)
 
-    def forward_step_sample(self, x0, t):
+    def add_noise(self, x0: paddle.Tensor, t: paddle.Tensor) -> paddle.Tensor:
         onehot_x0 = self.to_domain(x0)
         xt_probs = paddle.matmul(
             onehot_x0[:, None, :], self.cumprod_Q_t[t.cast("int64")]
@@ -185,7 +190,9 @@ class D3PMUniformDiffusion:
         xt = _sample_categorical(xt_probs)
         return self.to_domain(xt)
 
-    def _reverse_step_distribution(self, onehot_x0, onehot_xt, t):
+    def _reverse_step_distribution(
+        self, onehot_x0: paddle.Tensor, onehot_xt: paddle.Tensor, t: paddle.Tensor
+    ) -> paddle.Tensor:
         t_idx = t.cast("int64")
         numerator = (
             paddle.matmul(onehot_xt[:, None, :], self.Q_t[t_idx].transpose([0, 2, 1]))[
@@ -206,7 +213,9 @@ class D3PMUniformDiffusion:
             result,
         )
 
-    def reverse_step_sample(self, onehot_pred, onehot_xt, t):
+    def step(
+        self, onehot_pred: paddle.Tensor, onehot_xt: paddle.Tensor, t: paddle.Tensor
+    ) -> paddle.Tensor:
         onehot_x0 = self.prediction_to_domain(onehot_pred)
         xt_1_probs = self._reverse_step_distribution(onehot_x0, onehot_xt, t)
         if (t.cast("int64") == 0).all():
@@ -214,15 +223,18 @@ class D3PMUniformDiffusion:
         xt_1 = _sample_categorical(xt_1_probs)
         return self.to_domain(xt_1)
 
-    def prior_sample(self, batch):
-        na = batch["num_atoms"]
-        total = int(na.sum())
-        shape = [total, self.num_types]
+    def prior_sampling(self, shape: tuple) -> paddle.Tensor:
         xT_probs = paddle.ones(shape, dtype="float32") / self.num_types
         xT = _sample_categorical(xT_probs)
         return self.to_domain(xT)
 
-    def loss(self, onehot_pred, onehot_xt, onehot_x0, t):
+    def compute_loss(
+        self,
+        onehot_pred: paddle.Tensor,
+        onehot_xt: paddle.Tensor,
+        onehot_x0: paddle.Tensor,
+        t: paddle.Tensor,
+    ) -> paddle.Tensor:
         """Per-atom D3PM KL loss scaled by ``loss_scale``."""
         t_idx = t.cast("int64")
         onehot_x0_pred = self.prediction_to_domain(onehot_pred)

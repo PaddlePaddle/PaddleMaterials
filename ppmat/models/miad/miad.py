@@ -137,14 +137,14 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
         super().__init__()
         self._init_runtime(execution_backend, runtime_options)
 
-        self.mirage_num_atoms = model_cfg.get("mirage_num_atoms", None)
+        self.mirage_num_atoms = model_cfg.get("mirage_num_atoms")
         model_cfg = dict(model_cfg)
         # max_atoms (MiAD naming) maps to num_classes (CSPNet naming)
         model_cfg.setdefault(
             "num_classes", model_cfg.pop("max_atoms", self._MAX_ATOMIC_NUM)
         )
         # prop_dim/pred_scalar excluded: MiAD has no property-guided branches
-        _cspnet_keys = {
+        cspnet_keys = {
             "hidden_dim",
             "latent_dim",
             "num_layers",
@@ -158,10 +158,10 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
             "pred_type",
             "num_classes",
         }
-        unknown_keys = model_cfg.keys() - _cspnet_keys - {"mirage_num_atoms"}
+        unknown_keys = model_cfg.keys() - cspnet_keys - {"mirage_num_atoms"}
         if unknown_keys:
             raise TypeError(f"Unknown MiAD model parameters: {sorted(unknown_keys)}")
-        cspnet_kwargs = {k: v for k, v in model_cfg.items() if k in _cspnet_keys}
+        cspnet_kwargs = {k: v for k, v in model_cfg.items() if k in cspnet_keys}
         self.decoder = MiADCSPNet(**cspnet_kwargs)
         if not self.decoder.smooth or not self.decoder.pred_type:
             raise ValueError("MiAD requires smooth=True and pred_type=True")
@@ -223,11 +223,16 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
             coord_cfg["__init_params__"]["step_lr"] = frac_cfg["step_lr"]
         self.frac_scheduler = build_scheduler(coord_cfg)
 
-        self.type_diffusion = build_scheduler(
+        atom_cfg = copy.deepcopy(
             self.config.get(
                 "atom_noise_scheduler_cfg", self.config.get("type_diffusion")
             )
         )
+        if atom_cfg["__class_name__"] == "D3PMUniformDiffusion":
+            atom_params = atom_cfg["__init_params__"]
+            atom_cfg = atom_params.pop("scheduler_cfg")
+            atom_cfg["__init_params__"].update(atom_params)
+        self.type_diffusion = build_scheduler(atom_cfg)
         if self.type_diffusion.num_types != self.decoder.num_classes:
             raise ValueError("Type diffusion num_types must match decoder num_classes")
         schedule_lengths = (
@@ -349,7 +354,7 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
         batch["frac_noise"] = frac_noise
         ft = self.frac_scheduler.add_noise(f0, frac_noise, t1_idx) % 1.0
 
-        at = self.type_diffusion.forward_step_sample(a0, t[1])
+        at = self.type_diffusion.add_noise(a0, t[1])
 
         return [lt, ft, at]
 
@@ -362,7 +367,7 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
         lt_1 = self.lat_scheduler.step(l_pred, t[0].cast("int64")[0], lt).prev_sample
         ft_1 = self.frac_scheduler.step_pred_indexed(f_pred, t[1], ft_05).prev_sample
 
-        at_1 = self.type_diffusion.reverse_step_sample(a_pred, at, t[1])
+        at_1 = self.type_diffusion.step(a_pred, at, t[1])
         return [lt_1, ft_1, at_1]
 
     def _model_prediction(self, xt, t, batch):
@@ -407,7 +412,7 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
 
         loss = loss_lat + loss_frac
 
-        loss_type = self.type_diffusion.loss(
+        loss_type = self.type_diffusion.compute_loss(
             batch["prediction"][2],
             batch["xt"][2],
             self.type_diffusion.to_domain(batch["x0"][2]),
@@ -446,9 +451,11 @@ class MiAD(RuntimeMixin, paddle.nn.Layer):
             }
 
         batch = batch_data
-        prior_at = self.type_diffusion.prior_sample(batch)
         na = batch["num_atoms"]
         total = int(na.sum())
+        prior_at = self.type_diffusion.prior_sampling(
+            (total, self.type_diffusion.num_types)
+        )
         batch["xt"] = [
             paddle.randn([batch["batch_size"], 3, 3], dtype="float32"),
             paddle.rand([total, 3], dtype="float32"),
