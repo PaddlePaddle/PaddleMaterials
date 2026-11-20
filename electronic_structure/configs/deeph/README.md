@@ -38,7 +38,7 @@ $$
 
 | Model | Dataset | Test loss (MSE) | Config | Checkpoint |
 | --- | --- | --- | --- | --- |
-| DeepH | Graphene | 0.01068 | [deeph_graphene](deeph_graphene.yaml) | [Weights and data](https://pan.baidu.com/s/1dkXlzYV_3DLQugoQDKjsbA?pwd=vi6r) (code: vi6r) |
+| DeepH | Graphene | 0.01068 | [deeph_graphene](deeph_graphene.yaml) | [Weights and data](https://pan.baidu.com/s/1g81PFfsgsN7zrYEp6e55uw?pwd=n2ue) (code: n2ue) |
 
 The 450 Graphene structures are split into 270 training, 90 validation and
 90 test samples using the fixed [split manifest](graphene_split.json), generated
@@ -46,9 +46,20 @@ with seed 42.
 
 ## Data preparation
 
-Extract `deeph_bce_handoff.zip` from the link above. Copy
-`dataset/graphene_dataset/processed/` to `data/deeph/graphene/processed/`
-and `pretrained_model/best.pdparams` to `data/deeph/graphene/best.pdparams`.
+Download `deeph_graphene_dataset.zip` (450 Graphene structures),
+`deeph_graphene.zip` (configuration, split manifest and checkpoint), and
+`SHA256SUMS` from the link above. Place these files in the repository root,
+then verify and extract them:
+
+```bash
+sha256sum -c SHA256SUMS
+mkdir -p data/deeph
+unzip deeph_graphene_dataset.zip -d data/deeph
+unzip deeph_graphene.zip -d data/deeph
+cp data/deeph/deeph_graphene/checkpoints/best.pdparams data/deeph/graphene/best.pdparams
+```
+
+The prepared structures are under `data/deeph/graphene/processed/`.
 Only the Graphene dataset is needed for this configuration.
 
 ## Training
