@@ -30,6 +30,7 @@ from paddle.io import DataLoader
 from paddle.io import DistributedBatchSampler  # noqa
 
 from ppmat.datasets import collate_fn
+from ppmat.datasets.crystaldit_dataset import CrystalDiTDataset
 from ppmat.datasets.density_dataset import DensityDataset
 from ppmat.datasets.density_dataset import MD17DensityDataset
 from ppmat.datasets.density_dataset import MPCubicDensityDataset
@@ -64,6 +65,7 @@ __all__ = [
     "MP20MatterGenDataset",
     "AlexMP20MatterGenDataset",
     "NumAtomsCrystalDataset",
+    "CrystalDiTDataset",
     "set_signal_handlers",
     "MPTrjDataset",
     "JarvisDataset",
