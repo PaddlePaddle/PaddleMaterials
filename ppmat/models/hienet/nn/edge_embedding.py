@@ -172,38 +172,6 @@ class XPLORCutoff(paddle.nn.Module):
         )
 
 
-class CosineCutoff(paddle.nn.Module):
-    """Cosine cutoff function."""
-
-    def __init__(self, cutoff_lower=0.0, cutoff_upper=5.0):
-        super(CosineCutoff, self).__init__()
-        self.cutoff_lower = cutoff_lower
-        self.cutoff_upper = cutoff_upper
-
-    def forward(self, distances):
-        """Compute the cutoff function."""
-        if self.cutoff_lower > 0:
-            cutoffs = 0.5 * (
-                paddle.cos(
-                    math.pi
-                    * (
-                        2
-                        * (distances - self.cutoff_lower)
-                        / (self.cutoff_upper - self.cutoff_lower)
-                        + 1.0
-                    )
-                )
-                + 1.0
-            )
-            cutoffs = cutoffs * (distances < self.cutoff_upper).float()
-            cutoffs = cutoffs * (distances > self.cutoff_lower).float()
-            return cutoffs
-        else:
-            cutoffs = 0.5 * (paddle.cos(distances * math.pi / self.cutoff_upper) + 1.0)
-            cutoffs = cutoffs * (distances < self.cutoff_upper).float()
-            return cutoffs
-
-
 class ExpNormalSmearing(paddle.nn.Module):
     """Exponential normal smearing function."""
 
@@ -279,7 +247,7 @@ class SphericalEncoding(paddle.nn.Module):
 
     Returns
     -------
-    `torch.Tensor`
+    `paddle.Tensor`
         a tensor of shape ``(..., (lmax+1)^2)``
     """
 
@@ -454,7 +422,7 @@ class RBFExpansion(paddle.nn.Module):
         n_bins: int = 40,
         lengthscale: Optional[float] = None,
     ):
-        """Register torch parameters for RBF expansion."""
+        """Register the center buffers for the radial basis expansion."""
         super().__init__()
         self.r_min = r_min
         self.r_max = r_max

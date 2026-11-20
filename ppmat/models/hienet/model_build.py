@@ -14,7 +14,6 @@
 
 # Adapted from https://github.com/divelab/AIRS (OpenMat/HIENet)
 
-import warnings
 from collections import OrderedDict
 from typing import Callable, Dict, List, Tuple
 
@@ -32,9 +31,7 @@ from .nn.edge_embedding import (BesselBasis, ComformerEdgeEmbedding,
 from .nn.equivariant_gate import EquivariantGate
 from .nn.force_output import ForceOutputFromEdge, ForceStressOutput
 from .nn.iComfLayers import (ComformerConvEdgeLayer,
-                                   ComformerNodeConvLayer,
-                                   TensorProductConvLayer,
-                                   eComfEquivariantConvLayer)
+                                   ComformerNodeConvLayer)
 from .nn.linear import (AtomReduce, FCN_e3nn, IrrepsDropoutLinear,
                               IrrepsLinear, get_linear)
 from .nn.node_embedding import CGCNNEmbedding, OnehotEmbedding
@@ -43,11 +40,6 @@ from .nn.self_connection import (SelfConnectionIntro,
                                        SelfConnectionLinearIntro,
                                        SelfConnectionOutro)
 from .nn.sequential import AtomGraphSequential
-
-warnings.filterwarnings(
-    "ignore",
-    message="The TorchScript type system doesn't support instance-level annotations",
-)
 
 
 def NequIP_interaction_block(
@@ -226,11 +218,7 @@ def build_E3_equivariant_model(config: dict, parallel=False):
     else:
         node_embedding_size = num_species
     one_hot_irreps = Irreps(f"{node_embedding_size}x0e")
-    irreps_x = (
-        Irreps(f"{feature_multiplicity}x0e")
-        if irrep_seq is None
-        else Irreps(irrep_seq[0])
-    )
+    irreps_x = Irreps(irrep_seq[0])
     layers.update(
         {
             "onehot_idx_to_onehot": CGCNNEmbedding()
@@ -306,52 +294,8 @@ def build_E3_equivariant_model(config: dict, parallel=False):
                 t=i,
             )
         )
-        """layers.update({
-            f'{i}_equivariant_convolution': IrrepsConvolution(
-                irreps_x=Irreps(node_features_in),
-                irreps_filter=edge_embedding.spherical.irreps_out,
-                irreps_out=Irreps(node_features_out),
-                weight_layer_input_to_hidden=weight_nn_layers,
-                weight_layer_act=act_radial,
-                denominator=conv_denominator[0],
-                train_denominator=train_conv_denominator,
-            )
-        })"""
-        """layers.update({
-            f'{i}_eComf_equiv_convolution': eComfEquivariantConvLayer(
-                node_features_in = node_features_in,
-                node_features_out = node_features_out,
-                edge_dim = edge_dim,
-                use_bias_in_linear = use_bias_in_linear,
-                act_gate = act_gate,
-                act_scalar = act_scalar,
-                dropout = config[KEY.DROPOUT_ATTN],
-                # Currently uses the same denominator for all layers
-                denominator = conv_denominator[0],
-                weight_layer_input_to_hidden = weight_nn_layers,
-                weight_layer_act = act_radial,
-                lmax = lmax_node,
-                parity_mode = parity_mode,
-                sh = sh
-            )
-
-        })"""
-    if config[KEY.USE_DENOISING]:
-        layers.update(
-            {
-                "denoising_head": DenoisingHead(
-                    data_key_in=KEY.NODE_FEATURE,
-                    data_key_out=KEY.NODE_FEATURE,
-                    constant=0.0,
-                )
-            }
-        )
     if config[KEY.READOUT_AS_FCN] is False:
-        mid_dim = (
-            feature_multiplicity
-            if irrep_seq is None
-            else Irreps(irrep_seq[-1]).num_irreps
-        )
+        mid_dim = Irreps(irrep_seq[-1]).num_irreps
         hidden_irreps = Irreps([(mid_dim // 2, (0, 1))])
         layers.update(
             {

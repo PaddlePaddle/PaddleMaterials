@@ -15,30 +15,15 @@
 # Adapted from https://github.com/divelab/AIRS (OpenMat/HIENet)
 
 import math
-import random
-from collections import OrderedDict
 from typing import Optional, Tuple, Union
 
 from .. import _keys as KEY
-from .. import util as util
-import numpy as np
 import paddle
-from ppmat.models.common.e3nn import o3
-from ppmat.models.common.e3nn.nn import BatchNorm, FullyConnectedNet
-from ppmat.models.common.e3nn.o3 import Irreps, Linear, TensorProduct
 from ppmat.models.common.e3nn.util.jit import compile_mode
 from .._const import AtomGraphDataType
-from .convolution import IrrepsConvolution
-from .equivariant_gate import EquivariantGate, eComfEquivariantGate
-from .linear import (AtomReduce, DynamicIrrepsLinear, FCN_e3nn,
-                              IrrepsLinear, eComfIrrepsLinear)
 from .second_order import ManualDropout, ManualLayerNorm
-from .self_connection import (SelfConnectionIntro,
-                                       SelfConnectionLinearIntro,
-                                       SelfConnectionOutro)
 from ppmat.models.common.message_passing.message_passing import MessagePassing
-from ..paddle_compat import Adj, OptTensor, PairTensor
-from ppmat.utils.scatter import scatter
+from ..paddle_compat import OptTensor, PairTensor
 
 
 @compile_mode("script")
@@ -250,142 +235,3 @@ class ComformerConvEdgeLayer(paddle.nn.Module):
         out = out.sum(dim=1)
         data[KEY.EDGE_EMBEDDING] = self.softplus(edge[1] + self.bn(out))
         return data
-
-
-@compile_mode("script")
-class eComfEquivariantConvLayer(paddle.nn.Module):
-    def __init__(
-        self,
-        node_features_in: Union[int, Tuple[int, int]],
-        node_features_out: Union[int, Tuple[int, int]],
-        edge_dim: Optional[int] = None,
-        lmax: int = 2,
-        parity_mode: str = "full",
-        sh="1x0e + 1x1e + 1x2e",
-        act_gate=None,
-        act_scalar=None,
-        dropout: float = 0.0,
-        denominator: float = 1.0,
-        weight_layer_input_to_hidden=[12],
-        weight_layer_act="relu",
-        use_bias_in_linear: bool = False,
-    ):
-        super().__init__()
-        self.node_features_in = node_features_in
-        self.node_features_out = node_features_out
-        self.lmax = lmax
-        self.parity_mode = parity_mode
-        self.sh = sh
-        node_features_in = Irreps(node_features_in)
-        node_features_out = Irreps(node_features_out)
-        tp_irreps_out = util.infer_irreps_out(
-            node_features_in, self.sh, drop_l=self.lmax, parity_mode=self.parity_mode
-        )
-        self.gate = eComfEquivariantGate(node_features_out, act_scalar, act_gate)
-        irreps_for_gate_in = self.gate.get_gate_irreps_in()
-        self.skip_linear = eComfIrrepsLinear(node_features_in, irreps_for_gate_in)
-        self.node_linear = eComfIrrepsLinear(
-            node_features_in, node_features_in, biases=use_bias_in_linear
-        )
-        self.convolution = TensorProductConvLayer(
-            in_irreps=node_features_in,
-            sh_irreps=self.sh,
-            out_irreps=tp_irreps_out,
-            n_edge_features=edge_dim,
-            residual=False,
-            denominator=denominator,
-            weight_layer_input_to_hidden=weight_layer_input_to_hidden,
-            weight_layer_act=weight_layer_act,
-        )
-        # latent site (eComf path disabled in model_build): kept on paddle op
-        self.dropout = paddle.nn.Dropout(p=dropout)
-        self.l0_indices = [i for i, l in enumerate(tp_irreps_out.ls) if l == 0]
-        self.node_linear_2 = eComfIrrepsLinear(
-            tp_irreps_out, irreps_for_gate_in, biases=use_bias_in_linear
-        )
-
-    def forward(
-        self, data: AtomGraphDataType, edge_nei_len: OptTensor = None
-    ) -> AtomGraphDataType:
-        edge_index = data[KEY.EDGE_IDX]
-        edge_attr = data[KEY.EDGE_VEC]
-        edge_feature = data[KEY.EDGE_EMBEDDING]
-        node_feature = data[KEY.NODE_FEATURE]
-        skip_connect = self.skip_linear(node_feature)
-        node_feature = self.node_linear(node_feature)
-        edge_irr = o3.spherical_harmonics(
-            self.sh, edge_attr, normalize=True, normalization="component"
-        )
-        tp = self.convolution(node_feature, edge_index, edge_feature, edge_irr)
-        tp[:, self.l0_indices] = self.dropout(tp[:, self.l0_indices])
-        node_feature = self.node_linear_2(tp)
-        node_feature = node_feature + skip_connect
-        node_feature = self.gate(node_feature)
-        data[KEY.NODE_FEATURE] = node_feature
-        return data
-
-
-class TensorProductConvLayer(paddle.nn.Module):
-    def __init__(
-        self,
-        in_irreps,
-        sh_irreps,
-        out_irreps,
-        n_edge_features,
-        residual=True,
-        denominator=1.0,
-        weight_layer_input_to_hidden=[12],
-        weight_layer_act="relu",
-    ):
-        super(TensorProductConvLayer, self).__init__()
-        self.in_irreps = in_irreps
-        self.out_irreps = out_irreps
-        self.sh_irreps = sh_irreps
-        self.residual = residual
-        irreps_x = Irreps(in_irreps)
-        irreps_filter = Irreps(sh_irreps)
-        irreps_out = Irreps(out_irreps)
-        instructions = []
-        irreps_mid = []
-        for i, (mul_x, ir_x) in enumerate(irreps_x):
-            for j, (_, ir_filter) in enumerate(irreps_filter):
-                for ir_out in ir_x * ir_filter:
-                    if ir_out in irreps_out:
-                        k = len(irreps_mid)
-                        irreps_mid.append((mul_x, ir_out))
-                        instructions.append((i, j, k, "uvu", True))
-        irreps_mid = Irreps(irreps_mid)
-        irreps_mid, p, _ = irreps_mid.sort()
-        instructions = [
-            (i_in1, i_in2, p[i_out], mode, train)
-            for i_in1, i_in2, i_out, mode, train in instructions
-        ]
-        self.convolution = TensorProduct(
-            irreps_x,
-            irreps_filter,
-            irreps_mid,
-            instructions,
-            shared_weights=False,
-            internal_weights=False,
-        )
-        self.fc = FullyConnectedNet(
-            weight_layer_input_to_hidden + [self.convolution.weight_numel],
-            weight_layer_act,
-            sample_stream="torch_seed0",
-        )
-        self.denominator = denominator
-
-    def forward(
-        self, node_attr, edge_index, edge_attr, edge_sh, out_nodes=None, reduce="mean"
-    ):
-        edge_src, edge_dst = edge_index
-        tp = self.convolution(node_attr[edge_dst], edge_sh, self.fc(edge_attr))
-        out_nodes = out_nodes or node_attr.shape[0]
-        out = scatter(tp, edge_src, dim=0, dim_size=out_nodes)
-        out = out.div(self.denominator)
-        if self.residual:
-            padded = paddle.compat.nn.functional.pad(
-                node_attr, (0, out.shape[-1] - node_attr.shape[-1])
-            )
-            out = out + padded
-        return out

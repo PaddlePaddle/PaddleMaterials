@@ -51,41 +51,6 @@ class IrrepsLinear(paddle.nn.Module):
         return data
 
 
-class DynamicIrrepsLinear(paddle.nn.Module):
-    def __init__(self, in_irreps, out_irreps, use_dynamic_irreps=True, **kwargs):
-        super().__init__()
-        self.in_irreps = in_irreps
-        self.out_irreps = out_irreps
-        self.use_dynamic_irreps = use_dynamic_irreps
-        self.linear = eComfIrrepsLinear(self.in_irreps, self.out_irreps, **kwargs)
-        if self.use_dynamic_irreps:
-            self.gate = paddle.nn.Parameter(paddle.ones(self.out_irreps.dim))
-            self.conditioning_layer = paddle.nn.Linear(
-                self.in_irreps.dim, self.out_irreps.dim
-            )
-
-    def forward(self, x):
-        out = self.linear(x)
-        if self.use_dynamic_irreps:
-            dynamic_gate = paddle.sigmoid(self.conditioning_layer(x.mean(dim=0)))
-            out = out * (self.gate * dynamic_gate)
-        return out
-
-
-@compile_mode("script")
-class eComfIrrepsLinear(paddle.nn.Module):
-    """
-    wrapper class of e3nn Linear to operate on AtomGraphData
-    """
-
-    def __init__(self, irreps_in: Irreps, irreps_out: Irreps, **e3nn_linear_params):
-        super().__init__()
-        self.linear = Linear(irreps_in, irreps_out, **e3nn_linear_params)
-
-    def forward(self, features_in):
-        return self.linear(features_in)
-
-
 @compile_mode("script")
 class AtomReduce(paddle.nn.Module):
     """

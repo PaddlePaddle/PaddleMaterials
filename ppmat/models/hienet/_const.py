@@ -15,7 +15,6 @@
 # Adapted from https://github.com/divelab/AIRS (OpenMat/HIENet)
 
 import os
-from enum import Enum
 from typing import Dict
 
 import paddle
@@ -55,12 +54,6 @@ ACTIVATION_FOR_EVEN = {"ssp": ShiftedSoftPlus, "silu": paddle.nn.functional.silu
 ACTIVATION_FOR_ODD = {"tanh": paddle.tanh, "abs": paddle.abs}
 ACTIVATION_DICT = {"e": ACTIVATION_FOR_EVEN, "o": ACTIVATION_FOR_ODD}
 AtomGraphDataType = Dict[str, paddle.Tensor]
-
-
-class LossType(Enum):
-    ENERGY = "energy"
-    FORCE = "force"
-    STRESS = "stress"
 
 
 def error_record_condition(x):
@@ -202,7 +195,6 @@ DEFAULT_TRAINING_CONFIG = {
     KEY.SCHEDULER: "exponentiallr",
     KEY.DROPOUT: 0.0,
     KEY.DROPOUT_ATTN: 0.0,
-    KEY.USE_DENOISING: False,
     KEY.ENERGY_WEIGHT: 1.0,
     KEY.FORCE_WEIGHT: 0.1,
     KEY.STRESS_WEIGHT: 1e-06,
@@ -232,7 +224,6 @@ DEFAULT_TRAINING_CONFIG = {
 TRAINING_CONFIG_CONDITION = {
     KEY.RANDOM_SEED: int,
     KEY.EPOCH: int,
-    KEY.USE_DENOISING: bool,
     KEY.DROPOUT: float,
     KEY.DROPOUT_ATTN: float,
     KEY.ENERGY_WEIGHT: float,

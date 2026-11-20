@@ -59,34 +59,6 @@ class ForceOutputFromEdge(paddle.nn.Module):
 
 
 @compile_mode("script")
-class ForceOutput(paddle.nn.Module):
-    """
-    works when pos.requires_grad_ is True
-    """
-
-    def __init__(
-        self,
-        data_key_pos: str = KEY.POS,
-        data_key_energy: str = KEY.SCALED_ENERGY,
-        data_key_force: str = KEY.SCALED_FORCE,
-    ):
-        super().__init__()
-        self.key_pos = data_key_pos
-        self.key_energy = data_key_energy
-        self.key_force = data_key_force
-
-    def forward(self, data: AtomGraphDataType) -> AtomGraphDataType:
-        pos_tensor = [data[self.key_pos]]
-        energy = [data[self.key_energy].sum()]
-        grad = paddle.grad(
-            outputs=energy, inputs=pos_tensor, create_graph=self.training
-        )[0]
-        if grad is not None:
-            data[self.key_force] = paddle.neg(grad)
-        return data
-
-
-@compile_mode("script")
 class ForceStressOutput(paddle.nn.Module):
     def __init__(
         self,

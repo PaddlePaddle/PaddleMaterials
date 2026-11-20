@@ -14,12 +14,9 @@
 
 # Adapted from https://github.com/divelab/AIRS (OpenMat/HIENet)
 
-from typing import Dict, List
-
 from .. import _keys as KEY
 import numpy as np
 import paddle
-from ase.symbols import symbols2numbers
 from ppmat.models.common.e3nn.util.jit import compile_mode
 from .._const import AtomGraphDataType
 
@@ -198,35 +195,3 @@ class OnehotEmbedding(paddle.nn.Module):
         if self.key_save is not None:
             data[self.key_save] = inp
         return data
-
-
-def get_type_mapper_from_specie(specie_list: List[str]):
-    """
-    from ['Hf', 'O']
-    return {72: 0, 16: 1}
-    """
-    specie_list = sorted(specie_list)
-    type_map = {}
-    unique_counter = 0
-    for specie in specie_list:
-        atomic_num = symbols2numbers(specie)[0]
-        if atomic_num in type_map:
-            continue
-        type_map[atomic_num] = unique_counter
-        unique_counter += 1
-    return type_map
-
-
-def one_hot_atom_embedding(atomic_numbers: List[int], type_map: Dict[int, int]):
-    """
-    atomic numbers from ase.get_atomic_numbers
-    type_map from get_type_mapper_from_specie()
-    """
-    num_classes = len(type_map)
-    try:
-        type_numbers = paddle.LongTensor([type_map[num] for num in atomic_numbers])
-    except KeyError as e:
-        raise ValueError(f"Atomic number {e.args[0]} is not expected")
-    embd = paddle.nn.functional.one_hot(type_numbers, num_classes)
-    embd = embd.to(paddle.get_default_dtype())
-    return embd

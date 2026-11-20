@@ -99,7 +99,6 @@ Model:
       _normalize_sph: True
       dropout: 0.04 # dropout for mlps
       dropout_attn: 0.08 # dropout on attention weigths
-      use_denoising: False
       use_species_wise_shift_scale: True
       train_shift_scale: False # allow shift/scale to be trainable params
       train_denominator: False
