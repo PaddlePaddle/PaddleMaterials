@@ -1,7 +1,7 @@
 # PaddleMaterials 性能测试
 
 本目录提供可复现的性能测试脚本。当前包含 CINN 注册权重性能测试，覆盖具备
-CINN 路径的 65 个权重。InfGCN 仅支持 eager，不在测试范围内。
+CINN 路径的 79 个权重。InfGCN 仅支持 eager，不在测试范围内。
 
 ## 目录
 
@@ -43,7 +43,7 @@ python -c "import paddle; print(paddle.__version__, paddle.is_compiled_with_cuda
 
 ## 快速开始
 
-默认覆盖全部 65 个 CINN 权重，分别执行 eager 和 CINN，每个后端 warm 运行 3
+默认覆盖全部 79 个 CINN 权重，分别执行 eager 和 CINN，每个后端 warm 运行 3
 次，最后自动生成对比结果：
 
 ```bash

@@ -19,7 +19,6 @@ import paddle
 
 from ppmat.datasets.build_grid import BuildGrid
 from ppmat.datasets.graph_utils.infgcn_graph_utils import radius
-from ppmat.datasets.graph_utils.infgcn_graph_utils import radius_graph
 from ppmat.models.common.activation import NormActivation
 from ppmat.models.common.activation import ScalarActivation
 from ppmat.models.common.e3nn import o3
@@ -738,6 +737,30 @@ class GPWNO(paddle.nn.Layer):
         offset = paddle.bmm(shifts.unsqueeze(1), cell[expanded_batch]).squeeze(1)
         return atom_types[sources], atom_coord[sources] + offset, expanded_batch
 
+    @paddle.no_grad()
+    def _build_atom_graph(self, atom_coord, batch_idx):
+        """Keep the historical loop-free, nearest-32 atom graph convention."""
+        # The shared bipartite search includes self, so request one extra source.
+        dst, src = radius(atom_coord, atom_coord, self.cutoff, batch_idx, batch_idx, 33)
+        keep = src != dst
+        src, dst = src[keep], dst[keep]
+        distances = (atom_coord[src] - atom_coord[dst]).square().sum(axis=-1)
+        order = paddle.argsort(distances, stable=True)
+        order = order[paddle.argsort(dst[order], stable=True)]
+        src, dst = src[order], dst[order]
+        # With coincident atoms, self may fall outside the first 33 sources.
+        # Cap again after removing self, with source-index tie breaking.
+        counts = paddle.bincount(dst, minlength=atom_coord.shape[0])
+        starts = paddle.cumsum(counts) - counts
+        ranks = paddle.cumsum(paddle.ones_like(src)) - 1
+        ranks = ranks - paddle.repeat_interleave(starts, counts)
+        keep = ranks < 32
+        src, dst = src[keep], dst[keep]
+        num_atoms = atom_coord.shape[0]
+        key = (batch_idx[src] * num_atoms + src) * num_atoms + dst
+        order = paddle.argsort(key, stable=True)
+        return paddle.stack([src[order], dst[order]])
+
     def _forward_density(self, atom_types, atom_coord, grid, batch_idx, info):
         device = atom_coord.place
 
@@ -765,7 +788,7 @@ class GPWNO(paddle.nn.Layer):
             atom_center = scatter(atom_coord, batch_idx, dim=0, reduce="mean")
             atom_coord = atom_coord - atom_center[batch_idx]
             grid = grid - atom_center.unsqueeze(1)
-        edge_index = radius_graph(atom_coord, self.cutoff, batch_idx, loop=False)
+        edge_index = self._build_atom_graph(atom_coord, batch_idx)
         src, dst = edge_index
         edge_vec = atom_coord[src] - atom_coord[dst]
         edge_len = edge_vec.norm(dim=-1) + 1e-08

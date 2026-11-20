@@ -55,6 +55,40 @@ def build_small_model(**overrides):
     return GPWNO(**params)
 
 
+@pytest.mark.parametrize("case", ["crowded", "coincident", "boundary", "empty"])
+def test_atom_graph_matches_nearest_neighbors_without_self(case):
+    rng = np.random.default_rng(42)
+    if case == "crowded":
+        positions = rng.uniform(0, 0.25, (74, 3)).astype("float32")
+        batches = np.arange(74, dtype="int64") % 2
+    elif case == "coincident":
+        positions = np.zeros((40, 3), dtype="float32")
+        batches = np.zeros(40, dtype="int64")
+    elif case == "boundary":
+        positions = np.array([[0, 0, 0], [1, 0, 0], [3, 0, 0]], dtype="float32")
+        batches = np.zeros(3, dtype="int64")
+    else:
+        positions = np.empty((0, 3), dtype="float32")
+        batches = np.empty(0, dtype="int64")
+    model = build_small_model(cutoff=1.0)
+    edges = model._build_atom_graph(
+        paddle.to_tensor(positions), paddle.to_tensor(batches)
+    ).numpy()
+    expected = []
+    for dst in range(len(positions)):
+        distances = ((positions - positions[dst]) ** 2).sum(axis=1)
+        candidates = np.flatnonzero(
+            (distances <= 1.0)
+            & (batches == batches[dst])
+            & (np.arange(len(positions)) != dst)
+        )
+        nearest = candidates[np.lexsort((candidates, distances[candidates]))][:32]
+        expected.extend((int(src), dst) for src in nearest)
+    expected.sort(key=lambda pair: (batches[pair[0]], *pair))
+    expected = np.asarray(expected, dtype="int64").reshape(-1, 2).T
+    np.testing.assert_array_equal(edges, expected)
+
+
 @pytest.mark.parametrize(
     "model_sharing,rno_degree,expected_degree",
     [(True, None, 1), (True, 2, 1), (False, None, 1), (False, 2, 2)],
