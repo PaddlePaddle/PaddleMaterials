@@ -24,11 +24,14 @@ import pytest
 from cinn_workflow_harness import REPO_ROOT
 from omegaconf import OmegaConf
 
+from ppmat.datasets import NumAtomsCrystalDataset
+from ppmat.datasets import build_dataloader
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.datasets.mp20_dataset import MP20Dataset
 from ppmat.models import build_model
 from ppmat.models.miad.miad import MiAD
+from ppmat.schedulers import DDPMScheduler
 from ppmat.trainer.base_trainer import BaseTrainer
 
 _MP20_TEST_CSV = REPO_ROOT / "data" / "mp_20" / "test.csv"
@@ -310,47 +313,131 @@ class TestMiADConfig:
         config["__init_params__"]["diffusion_cfg"]["num_steps"] += 1
         with pytest.raises(ValueError, match="schedules must match num_steps"):
             build_model(config)
+        paddle.seed(2026)
         model = _make_model_from_yaml(num_steps=TINY_DIFFUSION_CFG["num_steps"])
-        lattice = paddle.full([1, 3, 3], 4.0)
-        recovered = model._lat_reverse(
-            paddle.zeros_like(lattice), lattice, paddle.to_tensor([0])
-        )
-        expected = lattice / paddle.sqrt(model.lat_scheduler.alphas[0])
-        np.testing.assert_allclose(recovered.numpy(), expected.numpy(), atol=1e-5)
-        model.eval()
-        with paddle.no_grad():
-            output = model(_make_synthetic_batch())
-        assert paddle.isfinite(output["loss_dict"]["loss"])
-        result = _sample_small_batch(model)
-        assert len(result) == 2
-        for entry in result:
-            assert "num_atoms" in entry
-            assert "lattice" in entry
-
-        legacy = copy.deepcopy(TINY_DIFFUSION_CFG)
-        legacy_lattice = legacy["lat_diffusion"]["scheduler_cfg"]
+        assert isinstance(model.lat_scheduler, DDPMScheduler)
+        legacy_config = _load_miad_yaml(num_steps=model.num_steps)["Model"]
+        legacy_diffusion = legacy_config["__init_params__"]["diffusion_cfg"]
+        legacy_lattice = legacy_diffusion.pop("lattice_noise_scheduler_cfg")
         legacy_lattice["__class_name__"] = "DDPMScheduler"
         legacy_lattice["__init_params__"]["beta_schedule"] = "clipped_cosine"
+        legacy_diffusion["lat_diffusion"] = {"scheduler_cfg": legacy_lattice}
+        legacy_coord = legacy_diffusion.pop("coord_noise_scheduler_cfg")
+        legacy_coord["__class_name__"] = "ScoreSdeVeSchedulerWrapped"
+        legacy_diffusion["frac_diffusion"] = {
+            "step_lr": legacy_coord["__init_params__"].pop("step_lr"),
+            "scheduler_cfg": legacy_coord,
+        }
+        legacy_diffusion["type_diffusion"] = legacy_diffusion.pop(
+            "atom_noise_scheduler_cfg"
+        )
+        original_config = copy.deepcopy(legacy_config)
         paddle.seed(2026)
-        current_model = _make_tiny_model()
-        paddle.seed(2026)
-        legacy_model = MiAD(model_cfg=TINY_MODEL_CFG, diffusion_cfg=legacy)
-        legacy_model.set_state_dict(current_model.state_dict())
+        legacy_model = build_model(legacy_config)
+        assert legacy_config == original_config
         for name in ("betas", "alphas_cumprod"):
             np.testing.assert_array_equal(
-                getattr(current_model.lat_scheduler, name).numpy(),
+                getattr(model.lat_scheduler, name).numpy(),
                 getattr(legacy_model.lat_scheduler, name).numpy(),
             )
-        assert legacy_lattice["__class_name__"] == "DDPMScheduler"
-        current_model.eval()
+        assert model.state_dict().keys() == legacy_model.state_dict().keys()
+        for name, parameter in model.state_dict().items():
+            assert parameter.shape == legacy_model.state_dict()[name].shape
+        assert legacy_model.set_state_dict(model.state_dict()) == ([], [])
+
+        lattice = paddle.full([1, 3, 3], 4.0)
+        recovered = model.lat_scheduler.step(
+            paddle.zeros_like(lattice), 0, lattice
+        ).prev_sample
+        expected = lattice / paddle.sqrt(model.lat_scheduler.alphas[0])
+        np.testing.assert_allclose(recovered.numpy(), expected.numpy(), atol=1e-5)
+        coords = paddle.rand([7, 3])
+        recovered_coords = model.frac_scheduler.step_pred_indexed(
+            paddle.ones_like(coords), paddle.zeros([7], dtype="int64"), coords
+        ).prev_sample
+        np.testing.assert_array_equal(recovered_coords.numpy(), coords.numpy())
+        model.eval()
         legacy_model.eval()
+        synthetic_batch = _make_synthetic_batch()
+        paddle.seed(2026)
+        with paddle.no_grad():
+            output = model(copy.deepcopy(synthetic_batch))
+        assert paddle.isfinite(output["loss_dict"]["loss"])
+        paddle.seed(2026)
+        with paddle.no_grad():
+            legacy_output = legacy_model(copy.deepcopy(synthetic_batch))
+        np.testing.assert_array_equal(
+            output["loss_dict"]["loss"].numpy(),
+            legacy_output["loss_dict"]["loss"].numpy(),
+        )
+
+        source = DefaultCollator()(
+            [_make_structure_sample(4, seed=1), _make_structure_sample(3, seed=2)]
+        )["structure_array"]
+        original_counts = source["num_atoms"].flatten()
+        for capacity in (None, model.mirage_num_atoms):
+            rng = np.random.RandomState(2026)
+            expected_coords = []
+            expected_types = []
+            expected_counts = []
+            offset = 0
+            for count in original_counts:
+                padded_count = count if capacity is None else max(count, capacity)
+                expected_coords.append(source["frac_coords"][offset : offset + count])
+                expected_types.append(source["atom_types"][offset : offset + count])
+                if padded_count > count:
+                    expected_coords.append(
+                        rng.rand(padded_count - count, 3).astype("float32")
+                    )
+                    expected_types.append(np.zeros(padded_count - count, dtype="int64"))
+                expected_counts.append(padded_count)
+                offset += count
+            expected_next_random = rng.rand()
+            model.mirage_num_atoms = capacity
+            for numpy_input in (False, True):
+                batch = {
+                    "structure_array": {
+                        key: value if numpy_input else paddle.to_tensor(value)
+                        for key, value in source.items()
+                    }
+                }
+                np.random.seed(2026)
+                with paddle.no_grad():
+                    output = model(batch)
+                assert paddle.isfinite(output["loss_dict"]["loss"])
+                np.testing.assert_array_equal(
+                    batch["num_atoms"].numpy(), expected_counts
+                )
+                np.testing.assert_array_equal(
+                    batch["x0"][0].numpy(), source["lattice"].reshape(2, 3, 3)
+                )
+                np.testing.assert_array_equal(
+                    batch["x0"][1].numpy(), np.concatenate(expected_coords)
+                )
+                np.testing.assert_array_equal(
+                    batch["x0"][2].numpy(), np.concatenate(expected_types)
+                )
+                assert np.random.rand() == expected_next_random
+
+        sample_config = _load_miad_yaml(num_steps=model.num_steps)["Sample"]["data"]
+        sample_config["dataset"]["__init_params__"]["total_num"] = 2
+        sample_loader = build_dataloader(sample_config)
+        assert isinstance(sample_loader.dataset, NumAtomsCrystalDataset)
+        sample_batch = next(iter(sample_loader))
         paddle.seed(123)
-        current_samples = _sample_small_batch(current_model)
+        result = model.sample(
+            copy.deepcopy(sample_batch), num_inference_steps=model.num_steps
+        )["result"]
         paddle.seed(123)
-        legacy_samples = _sample_small_batch(legacy_model)
-        for current, previous in zip(current_samples, legacy_samples):
-            for name in ("atom_types", "frac_coords", "lattice"):
-                np.testing.assert_array_equal(current[name], previous[name])
+        legacy_result = legacy_model.sample(
+            copy.deepcopy(sample_batch), num_inference_steps=legacy_model.num_steps
+        )["result"]
+        assert len(result) == 2
+        for entry, previous in zip(result, legacy_result):
+            assert "num_atoms" in entry
+            assert "lattice" in entry
+            for key in ("atom_types", "frac_coords", "lattice"):
+                np.testing.assert_array_equal(entry[key], previous[key])
 
 
 @pytest.mark.skipif(

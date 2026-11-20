@@ -51,23 +51,20 @@ Model:
       num_steps: ${Global.num_train_timesteps}
       time_embed_dim: ${Global.time_embed_dim}
       eps: 1e-3
-      lat_diffusion:
-        scheduler_cfg:
-          __class_name__: DDPMScheduler
-          __init_params__:
-            num_train_timesteps: ${Global.num_train_timesteps}
-            beta_schedule: clipped_cosine
-            clip_sample: false
-      frac_diffusion:
-        step_lr: 0.00001
-        scheduler_cfg:
-          __class_name__: ScoreSdeVeSchedulerWrapped
-          __init_params__:
-            num_train_timesteps: ${Global.num_train_timesteps}
-            sigma_min: 0.005
-            sigma_max: 0.5
-            sampling_eps: 0.001
-      type_diffusion:
+      lattice_noise_scheduler_cfg:
+        __class_name__: CosineDDPMScheduler
+        __init_params__:
+          num_train_timesteps: ${Global.num_train_timesteps}
+          clip_sample: false
+      coord_noise_scheduler_cfg:
+        __class_name__: WrappedVESDEPCScheduler
+        __init_params__:
+          num_train_timesteps: ${Global.num_train_timesteps}
+          step_lr: 0.00001
+          sigma_min: 0.005
+          sigma_max: 0.5
+          sampling_eps: 0.001
+      atom_noise_scheduler_cfg:
         __class_name__: D3PMUniformDiffusion
         __init_params__:
           loss_scale: 1000
@@ -145,14 +142,12 @@ Dataset:
 Sample:
   data:
     dataset:
-      __class_name__: MP20Dataset
+      __class_name__: NumAtomsCrystalDataset
       __init_params__:
-        path: "./data/mp_20/test.csv"
-        build_structure_cfg:
-          format: cif_str
-          primitive: true
-          niggli: true
-          num_cpus: 10
+        total_num: 16
+        dist_name: MP_20
+        prop_names: null
+        prop_values: null
     sampler:
       __class_name__: BatchSampler
       __init_params__:

@@ -36,6 +36,11 @@ Lattice matrices are unbounded. The MiAD scheduler disables DDPM sample
 clipping; image-style clipping to `[-1, 1]` would truncate the generated unit
 cell. This corrects the previous integration's sampling behavior while
 preserving checkpoint keys, shapes and the training noise schedule.
+`CosineDDPMScheduler` constructs the clipped cosine table and reuses the shared
+DDPM implementation through `trained_betas`. The three diffusion components use
+`lattice_noise_scheduler_cfg`, `coord_noise_scheduler_cfg` and
+`atom_noise_scheduler_cfg`. Legacy `lat_diffusion`, `frac_diffusion` and
+`type_diffusion` configurations remain supported.
 
 #### 2) Fractional-coordinate diffusion on a torus
 
@@ -44,6 +49,10 @@ Fractional coordinates live on a 3D torus $[0,1)^3$. Wrapped Normal noise is use
 $$
 x_t = (x_0 + \sigma(t)\,\epsilon) \bmod 1,\quad \epsilon \sim \mathcal{N}(0, I)
 $$
+
+`WrappedVESDEPCScheduler` owns the score target and predictor-corrector updates.
+Its indexed predictor clamps the previous sigma to `sigma_min`, so the final
+step has zero drift and diffusion.
 
 #### 3) Atom-type diffusion
 
@@ -82,7 +91,11 @@ CSV; the metric requires that explicit file to exist.
 
 | Model | Dataset | Config | Checkpoint / Log |
 | --- | --- | --- | --- |
-| miad_mp20 | mp20 | [miad_mp20.yaml](miad_mp20.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/MiAD/miad_mp20.zip) |
+| miad_mp20 | mp20 | [miad_mp20.yaml](miad_mp20.yaml) | [local checkpoint](http://127.0.0.1/models/miad_mp20.zip) |
+
+The registry uses the local nginx endpoint for verification. The production URL
+is preserved as a comment beside the registry entry for release maintenance.
+For local downloads behind an HTTP proxy, set `NO_PROXY=127.0.0.1,localhost`.
 
 ### Integration validation
 
@@ -126,6 +139,10 @@ released checkpoint); timestep respacing is unsupported. The repository YAML
 derives the model, all three schedulers and sampling steps from
 `Global.num_train_timesteps`. Changing this value defines a new training
 schedule and must not be used to shorten sampling with released weights.
+The sampling dataloader uses `NumAtomsCrystalDataset` to draw 16 atom capacities
+from the MP-20 distribution. Override
+`Sample.data.dataset.__init_params__.total_num` to change the number of samples.
+This unconditional configuration uses no property names or values.
 
 ```bash
 # This command is used to sample crystal structures using a trained model.
@@ -138,7 +155,7 @@ schedule and must not be used to shorten sampling with released weights.
 # how many become real elements, and mirage atoms (type 0) are filtered out.
 python structure_generation/sample.py --model_name='miad_mp20' --output_path='result_miad/' --mode='by_num_atoms' --num_atoms=20
 
-# Mode 1: pre-trained model, sample by dataloader (reads test.csv)
+# Mode 1: pre-trained model, sample by dataloader (draws MP-20 atom capacities)
 python structure_generation/sample.py --model_name='miad_mp20' --output_path='result_miad/' --mode='by_dataloader'
 
 # Mode 2: custom config + checkpoint, sample by number of atoms
@@ -151,7 +168,7 @@ python structure_generation/sample.py --config_path='structure_generation/config
 ### Evaluation (S.U.N.)
 
 ```bash
-# Sample on the test dataloader and evaluate with SUNMetric.
+# Generate from the atom-count dataloader and evaluate with SUNMetric.
 # Reports Stability / Uniqueness / Novelty rates following the official MiAD
 # semantics (novelty references the *training* split, train.csv).
 python structure_generation/sample.py --model_name='miad_mp20' --output_path='result_miad/' --mode='compute_metric'

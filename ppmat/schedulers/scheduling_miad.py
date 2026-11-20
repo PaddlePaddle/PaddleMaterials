@@ -17,6 +17,77 @@ import math
 import paddle
 import paddle.nn.functional as F
 
+from ppmat.schedulers.scheduling_ddpm import DDPMScheduler
+from ppmat.schedulers.scheduling_sde_ve import SchedulerOutput
+from ppmat.schedulers.scheduling_sde_ve import ScoreSdeVeSchedulerWrapped
+from ppmat.schedulers.scheduling_sde_ve import d_log_p_wrapped_normal
+
+
+class CosineDDPMScheduler(DDPMScheduler):
+    """DDPM with a configurable clipped cosine noise table."""
+
+    def __init__(
+        self,
+        num_train_timesteps: int = 1000,
+        s: float = 0.008,
+        beta_min: float = 1e-4,
+        beta_max: float = 0.9999,
+        **kwargs,
+    ) -> None:
+        if kwargs.get("trained_betas") is None:
+            discretization = paddle.linspace(
+                0, num_train_timesteps, num_train_timesteps + 1, dtype="float64"
+            )
+            alphas_cumprod = (
+                paddle.cos(
+                    (discretization / num_train_timesteps + s) / (1 + s) * math.pi * 0.5
+                )
+                ** 2
+            )
+            alphas_cumprod = alphas_cumprod / alphas_cumprod[0]
+            kwargs["trained_betas"] = paddle.clip(
+                1 - alphas_cumprod[1:] / alphas_cumprod[:-1], beta_min, beta_max
+            ).cast("float32")
+        super().__init__(num_train_timesteps=num_train_timesteps, **kwargs)
+
+
+class WrappedVESDEPCScheduler(ScoreSdeVeSchedulerWrapped):
+    """Wrapped VE predictor-corrector with integer per-atom timestep indices."""
+
+    def __init__(self, step_lr: float = 1e-5, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.step_lr = step_lr
+        self.sigmas_t = self.discrete_sigmas[:, None]
+        self.sigmas_norm_t = self.discrete_sigmas_norm[:, None]
+
+    def step_correct_indexed(self, model_output, timestep, sample):
+        t_idx = timestep.cast("int64")
+        st = self.sigmas_t[t_idx]
+        snt = self.sigmas_norm_t[t_idx]
+        step_size = self.step_lr * (st / self.sigma_min) ** 2
+        drift = -step_size * model_output * paddle.sqrt(snt)
+        diffusion = paddle.sqrt(2 * step_size) * paddle.randn(sample.shape)
+        return SchedulerOutput(prev_sample=sample + drift + diffusion)
+
+    def step_pred_indexed(self, model_output, timestep, sample):
+        t_idx = timestep.cast("int64")
+        st = self.sigmas_t[t_idx]
+        # Clamping to sigma_min makes the last step's drift and diffusion zero.
+        st_1 = self.sigmas_t[paddle.maximum(t_idx - 1, paddle.to_tensor(0))]
+        snt = self.sigmas_norm_t[t_idx]
+        step_size = st**2 - st_1**2
+        drift = -step_size * model_output * paddle.sqrt(snt)
+        diffusion = paddle.sqrt(
+            st_1**2 * (st**2 - st_1**2) / (st**2)
+        ) * paddle.randn(sample.shape)
+        return SchedulerOutput(prev_sample=(sample + drift + diffusion) % 1.0)
+
+    def score_target(self, noise, timestep):
+        t_idx = timestep.cast("int64")
+        st = self.sigmas_t[t_idx]
+        snt = self.sigmas_norm_t[t_idx]
+        return d_log_p_wrapped_normal(st * noise, st) / paddle.sqrt(snt)
+
 
 def _sample_categorical(probs: paddle.Tensor) -> paddle.Tensor:
     """Sample an index from probabilities (Paddle Categorical takes logits)."""
@@ -40,8 +111,7 @@ class D3PMUniformScheduler:
         f_0 = paddle.cos(
             (paddle.to_tensor(0.0, dtype="float64") + s) / (1 + s) * math.pi / 2
         )
-        a_t = f_t / f_0
-        cumprod_alphas_t = a_t
+        cumprod_alphas_t = f_t / f_0
         cumprod_alphas_t_1 = paddle.concat(
             [paddle.to_tensor([1.0], dtype="float64"), cumprod_alphas_t[:-1]]
         )
@@ -70,9 +140,9 @@ class D3PMUniformScheduler:
             axis=0,
         )
 
-        self.Q_t = Q_t.reshape([-1, num_types, num_types])
-        self.cumprod_Q_t = cumprod_Q_t.reshape([-1, num_types, num_types])
-        self.cumprod_Q_t_1 = cumprod_Q_t_1.reshape([-1, num_types, num_types])
+        self.Q_t = Q_t
+        self.cumprod_Q_t = cumprod_Q_t
+        self.cumprod_Q_t_1 = cumprod_Q_t_1
 
 
 class D3PMUniformDiffusion:
@@ -106,9 +176,6 @@ class D3PMUniformDiffusion:
     @staticmethod
     def prediction_to_domain(prediction: paddle.Tensor) -> paddle.Tensor:
         return F.softmax(prediction, axis=-1)
-
-    def output_transform(self, x0: paddle.Tensor) -> paddle.Tensor:
-        return self.from_domain(x0)
 
     def forward_step_sample(self, x0, t):
         onehot_x0 = self.to_domain(x0)
