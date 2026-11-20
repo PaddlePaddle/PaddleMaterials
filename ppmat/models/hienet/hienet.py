@@ -59,8 +59,21 @@ class HIENet(RuntimeMixin, paddle.nn.Layer):
         loss_weights_dict: dict | None = None,
         execution_backend: str = "eager",
         runtime_options: dict | None = None,
+        vocab: dict | None = None,
     ):
         super().__init__()
+        if vocab is not None:
+            # Vocabulary-backed species mapping, injected into a shallow
+            # config copy; the caller's dict is not mutated. The config
+            # "_type_map"/"_number_of_species" entries are not read when a
+            # vocab is supplied.
+            atom = vocab["atom"]
+            config = dict(config)
+            config[KEY.TYPE_MAP] = {
+                token["atomic_number"]: index
+                for index, token in enumerate(atom["tokens"])
+            }
+            config[KEY.NUM_SPECIES] = atom["num_embeddings"]
         self._init_runtime(execution_backend, runtime_options)
         self.config = config
         self.cutoff = config[KEY.CUTOFF]
