@@ -110,8 +110,8 @@ output/cinn_benchmark/
 - `warm_median_seconds`：后续 warm 调用耗时中位数；
 - `runtime_keys`：本次调用生成的 CINN 运行时缓存键；
 - `prediction`：首次调用的模型输出，用于 eager/CINN 精度对比；
-- `loss`：模型自身损失函数得到的标量，以及可复用的指标值，例如 SFIN 的
-  `psnr`、`ssim`；输入不带 ground-truth 标签时留空；
+- `loss`：模型自身损失函数得到的标量；输入不带 ground-truth 标签时留空；
+- `metrics`：可复用的指标值，例如 SFIN 的 `psnr`、`ssim`；缺少参考目标时留空；
 - `paddle_version`、`compiled_with_cinn` 等环境信息。
 
 `comparison.json` 和 `comparison.csv` 包含每个权重的效率和精度结果。加速比
@@ -129,7 +129,7 @@ eager 和 CINN 都会在首次调用前重置随机种子，因此可以直接�
 - `precision_fields` / `precision_matched_fields`：参与比较的字段数和形状
   匹配的字段数。
 
-除预测张量外，还会逐字段比较 `loss` 中的标量，并给出
+除预测张量外，还会逐字段比较 `loss` 与 `metrics` 中的标量，并给出
 `loss_metric_status`、`loss_metric`。每个字段记录 eager 与 CINN 的取值、
 `abs_error` 和 `relative_error`；汇总里的 `loss_metric_compared` 与
 `loss_metric_failed` 给出通过和失败的数量。loss 与指标在计时区间之外计算，
