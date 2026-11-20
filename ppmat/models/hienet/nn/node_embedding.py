@@ -20,7 +20,7 @@ from .. import _keys as KEY
 import numpy as np
 import paddle
 from ase.symbols import symbols2numbers
-from ..e3nn.util.jit import compile_mode
+from ppmat.models.common.e3nn.util.jit import compile_mode
 from .._const import AtomGraphDataType
 
 

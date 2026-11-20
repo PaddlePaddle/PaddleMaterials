@@ -92,7 +92,9 @@ class SphericalHarmonics(paddle.nn.Layer):
 
     def forward(self, x: paddle.Tensor) -> paddle.Tensor:
         if self.normalize:
-            x = paddle.nn.functional.normalize(x=x, axis=-1)
+            # Native-op normalize: keeps the double-grad path of
+            # derivative-output models alive.
+            x = x / paddle.sqrt((x * x).sum(-1, keepdim=True))
         sh = _spherical_harmonics(self._lmax, x[..., 0], x[..., 1], x[..., 2])
         if not self._is_range_lmax:
             sh = paddle.concat(

@@ -23,10 +23,10 @@ from ppmat.utils.scatter import scatter
 
 from .. import _keys as KEY
 from .._const import AtomGraphDataType
-from ..e3nn.nn import FullyConnectedNet
-from ..e3nn.o3 import Irreps
-from ..e3nn.o3 import TensorProduct
-from ..e3nn.util.jit import compile_mode
+from ppmat.models.common.e3nn.nn import FullyConnectedNet
+from ppmat.models.common.e3nn.o3 import Irreps
+from ppmat.models.common.e3nn.o3 import TensorProduct
+from ppmat.models.common.e3nn.util.jit import compile_mode
 
 
 @compile_mode("script")
@@ -85,6 +85,7 @@ class IrrepsConvolution(paddle.nn.Module):
         self.weight_nn = FullyConnectedNet(
             weight_layer_input_to_hidden + [self.convolution.weight_numel],
             weight_layer_act,
+            sample_stream="torch_seed0",
         )
 
     def forward(self, data: AtomGraphDataType) -> AtomGraphDataType:

@@ -16,8 +16,8 @@
 
 from .. import _keys as KEY
 import paddle
-from ..e3nn.o3 import FullyConnectedTensorProduct, Irreps, Linear
-from ..e3nn.util.jit import compile_mode
+from ppmat.models.common.e3nn.o3 import FullyConnectedTensorProduct, Irreps, Linear
+from ppmat.models.common.e3nn.util.jit import compile_mode
 from .._const import AtomGraphDataType
 
 

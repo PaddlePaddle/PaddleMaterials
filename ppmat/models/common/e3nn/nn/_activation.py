@@ -43,14 +43,18 @@ class Activation(paddle.nn.Layer):
     >>> a.irreps_out
     """
 
-    def __init__(self, irreps_in, acts):
+    def __init__(self, irreps_in, acts, sample_stream: str = "paddle"):
         super().__init__()
         irreps_in = o3.Irreps(irreps_in)  #
         if len(irreps_in) != len(acts):  #
             raise ValueError(
                 f"Irreps in and number of activation functions does not match: {len(acts), (irreps_in, acts)}"
             )
-        acts = [(normalize2mom(act) if act is not None else None) for act in acts]
+        acts = [
+            (normalize2mom(act, sample_stream=sample_stream)
+             if act is not None else None)
+            for act in acts
+        ]
 
         irreps_out = []
         for (mul, (l_in, p_in)), act in zip(irreps_in, acts):

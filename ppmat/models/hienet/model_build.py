@@ -22,7 +22,7 @@ from . import _const as _const
 from . import _keys as KEY
 from . import util as util
 import paddle
-from .e3nn.o3 import Irreps
+from ppmat.models.common.e3nn.o3 import Irreps
 from .nn.convolution import IrrepsConvolution
 from .nn.edge_embedding import (BesselBasis, ComformerEdgeEmbedding,
                                       EdgeEmbedding, EdgePreprocess,
@@ -73,7 +73,9 @@ def NequIP_interaction_block(
     block = {}
     irreps_node_attr = Irreps(f"{num_species}x0e")
     sc_intro, sc_outro = self_connection_pair
-    gate_layer = EquivariantGate(irreps_out, act_scalar, act_gate)
+    gate_layer = EquivariantGate(
+        irreps_out, act_scalar, act_gate, sample_stream="torch_seed0"
+    )
     irreps_for_gate_in = gate_layer.get_gate_irreps_in()
     block[f"{t}_self_connection_intro"] = sc_intro(
         irreps_x, irreps_operand=irreps_node_attr, irreps_out=irreps_for_gate_in

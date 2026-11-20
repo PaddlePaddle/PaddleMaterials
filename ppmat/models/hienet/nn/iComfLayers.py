@@ -23,10 +23,10 @@ from .. import _keys as KEY
 from .. import util as util
 import numpy as np
 import paddle
-from ..e3nn import o3
-from ..e3nn.nn import BatchNorm, FullyConnectedNet
-from ..e3nn.o3 import Irreps, Linear, TensorProduct
-from ..e3nn.util.jit import compile_mode
+from ppmat.models.common.e3nn import o3
+from ppmat.models.common.e3nn.nn import BatchNorm, FullyConnectedNet
+from ppmat.models.common.e3nn.o3 import Irreps, Linear, TensorProduct
+from ppmat.models.common.e3nn.util.jit import compile_mode
 from .._const import AtomGraphDataType
 from .convolution import IrrepsConvolution
 from .equivariant_gate import EquivariantGate, eComfEquivariantGate
@@ -371,6 +371,7 @@ class TensorProductConvLayer(paddle.nn.Module):
         self.fc = FullyConnectedNet(
             weight_layer_input_to_hidden + [self.convolution.weight_numel],
             weight_layer_act,
+            sample_stream="torch_seed0",
         )
         self.denominator = denominator
 

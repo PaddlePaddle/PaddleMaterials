@@ -167,7 +167,12 @@ def _make_model(execution_backend="cinn"):
             runtime_options={"cinn": {"full_graph": False}},
         )
         missing, unexpected = model.backbone.load_state_dict(_STATE64, strict=False)
-        assert not missing and not unexpected, (missing, unexpected)
+        # The unified e3nn state_dict drops the reference implementation's
+        # placeholder entries (zero-sized bias/weight buffers and wigner
+        # constant buffers, now construction-time values); every key the
+        # model declares must still come from the released checkpoint.
+        assert not missing, (missing, unexpected)
+        assert set(unexpected) <= set(_STATE64.keys()), (missing, unexpected)
     for _, child in model.backbone.named_children():
         if isinstance(child, OnehotEmbedding):
             _patch_onehot_fp64(child)

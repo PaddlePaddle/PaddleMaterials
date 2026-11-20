@@ -16,9 +16,9 @@
 
 from .. import _keys as KEY
 import paddle
-from ..e3nn.nn import FullyConnectedNet
-from ..e3nn.o3 import Irreps, Linear
-from ..e3nn.util.jit import compile_mode
+from ppmat.models.common.e3nn.nn import FullyConnectedNet
+from ppmat.models.common.e3nn.o3 import Irreps, Linear
+from ppmat.models.common.e3nn.util.jit import compile_mode
 from .._const import AtomGraphDataType
 from .second_order import ManualDropout
 from ppmat.utils.scatter import scatter
@@ -148,7 +148,10 @@ class FCN_e3nn(paddle.nn.Module):
             assert irrep.is_scalar()
         inp_dim = irreps_in.dim
         self.fcn = FullyConnectedNet(
-            [inp_dim] + hidden_neurons + [dim_out], activation, **e3nn_params
+            [inp_dim] + hidden_neurons + [dim_out],
+            activation,
+            sample_stream="torch_seed0",
+            **e3nn_params,
         )
 
     def forward(self, data: AtomGraphDataType) -> AtomGraphDataType:

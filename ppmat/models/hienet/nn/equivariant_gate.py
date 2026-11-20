@@ -18,9 +18,9 @@ from typing import Callable, Dict
 
 from .. import _keys as KEY
 import paddle
-from ..e3nn.nn import Gate
-from ..e3nn.o3 import Irreps
-from ..e3nn.util.jit import compile_mode
+from ppmat.models.common.e3nn.nn import Gate
+from ppmat.models.common.e3nn.o3 import Irreps
+from ppmat.models.common.e3nn.util.jit import compile_mode
 from .._const import AtomGraphDataType
 
 
@@ -47,6 +47,7 @@ class EquivariantGate(paddle.nn.Module):
         act_scalar_dict: Dict[int, Callable],
         act_gate_dict: Dict[int, Callable],
         data_key_x: str = KEY.NODE_FEATURE,
+        sample_stream: str = "paddle",
     ):
         super().__init__()
         self.key_x = data_key_x
@@ -69,7 +70,8 @@ class EquivariantGate(paddle.nn.Module):
         act_scalars = [act_scalar_dict[p] for _, (_, p) in irreps_scalars]
         act_gates = [act_gate_dict[p] for _, (_, p) in irreps_gates]
         self.gate = Gate(
-            irreps_scalars, act_scalars, irreps_gates, act_gates, irreps_gated
+            irreps_scalars, act_scalars, irreps_gates, act_gates, irreps_gated,
+            sample_stream=sample_stream,
         )
 
     def get_gate_irreps_in(self):
@@ -91,6 +93,7 @@ class eComfEquivariantGate(paddle.nn.Module):
         act_scalar_dict: Dict[int, Callable],
         act_gate_dict: Dict[int, Callable],
         data_key_x: str = KEY.NODE_FEATURE,
+        sample_stream: str = "paddle",
     ):
         super().__init__()
         self.key_x = data_key_x
@@ -113,7 +116,8 @@ class eComfEquivariantGate(paddle.nn.Module):
         act_scalars = [act_scalar_dict[p] for _, (_, p) in irreps_scalars]
         act_gates = [act_gate_dict[p] for _, (_, p) in irreps_gates]
         self.gate = Gate(
-            irreps_scalars, act_scalars, irreps_gates, act_gates, irreps_gated
+            irreps_scalars, act_scalars, irreps_gates, act_gates, irreps_gated,
+            sample_stream=sample_stream,
         )
 
     def get_gate_irreps_in(self):

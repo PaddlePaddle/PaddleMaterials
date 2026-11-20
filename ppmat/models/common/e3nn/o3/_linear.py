@@ -25,6 +25,7 @@ from ppmat.models.common.e3nn import o3
 from ppmat.models.common.e3nn.util import prod
 from ppmat.models.common.e3nn.util.codegen import CodeGenMixin
 
+from ._tensor_product._codegen import _einsum
 from ._tensor_product._codegen import _sum_tensors
 
 
@@ -54,6 +55,7 @@ class Linear(CodeGenMixin, paddle.nn.Layer):
         instructions: Optional[List[Tuple[int, int]]] = None,
         biases: Union[bool, List[bool]] = False,
         path_normalization: str = "element",
+        placeholder_buffers: bool = False,
     ):
         super().__init__()
 
@@ -163,11 +165,13 @@ class Linear(CodeGenMixin, paddle.nn.Layer):
             self.weight = self.create_parameter(
                 shape=weight_shape, default_initializer=paddle.nn.initializer.Normal()
             )
+        elif placeholder_buffers:
+            # Zero-sized placeholder so the module state_dict keeps the same
+            # keys as checkpoints converted from the reference e3nn (opt-in:
+            # Paddle DataParallel cannot synchronize numel == 0 buffers, so
+            # the default stays buffer-free).
+            self.register_buffer("weight", paddle.zeros((0,)))
         else:
-            # Avoid storing zero-sized tensors on the module: Paddle DataParallel
-            # synchronizes buffers across ranks and does not support numel == 0.
-            # When weight_numel == 0 (or weights are external), we create an empty
-            # tensor on-the-fly in forward if needed.
             self.weight = None
 
         # Generate biases
@@ -178,6 +182,8 @@ class Linear(CodeGenMixin, paddle.nn.Layer):
                 shape=bias_shape,
                 default_initializer=paddle.nn.initializer.Constant(value=0.0),
             )
+        elif placeholder_buffers:
+            self.register_buffer("bias", paddle.zeros((0,)))
         else:
             self.bias = None
 
@@ -347,9 +353,18 @@ def _codegen_linear(
                 flat_weight_index += path_nweight
 
                 if f_in is None:
-                    ein_out = paddle.einsum(f"{z}uw,zui->zwi", w, x_list[ins.i_in])
+                    # Decomposed form: paddle.einsum has no higher-order
+                    # gradient registration, which breaks the create_graph
+                    # training route of derivative-output models. The
+                    # (z,i,u)@(u,w) operand order keeps the double-grad path
+                    # of the training graph stable.
+                    ein_out = paddle.matmul(
+                        x_list[ins.i_in].transpose([0, 2, 1]), w
+                    ).transpose([0, 2, 1])
                 else:
-                    ein_out = paddle.einsum(f"{z}xyuw,zxui->zywi", w, x_list[ins.i_in])
+                    ein_out = _einsum(
+                        f"{z}xyuw,zxui->zywi", w, x_list[ins.i_in]
+                    )
 
                 ein_out = ins.path_weight * ein_out
                 out_list += [
@@ -374,7 +389,7 @@ def _codegen_linear(
         ]
 
         if len(out) > 1:
-            out = paddle.concat(out, axis=-1)
+            out = _place_lastdim(out)
         else:
             out = out[0]
 
@@ -384,3 +399,36 @@ def _codegen_linear(
     bias_numel = sum(irreps_out[i.i_out].dim for i in instructions if i.i_in == -1)
 
     return forward_fn, weight_numel, bias_numel
+
+
+# Cache of 0/1 placement matrices for last-dim concat:
+# (dims, dtype, place) -> [M_i]
+_PLACE_MATS = {}
+
+
+def _place_lastdim(tensors):
+    # Last-dim concat as sum_i t_i @ M_i with 0/1 placement matrices
+    # (bitwise-identical forward); matmul/add keep the double-grad path of
+    # the create_graph training route.
+    dims = [int(t.shape[-1]) for t in tensors]
+    key = (tuple(dims), str(tensors[0].dtype), str(tensors[0].place))
+    # Cache in dynamic mode only: a static trace builds one Program per
+    # (train/eval) mode; cached python tensors must not leak across Programs.
+    use_cache = paddle.in_dynamic_mode()
+    mats = _PLACE_MATS.get(key) if use_cache else None
+    if mats is None:
+        total = sum(dims)
+        mats = []
+        ofs = 0
+        for d in dims:
+            m = paddle.zeros((d, total), dtype=tensors[0].dtype)
+            m[0:d, ofs:ofs + d] = paddle.eye(d, dtype=tensors[0].dtype)
+            m.stop_gradient = True
+            mats.append(m)
+            ofs += d
+        if use_cache:
+            _PLACE_MATS[key] = mats
+    out = tensors[0] @ mats[0]
+    for t, m in zip(tensors[1:], mats[1:]):
+        out = out + t @ m
+    return out

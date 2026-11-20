@@ -21,9 +21,9 @@ from typing import Optional, Tuple, Union
 from .. import _keys as KEY
 import numpy as np
 import paddle
-from ..e3nn import o3
-from ..e3nn.o3 import Irreps, SphericalHarmonics
-from ..e3nn.util.jit import compile_mode
+from ppmat.models.common.e3nn import o3
+from ppmat.models.common.e3nn.o3 import Irreps, SphericalHarmonics
+from ppmat.models.common.e3nn.util.jit import compile_mode
 from .._const import AtomGraphDataType
 from .. import paddle_compat
 from ppmat.models.common.message_passing.message_passing import MessagePassing

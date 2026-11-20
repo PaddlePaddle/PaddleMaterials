@@ -30,8 +30,18 @@ class _Sortcut(paddle.nn.Layer):
             instructions += [tuple(range(i, i + len(irreps_out)))]
             i += len(irreps_out)
         assert len(irreps_in) == i, (len(irreps_in), i)
-        irreps_in, p, _ = paddle.sort(x=irreps_in), paddle.argsort(x=irreps_in)
-        instructions = [tuple(p[i] for i in x) for x in instructions]
+        # Python-side (l, p) stable sort of the segments, replacing the
+        # paddle.sort call that cannot consume Irreps objects.
+        segments = sorted(
+            ((ir, i, mul) for i, (mul, ir) in enumerate(irreps_in)),
+            key=lambda t: (t[0].l, t[0].p),
+        )
+        irreps_in = o3.Irreps([(mul, ir) for ir, i, mul in segments])
+        inv = tuple(i for _, i, _ in segments)
+        perm = [0] * len(inv)
+        for k, i in enumerate(inv):
+            perm[i] = k
+        instructions = [tuple(perm[i] for i in x) for x in instructions]
         self.cut = Extract(irreps_in, self.irreps_outs, instructions)
         self.irreps_in = irreps_in.simplify()
 
@@ -92,7 +102,8 @@ class Gate(paddle.nn.Layer):
     """
 
     def __init__(
-        self, irreps_scalars, act_scalars, irreps_gates, act_gates, irreps_gated
+        self, irreps_scalars, act_scalars, irreps_gates, act_gates, irreps_gated,
+        sample_stream: str = "paddle",
     ):
         super().__init__()
         irreps_scalars = o3.Irreps(irreps_scalars)
@@ -113,9 +124,13 @@ class Gate(paddle.nn.Layer):
         self.sc = _Sortcut(irreps_scalars, irreps_gates, irreps_gated)
         self.irreps_scalars, self.irreps_gates, self.irreps_gated = self.sc.irreps_outs
         self._irreps_in = self.sc.irreps_in
-        self.act_scalars = Activation(irreps_scalars, act_scalars)
+        self.act_scalars = Activation(
+            irreps_scalars, act_scalars, sample_stream=sample_stream
+        )
         irreps_scalars = self.act_scalars.irreps_out
-        self.act_gates = Activation(irreps_gates, act_gates)
+        self.act_gates = Activation(
+            irreps_gates, act_gates, sample_stream=sample_stream
+        )
         irreps_gates = self.act_gates.irreps_out
         self.mul = o3.ElementwiseTensorProduct(irreps_gated, irreps_gates)
         irreps_gated = self.mul.irreps_out

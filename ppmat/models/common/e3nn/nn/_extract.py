@@ -49,31 +49,33 @@ class Extract(paddle.nn.Layer):
     def forward(self, x):
         assert x.shape[-1] == self.irreps_in.dim, "invalid input shape"
 
-        out = []
-        for irreps in self.irreps_outs:
-            out.append(paddle.zeros(list(x.shape[:-1]) + [irreps.dim], dtype=x.dtype))
-        for i, (irreps_out, ins) in enumerate(zip(self.irreps_outs, self.instructions)):
-            if ins == tuple(range(len(self.irreps_in))):
-                out[i] = paddle.assign(x)
+        # Assemble each output from slices joined along the last axis;
+        # slice/concat keep the double-grad path of derivative-output
+        # models alive where in-place scatter assignment does not.
+        outs = []
+        for irreps_out, ins in zip(self.irreps_outs, self.instructions):
+            if tuple(ins) == tuple(range(len(self.irreps_in))):
+                outs.append(x)
+                continue
+            pieces = []
+            for s_out, i_in in zip(irreps_out.slices(), ins):
+                i_start = self.irreps_in[:i_in].dim
+                i_len = self.irreps_in[i_in].dim
+                pieces.append(paddle.slice(x, [-1], [i_start], [i_start + i_len]))
+            if len(pieces) > 1:
+                outs.append(paddle.concat(pieces, axis=-1))
+            elif len(pieces) == 1:
+                outs.append(pieces[0])
             else:
-                for s_out, i_in in zip(irreps_out.slices(), ins):
-                    i_start = self.irreps_in[:i_in].dim
-                    i_len = self.irreps_in[i_in].dim
-                    x_slice = x.slice([-1], [i_start], [i_start + i_len])
-                    if len(out[i].shape) == 1:
-                        out[i][s_out.start : s_out.stop] = x_slice
-                    else:
-                        idx = [slice(None)] * (
-                            len(out[i].shape) - 1
-                        )  
-                        idx.append(
-                            slice(s_out.start, s_out.stop)
-                        )  
-                        out[i][tuple(idx)] = x_slice
+                outs.append(
+                    paddle.zeros(
+                        list(x.shape[:-1]) + [irreps_out.dim], dtype=x.dtype
+                    )
+                )
 
-        if self.squeeze_out and len(out) == 1:
-            return out[0]
-        return tuple(out)
+        if self.squeeze_out and len(outs) == 1:
+            return outs[0]
+        return tuple(outs)
 
 
 class ExtractIr(Extract):

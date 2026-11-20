@@ -21,8 +21,8 @@ import numpy as np
 import paddle
 
 from . import _keys as KEY
-from .e3nn.o3 import FullTensorProduct
-from .e3nn.o3 import Irreps
+from ppmat.models.common.e3nn.o3 import FullTensorProduct
+from ppmat.models.common.e3nn.o3 import Irreps
 
 
 class AverageNumber:
