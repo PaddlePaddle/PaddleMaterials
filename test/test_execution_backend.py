@@ -180,6 +180,7 @@ def test_models_accepting_a_backend_implement_the_protocol():
         ("DiffCSP", "_runtime_decode"),
         ("MatterGen", "_runtime_denoise"),
         ("MatterGenWithCondition", "_runtime_denoise"),
+        ("MiAD", "_runtime_decode"),
     ],
 )
 def test_split_runtime_boundaries_use_standard_private_names(model_name, method_name):

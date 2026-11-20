@@ -19,12 +19,14 @@ import paddle  # noqa
 from ppmat.metrics.csp_metric import CSPMetric
 from ppmat.metrics.diffnmr_streaming_adapter import DiffNMRStreamingAdapter
 from ppmat.metrics.sfin_metric import SFINStreamingAdapter
+from ppmat.metrics.sun_metric_utils import SUNMetric
 
 __all__ = [
     "build_metric",
     "CSPMetric",
     "DiffNMRStreamingAdapter",
     "SFINStreamingAdapter",
+    "SUNMetric",
     # "DiffNMRMetric",
     # "NLL", "CrossEntropyMetric", "SumExceptBatchMetric", "SumExceptBatchKL",
 ]
