@@ -27,6 +27,7 @@ from typing import Optional
 from typing import Union
 
 import numpy as np
+from tqdm import tqdm
 
 from ppmat.datasets.build_structure import BuildStructure
 from ppmat.metrics.streaming_base import StreamingMetricBase
@@ -58,15 +59,13 @@ def _match_against(
     symmetric: bool = False,
     dynamic: bool = False,
 ) -> List[bool]:
-    from tqdm import tqdm
-
     results = []
     for struct in tqdm(structures, desc="Matching structures"):
         if struct is None:
             results.append(False)
             continue
-        h = str(sorted(struct.atomic_numbers))
-        refs = reference_by_comp.get(h)
+        composition_key = str(sorted(struct.atomic_numbers))
+        refs = reference_by_comp.get(composition_key)
         if refs is None:
             results.append(True)
         else:
@@ -77,7 +76,7 @@ def _match_against(
             else:
                 results.append(True)
         if dynamic and results[-1]:
-            reference_by_comp[h].append(struct)
+            reference_by_comp[composition_key].append(struct)
     return results
 
 

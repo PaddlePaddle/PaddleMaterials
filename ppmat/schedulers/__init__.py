@@ -16,15 +16,15 @@ import copy
 from typing import Dict
 
 import ppmat.schedulers.scheduling_wrapped_sde_ve as scheduling_wrapped_sde_ve  # noqa
+from ppmat.schedulers.scheduling_cosine_ddpm import CosineDDPMScheduler
 from ppmat.schedulers.scheduling_d3pm import D3PMScheduler
+from ppmat.schedulers.scheduling_d3pm_uniform import D3PMUniformScheduler
 from ppmat.schedulers.scheduling_ddpm import DDPMScheduler
 from ppmat.schedulers.scheduling_diffprior import NoiseScheduler
 from ppmat.schedulers.scheduling_lattice_vp import LatticeVPSDEScheduler
-from ppmat.schedulers.scheduling_miad import CosineDDPMScheduler
-from ppmat.schedulers.scheduling_miad import D3PMUniformScheduler
-from ppmat.schedulers.scheduling_miad import WrappedVESDEPCScheduler
 from ppmat.schedulers.scheduling_sde_ve import ScoreSdeVeScheduler
 from ppmat.schedulers.scheduling_sde_ve import ScoreSdeVeSchedulerWrapped
+from ppmat.schedulers.scheduling_wrapped_ve_pc import WrappedVESDEPCScheduler
 
 NumAtomsVarianceAdjustedWrappedVESDE = (
     scheduling_wrapped_sde_ve.NumAtomsVarianceAdjustedWrappedVESDE
