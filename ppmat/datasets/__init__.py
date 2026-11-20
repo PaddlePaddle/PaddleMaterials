@@ -51,6 +51,8 @@ from ppmat.datasets.msd_nmr_dataset import MSDnmrinfos
 from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
 from ppmat.datasets.oc20_s2ef_dataset import OC20S2EFDataset  # noqa
 from ppmat.datasets.omol25_dataset import OMol25Dataset
+from ppmat.datasets.propmolflow_dataset import PropMolFlowDataset
+from ppmat.datasets.propmolflow_dataset import PropMolFlowSamplingDataset
 from ppmat.datasets.qm9_dataset import QM9Dataset  # noqa
 from ppmat.datasets.sfin_dataset import SFINDataset
 from ppmat.datasets.split_mptrj_data import none_to_zero
@@ -79,6 +81,8 @@ __all__ = [
     "SFINDataset",
     "OMol25Dataset",
     "MD17Dataset",
+    "PropMolFlowDataset",
+    "PropMolFlowSamplingDataset",
 ]
 
 INFO_CLASS_REGISTRY: Dict[str, type] = {
