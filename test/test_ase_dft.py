@@ -88,7 +88,7 @@ index element x y z
                 species=[6],
                 num_l=2,
             )
-            self.assertEqual(batch["edge_index"].shape, (2, 9))
+            self.assertEqual(list(batch["edge_index"].shape), [2, 9])
             self.assertEqual(batch["sub_edge_ang"].shape[-1], 4)
 
             orbital = [

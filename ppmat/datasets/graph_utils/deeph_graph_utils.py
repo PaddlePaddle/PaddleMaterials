@@ -23,8 +23,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from ppmat.models.deeph.lcmp import build_lcmp_subgraph
-from ppmat.utils.io import load_deeph_matrices
+from ppmat.datasets.graph_utils.deeph_io import load_deeph_matrices
+from ppmat.datasets.graph_utils.deeph_lcmp import build_lcmp_subgraph
 
 
 def periodic_image_ranges(frac_coords, lattice, radius):

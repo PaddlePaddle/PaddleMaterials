@@ -21,12 +21,13 @@ import numpy as np
 from pymatgen.core.structure import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 
-from ppmat.models.deeph.graph_utils import build_deeph_graph
-from ppmat.models.deeph.graph_utils import periodic_image_ranges
+from ppmat.datasets.graph_utils.deeph_graph_utils import build_deeph_graph
+from ppmat.datasets.graph_utils.deeph_graph_utils import periodic_image_ranges
+from ppmat.models.common.graph_converter import FindPointsInSpheres
 
 
 class DeepHGraphConverter:
-    """Convert a PaddleMaterials structure graph to a DeepH Hamiltonian graph."""
+    """Build DeepH dataset features using the common periodic graph converter."""
 
     def __init__(
         self,
@@ -41,10 +42,20 @@ class DeepHGraphConverter:
         target="hamiltonian",
         huge_structure=False,
         if_new_sp=False,
+        orbital=None,
+        species=None,
+        neighbor_cfg=None,
     ):
         self.radius = radius
         self.max_num_nbr = max_num_nbr
-        self.default_dtype = default_dtype
+        self.default_dtype = np.dtype(default_dtype).type
+        self.orbital = orbital
+        self.species = species
+        self.neighbor_converter = (
+            None
+            if create_from_DFT
+            else FindPointsInSpheres(**(neighbor_cfg or {"cutoff": radius}))
+        )
         self.interface = interface
         self.num_l = num_l
         self.create_from_DFT = create_from_DFT
@@ -81,7 +92,9 @@ class DeepHGraphConverter:
                 self.radius,
             )
             return np.asarray(list(product(*ranges)), dtype=default_dtype)
-        return build_deeph_graph(
+        if converter_graph is None and self.neighbor_converter is not None:
+            converter_graph = self.neighbor_converter(structure)
+        graph = build_deeph_graph(
             np.asarray(structure.cart_coords, dtype=default_dtype),
             np.asarray(structure.atomic_numbers, dtype=np.int64),
             os.path.basename(folder),
@@ -99,25 +112,59 @@ class DeepHGraphConverter:
             converter_graph=converter_graph,
         )
 
+        if self.orbital is not None and self.interface == "npz":
+            self._make_hamiltonian_label(graph)
+        return graph
+
+    def _make_hamiltonian_label(self, graph):
+        """Select supervised orbital entries from Hamiltonian matrix blocks."""
+        if not np.all(graph.term_mask):
+            raise ValueError("Graph contains edges without Hamiltonian labels.")
+        orbital = self.orbital
+        spinful = graph.spinful
+        out_fea_len = len(orbital) * 8 if spinful else len(orbital)
+        values = graph.term_real
+        mask = np.zeros((graph.edge_attr.shape[0], out_fea_len), dtype=bool)
+        label = np.zeros(mask.shape, dtype=values.dtype)
+        species_i = graph.x[graph.edge_index[0]]
+        species_j = graph.x[graph.edge_index[1]]
+        for index, orbital_dict in enumerate(orbital):
+            for species_pair, (orbital_i, orbital_j) in orbital_dict.items():
+                number_i, number_j = map(int, species_pair.split())
+                condition = (species_i == number_i) & (species_j == number_j)
+                if spinful:
+                    columns = slice(8 * index, 8 * (index + 1))
+                    mask[:, columns] = condition[:, None]
+                    label[:, columns] = np.where(
+                        condition[:, None], values[:, orbital_i, orbital_j], 0
+                    )
+                else:
+                    mask[:, index] |= condition
+                    label[:, index] += np.where(
+                        condition, values[:, orbital_i, orbital_j], 0
+                    )
+        graph.mask = mask
+        graph.label = label
+        del graph.term_mask
+        del graph.term_real
+
     def to_model_input(self, graph, structure, folder, species=None):
         """Convert a DeepH graph and its unchanged structure to model arrays."""
         atomic_numbers = np.asarray(structure.atomic_numbers, dtype=np.int64)
+        species = self.species if species is None else species
         if species is None:
-            atom_features = np.asarray(graph.x, dtype=np.int64)
-        else:
-            species_to_index = {
-                int(number): index for index, number in enumerate(species)
-            }
-            unknown_species = sorted(set(atomic_numbers) - set(species_to_index))
-            if unknown_species:
-                raise ValueError(
-                    "DeepH structure contains species missing from the model: "
-                    f"{unknown_species}"
-                )
-            atom_features = np.asarray(
-                [species_to_index[int(number)] for number in atomic_numbers],
-                dtype=np.int64,
+            raise ValueError("Configure species in checkpoint embedding order.")
+        species_to_index = {int(number): index for index, number in enumerate(species)}
+        unknown_species = sorted(set(atomic_numbers) - set(species_to_index))
+        if unknown_species:
+            raise ValueError(
+                "DeepH structure contains species missing from the model: "
+                f"{unknown_species}"
             )
+        atom_features = np.asarray(
+            [species_to_index[int(number)] for number in atomic_numbers],
+            dtype=np.int64,
+        )
         subgraph = graph.subgraph_dict
         model_input = {
             "x": atom_features,

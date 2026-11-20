@@ -21,6 +21,7 @@ from typing import Optional
 
 from omegaconf import OmegaConf
 
+from ppmat.datasets.graph_utils.deeph_graph_converter import DeepHGraphConverter
 from ppmat.models.chgnet.chgnet import CHGNet
 from ppmat.models.chgnet.chgnet_graph_converter import CHGNetGraphConverter
 from ppmat.models.comformer.comformer import iComformer
@@ -30,7 +31,6 @@ from ppmat.models.common.graph_converter import FindPointsInSpheres
 from ppmat.models.common.graph_converter import MolecularGraphConverter
 from ppmat.models.common.graph_converter import RadiusGraphConverter
 from ppmat.models.deeph.deeph import DeepHHamiltonian
-from ppmat.models.deeph.deeph_graph_converter import DeepHGraphConverter
 from ppmat.models.diffcsp.diffcsp import DiffCSP
 from ppmat.models.diffcsp.diffcsp import DiffCSPWithType
 from ppmat.models.diffnmr.diffnmr import DiffNMR

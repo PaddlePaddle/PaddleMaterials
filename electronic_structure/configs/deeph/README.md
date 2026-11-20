@@ -34,115 +34,62 @@ $$
 {\sum_{(i,j),k} M_{ij,k}}.
 $$
 
-The training config validates the non-spin graphene Hamiltonian path with
-`interface=npz`, `target=hamiltonian`, and `if_lcmp_graph=True`. Both
-radius-based graphs (`create_from_DFT=False`) and DFT matrix sparsity graphs
-(`create_from_DFT=True`) are supported. Label-free inference uses
-`interface=npz_rc_only` with local coordinates generated from OpenMX overlap
-blocks.
-
 ## Results
 
-<table>
-    <thead>
-        <tr>
-            <th nowrap="nowrap">Model Name</th>
-            <th nowrap="nowrap">Dataset</th>
-            <th nowrap="nowrap">Forward max diff</th>
-            <th nowrap="nowrap">Train align diff</th>
-            <th nowrap="nowrap">Test loss</th>
-            <th nowrap="nowrap">Compiler speedup</th>
-            <th nowrap="nowrap">Config</th>
-            <th nowrap="nowrap">Checkpoint | Log</th>
-        </tr>
-    </thead>
-    <tbody>
-        <tr>
-            <td nowrap="nowrap">deeph_graphene</td>
-            <td nowrap="nowrap">graphene</td>
-            <td nowrap="nowrap">1.1444e-05</td>
-            <td nowrap="nowrap">4.0531e-06</td>
-            <td nowrap="nowrap">0.01072441</td>
-            <td nowrap="nowrap">88.9434%</td>
-            <td nowrap="nowrap"><a href="deeph_graphene.yaml">deeph_graphene</a></td>
-            <td nowrap="nowrap"><a href="https://pan.baidu.com/s/1dkXlzYV_3DLQugoQDKjsbA?pwd=vi6r">deeph_bce_handoff</a> (pwd: vi6r)</td>
-        </tr>
-        <tr>
-            <td nowrap="nowrap">deeph_tbg_subset</td>
-            <td nowrap="nowrap">TBG_subset</td>
-            <td nowrap="nowrap">1.3351e-05</td>
-            <td nowrap="nowrap">1.6809e-05</td>
-            <td nowrap="nowrap">-</td>
-            <td nowrap="nowrap">-</td>
-            <td nowrap="nowrap">-</td>
-            <td nowrap="nowrap">alignment evidence</td>
-        </tr>
-    </tbody>
-</table>
+| Model | Dataset | Test loss (MSE) | Config | Checkpoint |
+| --- | --- | --- | --- | --- |
+| DeepH | Graphene | 0.01068 | [deeph_graphene](deeph_graphene.yaml) | [Weights and data](https://pan.baidu.com/s/1dkXlzYV_3DLQugoQDKjsbA?pwd=vi6r) (code: vi6r) |
 
-**Metric notes:** `Train align diff` reports the step-1 loss difference against
-the original DeepH reference implementation. The graphene supervised metric
-alignment has absolute `test_loss` difference `1.0801e-04`. Compiler speedup is
-measured by comparing Paddle dynamic evaluation latency (`21.6952 ms`) with
-`to_static`/CINN evaluation latency (`11.4824 ms`).
+The 450 Graphene structures are split into 270 training, 90 validation and
+90 test samples using the fixed [split manifest](graphene_split.json), generated
+with seed 42.
 
-## Command
+## Data preparation
 
-### Training
+Extract `deeph_bce_handoff.zip` from the link above. Copy
+`dataset/graphene_dataset/processed/` to `data/deeph/graphene/processed/`
+and `pretrained_model/best.pdparams` to `data/deeph/graphene/best.pdparams`.
+Only the Graphene dataset is needed for this configuration.
+
+## Training
+
+Run from the repository root after [installing PaddleMaterials](../../../README.md).
+This example was tested with PaddlePaddle GPU 3.2.2. The OpenMX inference
+workflow additionally requires `h5py`.
 
 ```bash
 python electronic_structure/train.py \
   -c electronic_structure/configs/deeph/deeph_graphene.yaml
 ```
 
-### Validation
-
-```bash
-python electronic_structure/train.py \
-  -c electronic_structure/configs/deeph/deeph_graphene.yaml \
-  Global.do_train=False Global.do_eval=True Global.do_test=False \
-  Trainer.pretrained_model_path='data/deeph/graphene/best.pdparams'
-```
-
-### Testing
+## Evaluation
 
 ```bash
 python electronic_structure/train.py \
   -c electronic_structure/configs/deeph/deeph_graphene.yaml \
   Global.do_train=False Global.do_eval=False Global.do_test=True \
-  Trainer.pretrained_model_path='data/deeph/graphene/best.pdparams'
+  Trainer.pretrained_model_path=data/deeph/graphene/best.pdparams
 ```
 
-### Dynamic-to-static / CINN evaluation
+## CINN evaluation
+
+Use FP32 matrix multiplication for matching eager and compiled predictions:
 
 ```bash
-FLAGS_use_cinn=1 python electronic_structure/train.py \
+NVIDIA_TF32_OVERRIDE=0 python electronic_structure/train.py \
   -c electronic_structure/configs/deeph/deeph_graphene.yaml \
-  Global.do_train=False Global.do_eval=True Global.do_test=False \
-  Trainer.pretrained_model_path='data/deeph/graphene/best.pdparams'
+  Global.do_train=False Global.do_eval=False Global.do_test=True \
+  Trainer.pretrained_model_path=data/deeph/graphene/best.pdparams \
+  Execution.backend=cinn
 ```
 
-### OpenMX DFT inference
+On an RTX 3090 with PaddlePaddle 3.2.2, a single Graphene sample took
+10.47 ms in eager mode and 7.70 ms with CINN (5 warmup steps, 20 timed steps,
+GPU synchronization after each step). The maximum output difference was
+`1.15e-5`. These timings exclude graph preparation and external DFT calculation.
 
-DeepH inference first runs the overlap-only OpenMX calculation through ASE,
-parses its sparse overlap blocks, constructs the LCMP graph, runs the Paddle
-checkpoint, and writes the predicted Hamiltonian. Configure the external DFT
-software before launching ppmatSim:
-
-```bash
-export OPENMX_DFT_DATA_PATH=/path/to/DFT_DATA19
-
-python ppmatSim/main.py --config-name deeph_openmx \
-  Model.config_path=electronic_structure/configs/deeph/deeph_graphene.yaml \
-  Model.checkpoint_path=data/deeph/graphene/best.pdparams \
-  Calculator.command='mpirun -np 4 /path/to/openmx_overlap' \
-  System.file_path=/path/to/inference_cifs
-```
-
-For each input structure, the workflow saves the raw OpenMX calculation,
-processed geometry, `overlaps.npz`, `rc.npz`, and the predicted `rh_pred.npz`
-under `deeph_dft_results/<sample_id>/`. The supplied graphene model supports
-carbon structures with the OpenMX `C6.0-s2p2d1` basis.
+For OpenMX calculation and Hamiltonian export, see
+[DeepH inference](../../../ppmatSim/configs/deeph/README.md).
 
 ## Citation
 

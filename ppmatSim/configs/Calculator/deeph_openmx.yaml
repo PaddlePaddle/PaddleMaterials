@@ -5,6 +5,8 @@ calculator_kwargs:
   xc: PBE
   scf_kgrid: [1, 1, 1]
   scf_energycutoff: 200
+  definition_of_atomic_species:
+    - [C, C6.0-s2p2d1, C_PBE19]
 command: null
 output_filename: openmx.log
 overlap_pattern: output/overlaps_*.h5

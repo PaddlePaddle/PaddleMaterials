@@ -233,7 +233,6 @@ class DeepHDFTInferenceTask:
         species,
         num_l,
         orbital=None,
-        orbital_config_path=None,
         output_dir="deeph_dft_results",
         dtype="float32",
         run_dft=True,
@@ -241,7 +240,6 @@ class DeepHDFTInferenceTask:
     ):
         if orbital is not None and OmegaConf.is_config(orbital):
             orbital = OmegaConf.to_container(orbital, resolve=True)
-        self.orbital_config_path = orbital_config_path
         self.orbital = orbital
         self.species = list(species)
         self.num_l = num_l
@@ -254,7 +252,6 @@ class DeepHDFTInferenceTask:
         logger.info("Run OpenMX overlap calculation and Paddle DeepH inference.")
         interface_obj.run_deeph_inference(
             structures=structures,
-            orbital_config_path=self.orbital_config_path,
             orbital=self.orbital,
             species=self.species,
             num_l=self.num_l,
@@ -329,7 +326,6 @@ class DeepHDFTCalculator:
         run_dft,
         processed_dirs,
         orbital=None,
-        orbital_config_path=None,
     ):
         if not run_dft and processed_dirs is None:
             raise ValueError("processed_dirs is required when run_dft=False.")
@@ -337,10 +333,7 @@ class DeepHDFTCalculator:
             raise ValueError("processed_dirs and structures must have the same length.")
 
         if orbital is None:
-            if orbital_config_path is not None:
-                orbital = self.predictor.load_orbital_config(orbital_config_path)
-            else:
-                orbital = self.predictor.config["DeepH"]["basic"]["orbital"]
+            raise ValueError("Configure the orbital mapping in the inference task.")
         os.makedirs(output_dir, exist_ok=True)
         for index, structure in enumerate(structures):
             sample_dir = os.path.join(output_dir, f"{index:06d}")

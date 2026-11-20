@@ -19,7 +19,9 @@ import paddle.nn.functional as F
 from paddle import nn
 
 from ppmat.losses import MaskMSELoss
-from ppmat.utils.scatter import scatter_sum
+from ppmat.models.common.runtime import RuntimeMixin
+from ppmat.models.common.runtime import runtime_boundary
+from ppmat.utils.scatter import scatter_sum_first_order
 
 
 class GraphLayerNorm(nn.Layer):
@@ -39,14 +41,16 @@ class GraphLayerNorm(nn.Layer):
         num_channels = x.shape[-1]
 
         ones = paddle.ones([x.shape[0], 1], dtype=x.dtype)
-        count = scatter_sum(ones, batch, dim=0, dim_size=batch_size)
+        count = scatter_sum_first_order(ones, batch, dim_size=batch_size)
         norm = count * float(num_channels)
 
-        summed = scatter_sum(x, batch, dim=0, dim_size=batch_size)
+        summed = scatter_sum_first_order(x, batch, dim_size=batch_size)
         mean = paddle.sum(summed, axis=-1, keepdim=True) / norm
         x_centered = x - paddle.gather(mean, batch, axis=0)
 
-        var = scatter_sum(x_centered * x_centered, batch, dim=0, dim_size=batch_size)
+        var = scatter_sum_first_order(
+            x_centered * x_centered, batch, dim_size=batch_size
+        )
         var = paddle.sum(var, axis=-1, keepdim=True) / norm
         out = x_centered / paddle.sqrt(paddle.gather(var, batch, axis=0) + self.eps)
         return out * self.weight + self.bias
@@ -110,7 +114,7 @@ class CGConv(nn.Layer):
             out = out * paddle.exp(-(distance**n) / (sigma**n) / 2.0).reshape(
                 [-1, 1]
             )
-        out = scatter_sum(out, col, dim=0, dim_size=x.shape[0])
+        out = scatter_sum_first_order(out, col, dim_size=x.shape[0])
         if self.ln is not None:
             out = self.ln(out, batch)
         return out + x
@@ -201,13 +205,13 @@ class LCMPLayer(nn.Layer):
             out = out * paddle.exp(-(edge_distance**n) / (sigma**n) / 2.0).reshape(
                 [-1, 1]
             )
-        out = scatter_sum(out, sub_index, dim=0, dim_size=num_edge * 2)
+        out = scatter_sum_first_order(out, sub_index, dim_size=num_edge * 2)
         out = paddle.reshape(out, [num_edge, 2, -1])
         out = self.e_lin(paddle.concat([out[:, 0, :], out[:, 1, :], edge_fea], axis=-1))
         return out
 
 
-class DeepHHamiltonian(nn.Layer):
+class DeepHHamiltonian(RuntimeMixin, nn.Layer):
     def __init__(
         self,
         num_species,
@@ -219,15 +223,16 @@ class DeepHHamiltonian(nn.Layer):
         if_exp=True,
         normalization="LayerNorm",
         target_name="label",
-        loss_eps=1e-8,
+        execution_backend="eager",
+        runtime_options=None,
         **kwargs,
     ):
         super().__init__()
+        self._init_runtime(execution_backend, runtime_options)
         self.num_species = num_species
         self.num_orbital = num_orbital
         self.num_l = num_l
         self.target_name = target_name
-        self.loss_eps = loss_eps
 
         self.embed = nn.Embedding(num_species + 5, in_atom_fea_len)
         self.distance_expansion = GaussianBasis(0.0, gauss_stop, in_edge_fea_len)
@@ -271,35 +276,8 @@ class DeepHHamiltonian(nn.Layer):
         )
         self.loss_fn = MaskMSELoss()
 
-    @staticmethod
-    def _tensor(data, dtype):
-        if paddle.is_tensor(data):
-            return paddle.cast(data, dtype)
-        return paddle.to_tensor(data, dtype=dtype)
-
-    @classmethod
-    def _prepare_batch(cls, batch):
-        edge_index = cls._tensor(batch["edge_index"], "int64")
-        if len(edge_index.shape) == 2 and edge_index.shape[0] != 2:
-            edge_index = edge_index.transpose([1, 0])
-
-        prepared = {
-            "x": cls._tensor(batch["x"], "int64"),
-            "edge_index": edge_index,
-            "edge_attr": cls._tensor(batch["edge_attr"], "float32"),
-            "batch": cls._tensor(batch["batch"], "int64"),
-            "sub_atom_idx": cls._tensor(batch["sub_atom_idx"], "int64"),
-            "sub_edge_idx": cls._tensor(batch["sub_edge_idx"], "int64"),
-            "sub_edge_ang": cls._tensor(batch["sub_edge_ang"], "float32"),
-            "sub_index": cls._tensor(batch["sub_index"], "int64"),
-        }
-        if "label" in batch:
-            prepared["label"] = cls._tensor(batch["label"], "float32")
-        if "mask" in batch:
-            prepared["mask"] = cls._tensor(batch["mask"], "bool")
-        return prepared
-
-    def forward_backbone(
+    @runtime_boundary("forward")
+    def _forward(
         self,
         atom_attr,
         edge_idx,
@@ -335,9 +313,9 @@ class DeepHHamiltonian(nn.Layer):
             distance,
         )
 
-    def forward(self, batch):
-        batch = self._prepare_batch(batch)
-        pred = self.forward_backbone(
+    def forward(self, batch, return_loss=True, return_prediction=True):
+        assert return_loss or return_prediction
+        pred = self._forward(
             batch["x"],
             batch["edge_index"],
             batch["edge_attr"],
@@ -347,33 +325,14 @@ class DeepHHamiltonian(nn.Layer):
             batch["sub_edge_ang"],
             batch["sub_index"],
         )
-        label = batch[self.target_name]
-        mask = batch["mask"]
-        pred = paddle.reshape(pred, label.shape)
-
-        loss = self.loss_fn(pred, label, mask)
-        pred_dict = {
-            self.target_name: pred,
-        }
-        loss_dict = {
-            "loss": loss,
-        }
+        loss_dict = {}
+        if return_loss:
+            label = batch[self.target_name]
+            pred = paddle.reshape(pred, label.shape)
+            loss_dict["loss"] = self.loss_fn(pred, label, batch["mask"])
+        pred_dict = {self.target_name: pred} if return_prediction else {}
         return {"loss_dict": loss_dict, "pred_dict": pred_dict}
 
+    @paddle.no_grad()
     def predict(self, batch):
-        batch = self._prepare_batch(batch)
-        pred = self.forward_backbone(
-            batch["x"],
-            batch["edge_index"],
-            batch["edge_attr"],
-            batch["batch"],
-            batch["sub_atom_idx"],
-            batch["sub_edge_idx"],
-            batch["sub_edge_ang"],
-            batch["sub_index"],
-        )
-        if batch.get("label") is not None:
-            pred = paddle.reshape(pred, batch["label"].shape)
-        return {
-            self.target_name: pred,
-        }
+        return self.forward(batch, return_loss=False)["pred_dict"]

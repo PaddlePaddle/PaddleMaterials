@@ -12,9 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 import paddle
@@ -22,17 +24,37 @@ from ase import Atoms
 from omegaconf import OmegaConf
 from pymatgen.core.structure import Structure
 
-from ppmat.datasets.collate_fn import DefaultCollator
+from ppmat.datasets.collate_fn import DeepHCollator
 from ppmat.datasets.deeph_dataset import DeepHData
 from ppmat.datasets.deeph_dataset import DeepHDataset
-from ppmat.models.deeph import DeepHGraphConverter
+from ppmat.datasets.graph_utils.deeph_graph_converter import DeepHGraphConverter
+from ppmat.datasets.graph_utils.deeph_lcmp import build_lcmp_subgraph
 from ppmat.models.deeph import DeepHHamiltonian
 from ppmat.predictor.deeph import DeepHPredictor
-from ppmat.utils.io import build_deeph_hamiltonian_blocks
-from ppmat.utils.io import save_deeph_hamiltonian
+from ppmat.predictor.deeph import build_deeph_hamiltonian_blocks
+from ppmat.predictor.deeph import save_deeph_hamiltonian
 
 
 class TestDeepH(unittest.TestCase):
+    def test_lcmp_real_harmonics_follow_deeph_axis_convention(self):
+        edges = np.asarray([[0, 1, 2], [0, 1, 2]], dtype=np.int64)
+        features = np.zeros((3, 10), dtype=np.float32)
+        features[:, 1:4] = np.eye(3)
+        result = build_lcmp_subgraph(
+            edges,
+            features,
+            np.tile(np.eye(3), (3, 1, 1)),
+            [[0], [1], [2]],
+            [[0], [1], [2]],
+            2,
+        )
+        c0 = np.sqrt(1 / (4 * np.pi))
+        c1 = np.sqrt(3 / (4 * np.pi))
+        expected = np.asarray([[c0, 0, c1, 0], [c0, 0, 0, -c1], [c0, -c1, 0, 0]])
+        np.testing.assert_allclose(
+            result["subgraph_edge_ang"], np.repeat(expected, 2, axis=0), atol=1e-6
+        )
+
     def test_deeph_config_can_be_loaded(self):
         config_path = os.path.join(
             "electronic_structure",
@@ -48,9 +70,23 @@ class TestDeepH(unittest.TestCase):
             "DeepHDataset",
         )
         init_params = config["Dataset"]["train"]["dataset"]["__init_params__"]
-        self.assertIn("config", init_params)
-        self.assertNotIn("config_files", init_params)
-        self.assertEqual(len(init_params["config"]["basic"]["orbital"]), 169)
+        self.assertNotIn("DeepH", config)
+        self.assertNotIn("config", init_params)
+        graph_params = init_params["build_graph_cfg"]["__init_params__"]
+        self.assertEqual(len(graph_params["orbital"]), 169)
+        self.assertEqual(
+            graph_params["num_l"], config["Model"]["__init_params__"]["num_l"]
+        )
+        with open(init_params["split_file"]) as file:
+            splits = json.load(file)
+        self.assertEqual(
+            [len(splits[key]) for key in ("train", "val", "test")], [270, 90, 90]
+        )
+        self.assertEqual(len(set(sum(splits.values(), []))), 450)
+        for split in ("train", "val", "test"):
+            self.assertEqual(
+                config["Dataset"][split]["dataset"]["__init_params__"]["split"], split
+            )
 
     def test_deeph_forward(self):
         paddle.seed(42)
@@ -99,8 +135,18 @@ class TestDeepH(unittest.TestCase):
         self.assertIn("loss", output["loss_dict"])
         self.assertIn("label", output["pred_dict"])
         self.assertEqual(list(output["pred_dict"]["label"].shape), [num_edges, 9])
+        model.eval()
+        label_free = {
+            key: value for key, value in batch.items() if key not in {"label", "mask"}
+        }
+        np.testing.assert_allclose(
+            model(label_free, return_loss=False)["pred_dict"]["label"].numpy(),
+            model.predict(label_free)["label"].numpy(),
+            rtol=1e-6,
+            atol=1e-6,
+        )
 
-    def test_deeph_data_uses_default_collator(self):
+    def test_deeph_data_batches_through_paddle_loader(self):
         def sample(num_nodes, edge_index, sub_atom_idx, sub_edge_idx, sub_index):
             num_edges = edge_index.shape[1]
             return DeepHData(
@@ -131,7 +177,19 @@ class TestDeepH(unittest.TestCase):
             np.asarray([0, 2, 5], dtype=np.int64),
         )
 
-        collated = DefaultCollator()([first, second])
+        # Exercise the actual Paddle reader, which cannot transport an opaque
+        # geometric Batch even though calling the collator directly succeeds.
+        loader = paddle.io.DataLoader(
+            [first, second],
+            batch_size=2,
+            collate_fn=DeepHCollator(),
+            num_workers=0,
+            use_shared_memory=False,
+        )
+        batches = list(loader)
+        self.assertEqual(len(batches), 1)
+        collated = batches[0]
+        self.assertIsInstance(collated, dict)
 
         self.assertEqual(collated["batch"].tolist(), [0, 0, 1, 1, 1])
         self.assertEqual(
@@ -153,6 +211,8 @@ class TestDeepH(unittest.TestCase):
         )
         output = model(collated)
         self.assertEqual(output["pred_dict"]["label"].shape, [5, 9])
+        output["loss_dict"]["loss"].backward()
+        self.assertIsNotNone(model.embed.weight.grad)
 
     def test_deeph_prediction_can_export_hamiltonian_npz(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -291,28 +351,34 @@ class TestDeepH(unittest.TestCase):
                 },
             )
             config = {
-                "basic": {
-                    "raw_dir": os.path.join(tmpdir, "raw"),
-                    "graph_dir": os.path.join(tmpdir, "cache"),
-                    "dataset_name": "test",
-                    "interface": "npz",
-                    "target": "hamiltonian",
-                    "orbital": [{"6 6": [0, 0]}],
-                    "seed": 0,
+                "path": os.path.join(tmpdir, "raw"),
+                "cache_path": os.path.join(tmpdir, "cache"),
+                "build_structure_cfg": {
+                    "format": "deeph",
+                    "primitive": False,
+                    "niggli": False,
+                    "canocial": False,
+                    "num_cpus": 1,
                 },
-                "graph": {
-                    "radius": 6.0,
-                    "max_num_nbr": 0,
-                    "create_from_dft": True,
-                    "if_lcmp_graph": True,
+                "build_graph_cfg": {
+                    "__class_name__": "DeepHGraphConverter",
+                    "__init_params__": {
+                        "radius": 6.0,
+                        "max_num_nbr": 0,
+                        "default_dtype": "float32",
+                        "interface": "npz",
+                        "num_l": 2,
+                        "create_from_DFT": True,
+                        "orbital": [{"6 6": [0, 0]}],
+                        "species": [6],
+                    },
                 },
-                "train": {"train_ratio": 1.0, "val_ratio": 0.0, "test_ratio": 0.0},
-                "hyperparameter": {"dtype": "float32"},
-                "network": {"num_l": 2},
             }
 
-            dataset = DeepHDataset(split="train", config=config)
-            cached_dataset = DeepHDataset(split="train", config=config)
+            dataset = DeepHDataset(**config)
+            with mock.patch("ppmat.datasets.deeph_dataset.BuildStructure") as builder:
+                cached_dataset = DeepHDataset(**config)
+                builder.assert_not_called()
 
             self.assertEqual(len(dataset), 1)
             self.assertEqual(dataset[0]["label"].shape, (2, 1))
@@ -321,6 +387,53 @@ class TestDeepH(unittest.TestCase):
             )
             np.testing.assert_allclose(dataset[0]["pos"], raw_positions.T)
             self.assertEqual(len(cached_dataset), 1)
+            split_file = os.path.join(tmpdir, "split.json")
+            with open(split_file, "w") as file:
+                json.dump({"train": ["sample"], "val": [], "test": []}, file)
+            split_dataset = DeepHDataset(**config, split="train", split_file=split_file)
+            self.assertEqual(len(split_dataset), 1)
+            self.assertEqual(
+                len(DeepHDataset(**config, split="test", split_file=split_file)), 0
+            )
+            with open(split_file, "w") as file:
+                json.dump({"train": ["sample"], "val": ["sample"], "test": []}, file)
+            with self.assertRaisesRegex(ValueError, "Duplicate"):
+                DeepHDataset(**config, split="train", split_file=split_file)
+            with open(split_file, "w") as file:
+                json.dump({"train": [], "val": [], "test": []}, file)
+            with self.assertRaisesRegex(ValueError, "cover all"):
+                DeepHDataset(**config, split="train", split_file=split_file)
+            with open(split_file, "w") as file:
+                json.dump({"train": ["missing"], "val": [], "test": []}, file)
+            with self.assertRaisesRegex(ValueError, "missing samples"):
+                DeepHDataset(**config, split="train", split_file=split_file)
+            with open(split_file, "w") as file:
+                json.dump({"train": ["sample"], "val": [], "test": []}, file)
+            relative = DeepHDataset(**config, split="train", split_file="split.json")
+            self.assertEqual(len(relative), 1)
+            download_config = {**config, "path": os.path.join(tmpdir, "absent")}
+            with mock.patch(
+                "ppmat.datasets.deeph_dataset.download.get_datasets_path_from_url",
+                return_value=tmpdir,
+            ) as downloader, mock.patch.object(
+                DeepHDataset, "read_data", return_value=([sample_dir], 1)
+            ) as reader:
+                downloaded = DeepHDataset(
+                    **download_config,
+                    url="https://example.invalid/fixture.zip",
+                    md5="fixture",
+                )
+                downloader.assert_called_once_with(
+                    "https://example.invalid/fixture.zip", "fixture"
+                )
+                reader.assert_called_once_with(os.path.join(tmpdir, "processed"), None)
+                self.assertEqual(len(downloaded), 1)
+            config["build_graph_cfg"]["__init_params__"]["num_l"] = 3
+            rebuilt_dataset = DeepHDataset(**config)
+            self.assertEqual(rebuilt_dataset[0]["sub_edge_ang"].shape[-1], 9)
+            config["build_structure_cfg"]["niggli"] = True
+            with self.assertRaisesRegex(ValueError, "preserve the original"):
+                DeepHDataset(**config)
 
     def test_deeph_predictor_accepts_dft_interface(self):
         predictor = DeepHPredictor()

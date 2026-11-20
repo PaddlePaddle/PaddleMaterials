@@ -14,7 +14,7 @@ defaults:
 hydra:
   job:
     name: deeph_openmx
-    chdir: True
+    chdir: False
   run:
     dir: ./out_${hydra:job.name}/${now:%Y%m%d_%H%M%S}
 
