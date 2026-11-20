@@ -160,3 +160,74 @@ def test_prediction_serialization_converts_arrays_and_tensors():
         "energy": [1.0, 2.0],
         "tensor": [3.0, 4.0],
     }
+
+
+def test_compare_reports_loss_and_metric_differences(tmp_path):
+    comparison = load_script("compare_backends")
+    eager_dir = tmp_path / "eager"
+    cinn_dir = tmp_path / "cinn"
+    eager_dir.mkdir()
+    cinn_dir.mkdir()
+
+    records = {
+        "eager": {
+            "model": "sfin_bf_enhance",
+            "backend": "eager",
+            "status": "passed",
+            "first_seconds": 1.0,
+            "warm_median_seconds": 0.02,
+            "prediction": {"gt_enhance": [[1.0, 2.0]]},
+            "loss": {"loss": 1.0, "psnr": 30.0, "ssim": 0.9},
+        },
+        "cinn": {
+            "model": "sfin_bf_enhance",
+            "backend": "cinn",
+            "status": "passed",
+            "first_seconds": 1.0,
+            "warm_median_seconds": 0.01,
+            "prediction": {"gt_enhance": [[1.0, 2.0]]},
+            "loss": {"loss": 1.1, "psnr": 29.5, "ssim": 0.89},
+        },
+    }
+    for directory, record in (
+        (eager_dir, records["eager"]),
+        (cinn_dir, records["cinn"]),
+    ):
+        (directory / "sfin_bf_enhance.json").write_text(
+            json.dumps(record),
+            encoding="utf-8",
+        )
+
+    summary = comparison.compare(tmp_path, ["sfin_bf_enhance"])
+    row = summary["results"][0]
+
+    assert row["loss_metric_status"] == "passed"
+    assert summary["loss_metric_compared"] == 1
+    assert abs(row["loss_metric"]["loss"]["abs_error"] - 0.1) < 1e-9
+    assert row["loss_metric"]["psnr"]["eager"] == 30.0
+
+    output_path = tmp_path / "comparison.csv"
+    comparison.write_csv(output_path, summary["results"])
+    header = output_path.read_text(encoding="utf-8").splitlines()[0]
+    assert "loss_metric_status" in header
+
+
+def test_collect_loss_requires_a_labeled_graph():
+    benchmark = load_script("benchmark_registered")
+
+    class Model:
+        property_names = ["energy"]
+
+        def forward(self, batch, return_loss=True, return_prediction=True):
+            return {"loss_dict": {"loss": benchmark.paddle.to_tensor(1.0)}}
+
+    class Workflow:
+        model = Model()
+
+    class Graph:
+        y = None
+
+    assert benchmark.collect_loss(Workflow(), "chgnet_mptrj", Graph()) == {}
+
+    Graph.y = benchmark.paddle.to_tensor([1.0])
+    assert benchmark.collect_loss(Workflow(), "chgnet_mptrj", Graph()) == {"loss": 1.0}

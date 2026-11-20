@@ -110,9 +110,7 @@ def compare_predictions(eager, cinn) -> dict:
         metrics for metrics in field_errors.values() if metrics["status"] == "compared"
     ]
     missing_fields = [
-        path
-        for path, metrics in field_errors.items()
-        if metrics["status"] == "missing"
+        path for path, metrics in field_errors.items() if metrics["status"] == "missing"
     ]
     mismatched_fields = [
         path
@@ -149,6 +147,42 @@ def load_results(directory: Path) -> dict[str, dict]:
         path.stem: json.loads(path.read_text(encoding="utf-8"))
         for path in directory.glob("*.json")
     }
+
+
+def compare_scalars(eager, cinn) -> dict:
+    """Compare eager/CINN scalar values such as loss and metric outputs."""
+
+    if not isinstance(eager, dict) or not isinstance(cinn, dict):
+        return {"status": "not_compared", "values": {}}
+
+    values = {}
+    for key in sorted(set(eager) | set(cinn)):
+        if key not in eager or key not in cinn:
+            values[key] = {"status": "missing"}
+            continue
+        left = eager[key]
+        right = cinn[key]
+        if left is None or right is None:
+            values[key] = {"status": "not_compared"}
+            continue
+        absolute = abs(left - right)
+        relative = absolute / max(abs(left), EPSILON)
+        values[key] = {
+            "status": "compared",
+            "eager": left,
+            "cinn": right,
+            "abs_error": absolute,
+            "relative_error": relative,
+        }
+
+    compared = [item for item in values.values() if item["status"] == "compared"]
+    if not values:
+        status = "not_compared"
+    elif len(compared) != len(values):
+        status = "failed"
+    else:
+        status = "passed"
+    return {"status": status, "values": values}
 
 
 def compare(root: Path, models: list[str] | None = None) -> dict:
@@ -200,25 +234,33 @@ def compare(root: Path, models: list[str] | None = None) -> dict:
                 "precision_relative_l2_error": precision["relative_l2_error"],
             }
         )
+        extra = compare_scalars(eager and eager.get("loss"), cinn and cinn.get("loss"))
+        row.update(
+            {
+                "loss_metric_status": extra["status"],
+                "loss_metric": extra["values"],
+            }
+        )
         rows.append(row)
 
     speedups = [row["speedup"] for row in rows if row.get("speedup") is not None]
     precision_statuses = [row["precision_status"] for row in rows]
+    scalar_statuses = [row["loss_metric_status"] for row in rows]
     return {
         "models": len(rows),
         "compared": len(speedups),
         "eager_passed": sum(row["eager_status"] == "passed" for row in rows),
         "cinn_passed": sum(row["cinn_status"] == "passed" for row in rows),
         "faster": sum(speedup > 1 for speedup in speedups),
-        "precision_compared": sum(
-            status == "passed" for status in precision_statuses
-        ),
+        "precision_compared": sum(status == "passed" for status in precision_statuses),
         "precision_failed": sum(
             status in {"failed", "no_arrays"} for status in precision_statuses
         ),
         "precision_not_compared": sum(
             status in {"missing", "not_compared"} for status in precision_statuses
         ),
+        "loss_metric_compared": sum(status == "passed" for status in scalar_statuses),
+        "loss_metric_failed": sum(status == "failed" for status in scalar_statuses),
         "speedup_median": statistics.median(speedups) if speedups else None,
         "speedup_min": min(speedups) if speedups else None,
         "speedup_max": max(speedups) if speedups else None,
@@ -243,6 +285,7 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         "precision_max_abs_error",
         "precision_max_relative_error",
         "precision_relative_l2_error",
+        "loss_metric_status",
     )
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields, extrasaction="ignore")
