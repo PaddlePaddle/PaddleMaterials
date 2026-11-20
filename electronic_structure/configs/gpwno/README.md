@@ -121,7 +121,7 @@ $$
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">15hour33min</td>
             <td nowrap="nowrap"><a href="gpwno_md17_benzene.yaml">gpwno_md17_benzene</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_benzene.zip">Checkpoint</a> | -</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_benzene.zip">Checkpoint</a> | <a href="logs/gpwno_md17_benzene.log">Log</a></td>
         </tr>
         <tr>
             <td nowrap="nowrap">gpwno_md17_ethane</td>
@@ -133,7 +133,7 @@ $$
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">52hour18min</td>
             <td nowrap="nowrap"><a href="gpwno_md17_ethane.yaml">gpwno_md17_ethane</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_ethane.zip">Checkpoint</a> | -</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_ethane.zip">Checkpoint</a> | <a href="logs/gpwno_md17_ethane.log">Log</a></td>
         </tr>
         <tr>
             <td nowrap="nowrap">gpwno_qm9</td>
@@ -145,7 +145,7 @@ $$
             <td nowrap="nowrap">3</td>
             <td nowrap="nowrap">36hour33min</td>
             <td nowrap="nowrap"><a href="gpwno_qm9.yaml">gpwno_qm9</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_qm9.zip">Checkpoint</a> | -</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_qm9.zip">Checkpoint</a> | <a href="logs/gpwno_qm9.log">Log</a></td>
         </tr>
         <tr>
             <td nowrap="nowrap">gpwno_mp</td>
@@ -157,7 +157,7 @@ $$
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">37hour46min</td>
             <td nowrap="nowrap"><a href="gpwno_mp.yaml">gpwno_mp</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_mp.zip">Checkpoint</a> | -</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_mp.zip">Checkpoint</a> | <a href="logs/gpwno_mp.log">Log</a></td>
         </tr>
     </tbody>
 </table>
@@ -165,8 +165,39 @@ $$
 Each checkpoint link downloads a model package containing a matching YAML and
 `checkpoints/best.pdparams`. The packages contain migrated training checkpoints;
 the historical results above are not a new evaluation of these packages.
+The linked [original training logs](logs/README.md) include the historical
+validation and test summaries. Benzene records 10 completed epochs followed by
+an incomplete epoch 11; the MP and QM9 logs resume at epoch 2. Training times
+are the previously reported totals, not durations reconstructed from these
+partial logs. The validation column uses the epoch-10 training validation for
+benzene and epoch-2 training validation for QM9; ethane and MP use the final
+standalone validation. Validation may vary between passes because grid points
+are sampled.
 Loading and sampled-grid inference have been checked with the current code,
 but these checks do not establish full-grid test accuracy.
+
+---
+
+### Preparing model packages
+
+The GPWNO ZIPs must start with an explicit `<model_name>/` directory entry so
+that the existing shared ZIP downloader returns a valid extraction directory.
+To prepare compatible copies without changing the YAML or checkpoint bytes:
+
+```bash
+python electronic_structure/configs/gpwno/prepare_model_packages.py \
+  --source-dir path/to/original_packages \
+  --output-dir path/to/compatible_packages
+```
+
+The output directory must contain no existing ZIPs with these names. The
+[compatible packages for BCE replacement](https://pan.baidu.com/s/1gD1Lfi3VumEfjxxPXfCb9w?pwd=gp26)
+(extraction code: `gp26`) include `SHA256SUMS`. These copies have been uploaded
+to Baidu Netdisk; replacement of the existing BCE packages is still pending.
+Replace the hosted packages with these copies before publishing this change. When
+using an existing cache, remove the corresponding cached ZIP and extracted
+model directory before downloading the replacement. Local configuration and
+checkpoint paths can also be passed directly to the prediction command below.
 
 ---
 

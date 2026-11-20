@@ -9,11 +9,8 @@ from ppmat.utils.model_package import get_model_config_path
 from ppmat.utils.model_package import resolve_model_package_dir
 
 
-@pytest.mark.parametrize("directory_entry", [False, True])
 @pytest.mark.parametrize("weights_first", [False, True])
-def test_uncompress_single_directory_preserves_archive_root(
-    tmp_path, directory_entry, weights_first
-):
+def test_uncompress_single_directory_preserves_archive_root(tmp_path, weights_first):
     archive_path = tmp_path / "model.zip"
     members = [
         ("model/checkpoints/best.pdparams", b"weights"),
@@ -22,8 +19,7 @@ def test_uncompress_single_directory_preserves_archive_root(
     if not weights_first:
         members.reverse()
     with zipfile.ZipFile(archive_path, "w") as archive:
-        if directory_entry:
-            archive.writestr("model/", b"")
+        archive.writestr("model/", b"")
         for name, content in members:
             archive.writestr(name, content)
 
@@ -45,6 +41,8 @@ def test_cached_weight_package_supports_flat_and_rooted_layouts(
     archive_path = tmp_path / "model.zip"
     prefix = "model/" if rooted else ""
     with zipfile.ZipFile(archive_path, "w") as archive:
+        if rooted:
+            archive.writestr(prefix, b"")
         archive.writestr(f"{prefix}checkpoints/best.pdparams", b"weights")
         archive.writestr(f"{prefix}model{yaml_suffix}", b"Model: {}")
 
@@ -60,15 +58,11 @@ def test_cached_weight_package_supports_flat_and_rooted_layouts(
         ).read_bytes() == b"weights"
 
 
-@pytest.mark.parametrize("directory_entry", [False, True])
-def test_cached_dataset_archive_preserves_root_directory(
-    tmp_path, monkeypatch, directory_entry
-):
+def test_cached_dataset_archive_preserves_root_directory(tmp_path, monkeypatch):
     monkeypatch.setattr(download, "DATASETS_HOME", str(tmp_path))
     archive_path = tmp_path / "dataset.zip"
     with zipfile.ZipFile(archive_path, "w") as archive:
-        if directory_entry:
-            archive.writestr("dataset/", b"")
+        archive.writestr("dataset/", b"")
         archive.writestr("dataset/train/data.json", b"[]")
         archive.writestr("dataset/val/data.json", b"[]")
 

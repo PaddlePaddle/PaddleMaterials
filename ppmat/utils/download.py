@@ -246,7 +246,8 @@ def _uncompress_file_zip(filepath):
                 files.extract(item, file_dir)
 
         elif _is_a_single_dir(file_list):
-            uncompressed_path = file_dir
+            rootpath = os.path.splitext(file_list[0])[0].split(os.sep)[-1]
+            uncompressed_path = os.path.join(file_dir, rootpath)
 
             for item in file_list:
                 files.extract(item, file_dir)
