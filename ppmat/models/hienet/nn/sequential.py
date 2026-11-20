@@ -27,9 +27,9 @@ from .._const import AtomGraphDataType
 @compile_mode("script")
 class AtomGraphSequential(paddle.nn.Sequential):
     """
-    same as nn.Sequential but with type notation
-    see
-    https://github.com/pytorch/pytorch/issues/52588
+    Same as the base Sequential, with explicit type annotations on the
+    modules mapping. Adapted from the original HIENet implementation
+    (OpenMat/AIRS).
     """
 
     def __init__(

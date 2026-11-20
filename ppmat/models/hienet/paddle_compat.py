@@ -21,7 +21,7 @@ from typing import Optional, Tuple
 
 import paddle
 
-# torch_geometric.typing aliases consumed by the hienet nn modules.
+# Tensor type aliases (Adj, OptTensor, PairTensor) consumed by the hienet nn modules.
 Adj = paddle.Tensor
 OptTensor = Optional[paddle.Tensor]
 PairTensor = Tuple[paddle.Tensor, paddle.Tensor]
