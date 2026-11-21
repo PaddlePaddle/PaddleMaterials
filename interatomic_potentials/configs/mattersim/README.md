@@ -70,6 +70,26 @@ python interatomic_potentials/predict.py --config_path='interatomic_potentials/c
 ```
 
 
+## CINN execution
+
+Forces are differentiated inside the compiled boundary, and SOT capture can split `paddle.grad`
+from its input. When running this model with `Execution.backend=cinn`, set
+`Execution.__init_params__.full_graph=true` so that the whole boundary is captured as one graph:
+
+```yaml
+Execution:
+  backend: cinn
+  __init_params__:
+    full_graph: true
+    dynamic_shape: true  # default
+```
+
+The boundary declares its edge and three-body axes as dynamic. In eval mode these counts can change
+between calls, as they do at every MD or relaxation step, without a new compilation; a new atom
+count still compiles a new program. Set `Execution.__init_params__.dynamic_shape=false` to compile
+one program per input shape instead. Training keeps static shapes, because a training batch also
+changes the atom count. See [CINN execution backend](../../../docs/cinn.md) for details.
+
 ## Citation
 ```
 @article{yang2024mattersim,
