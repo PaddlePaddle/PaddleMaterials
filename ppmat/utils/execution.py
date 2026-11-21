@@ -27,10 +27,36 @@ model-specific adapter and leaves eager models completely unchanged.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from typing import Any
 from typing import Optional
 
+import paddle
+
 DEFAULT_EXECUTION_BACKEND = "eager"
+
+_COMPILED_EXECUTION = False
+
+
+@contextmanager
+def compiled_execution():
+    """Mark the calls inside the block as running through a compiled backend."""
+    global _COMPILED_EXECUTION
+    previous = _COMPILED_EXECUTION
+    _COMPILED_EXECUTION = True
+    try:
+        yield
+    finally:
+        _COMPILED_EXECUTION = previous
+
+
+def in_compiled_execution() -> bool:
+    """Return True while a compiled backend runs or converts the current call.
+
+    SOT capture runs with Paddle in dynamic mode, so compiled runtime calls are
+    marked with ``compiled_execution()``; AST conversion is detected directly.
+    """
+    return _COMPILED_EXECUTION or paddle.base.dygraph.base.in_to_static_mode()
 
 
 def configure_execution_backend(
@@ -106,5 +132,7 @@ def configure_execution_backend(
 
 __all__ = [
     "DEFAULT_EXECUTION_BACKEND",
+    "compiled_execution",
     "configure_execution_backend",
+    "in_compiled_execution",
 ]

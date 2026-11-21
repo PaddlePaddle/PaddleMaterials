@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from collections.abc import Mapping
+from collections.abc import Sequence
 from typing import Any
 
 import paddle
@@ -27,10 +28,21 @@ def compile_cinn(
     function: Callable[..., Any] | paddle.nn.Layer,
     *,
     full_graph: bool = False,
+    input_spec: Sequence[Any] | None = None,
 ) -> Callable[..., Any] | paddle.nn.Layer:
-    """Compile one numerical callable with the CINN backend."""
+    """Compile one numerical callable with the CINN backend.
 
-    return paddle.jit.to_static(function, backend="CINN", full_graph=full_graph)
+    ``input_spec`` lists one entry per argument: a ``paddle.static.InputSpec``
+    for a tensor (``None`` marks a dynamic axis) or the value of a non-tensor
+    argument. Without it, every new input shape traces a new program.
+    """
+
+    return paddle.jit.to_static(
+        function,
+        input_spec=input_spec,
+        backend="CINN",
+        full_graph=full_graph,
+    )
 
 
 class CinnBackend:
@@ -43,14 +55,27 @@ class CinnBackend:
         options: Mapping[str, Any] | None,
     ) -> dict[str, Any]:
         normalized = dict(options or {})
-        unknown = set(normalized) - {"full_graph"}
+        unknown = set(normalized) - {"full_graph", "dynamic_shape"}
         if unknown:
             raise ValueError(f"Unsupported CINN runtime options: {sorted(unknown)}.")
 
         full_graph = normalized.get("full_graph", False)
         if not isinstance(full_graph, bool):
             raise TypeError("CINN runtime option 'full_graph' must be a bool.")
-        return {"full_graph": full_graph}
+        dynamic_shape = normalized.get("dynamic_shape", True)
+        if not isinstance(dynamic_shape, bool):
+            raise TypeError("CINN runtime option 'dynamic_shape' must be a bool.")
+        return {"full_graph": full_graph, "dynamic_shape": dynamic_shape}
+
+    def accepts_input_spec(self, options: Mapping[str, Any]) -> bool:
+        """Whether boundaries with dynamic_dims get an InputSpec.
+
+        Only AST capture (``full_graph=True``) traces the boundary from an
+        InputSpec; SOT capture tracks shapes itself. ``dynamic_shape=False``
+        restores one program per input shape.
+        """
+
+        return bool(options["full_graph"] and options["dynamic_shape"])
 
     def validate(
         self,
@@ -92,8 +117,15 @@ class CinnBackend:
         function: Callable[..., Any] | paddle.nn.Layer,
         *,
         options: Mapping[str, Any],
+        input_spec: Sequence[Any] | None = None,
     ) -> Callable[..., Any] | paddle.nn.Layer:
-        return compile_cinn(function, full_graph=options["full_graph"])
+        if input_spec is None:
+            return compile_cinn(function, full_graph=options["full_graph"])
+        return compile_cinn(
+            function,
+            full_graph=options["full_graph"],
+            input_spec=input_spec,
+        )
 
 
 CINN_BACKEND = CinnBackend()

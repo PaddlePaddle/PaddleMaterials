@@ -404,6 +404,7 @@ def edge_score_to_lattice_score_frac_symmetric(
     edge_index: paddle.Tensor,
     edge_vectors: paddle.Tensor,
     batch: paddle.Tensor,
+    num_structures: Optional[int] = None,
 ) -> paddle.Tensor:
     """Converts a score per edge into a score for the atom coordinates and/or the
     lattice matrix via the chain rule. This method explicitly takes into account the
@@ -421,21 +422,27 @@ def edge_score_to_lattice_score_frac_symmetric(
             each crystal in num_nodes.
         batch (paddle.Tensor, [num_nodes,]): The pointer indicating for each atom which
             molecule in the batch it belongs to.
+        num_structures (int, optional): Number of crystals in the batch. Defaults to
+            batch.max() + 1, which is read from the device.
 
     Returns:
         paddle.Tensor: The predicted lattice score.
     """
     batch_edge = batch[edge_index[0]]
     unit_edge_vectors_cart = edge_vectors / edge_vectors.norm(axis=-1, keepdim=True)
+    if num_structures is None:
+        num_structures = batch.max() + 1
     score_lattice = scatter(
         score_d[:, None, None]
         * (unit_edge_vectors_cart[:, :, None] @ unit_edge_vectors_cart[:, None, :]),
         batch_edge,
         dim=0,
-        dim_size=batch.max() + 1,
+        dim_size=num_structures,
         reduce="add",
     )
-    score_lattice = score_lattice.transpose([0, -1, -2])
+    # Non-negative axes: CINN's fusion analysis indexes the input axes with the raw
+    # perm entries and crashes on negative ones.
+    score_lattice = score_lattice.transpose([0, 2, 1])
     return score_lattice
 
 
@@ -568,7 +575,9 @@ class AutoScaleFit(AutomaticFit):
         """
         if self._fitted:
             return
-        if AutomaticFit.activeVar == self:
+        # Identity check (what `==` did without a custom __eq__): SOT cannot trace
+        # `None == AutoScaleFit` through object.__eq__.
+        if AutomaticFit.activeVar is self:
             nSamples = tuple(y.shape)[0]
             self.variance_in += (
                 paddle.mean(x=paddle.var(x=x, axis=0)).to(dtype="float32") * nSamples
@@ -583,7 +592,7 @@ class AutoScaleFit(AutomaticFit):
         """
         Fit the scaling factor based on the observed variances.
         """
-        if AutomaticFit.activeVar == self:
+        if AutomaticFit.activeVar is self:
             if self.variance_in == 0:
                 raise ValueError(
                     f"Did not track the variable {self._name}. Add observe calls to "
@@ -727,22 +736,13 @@ class EfficientInteractionDownProjection(paddle.nn.Layer):
         he_orthogonal_init(self.weight)
 
     def forward(self, rbf, sph, id_ca, id_ragged_idx):
-        num_edges = tuple(rbf.shape)[1]
         rbf_W1 = paddle.matmul(x=rbf, y=self.weight)
         rbf_W1 = rbf_W1.transpose(perm=[1, 2, 0])
-        if tuple(sph.shape)[0] == 0:
-            Kmax = 0
-        else:
-            Kmax = max(
-                paddle.max(x=id_ragged_idx + 1),
-                paddle.to_tensor(data=0).to(id_ragged_idx.place),
-            )
-        sph2 = paddle.zeros(
-            shape=[num_edges, Kmax, self.num_spherical], dtype=sph.dtype
-        )
-        sph2[id_ca, id_ragged_idx] = sph
-        sph2 = paddle.transpose(x=sph2, perm=dim2perm(sph2.ndim, 1, 2))
-        return rbf_W1, sph2
+        # Return sph per triplet [T, num_spherical]. Padding it to
+        # [E, num_spherical, Kmax] allocates by the data-dependent Kmax, which has to
+        # be copied to the host (a SOT graph break, or a sync per block in a compiled
+        # program); EfficientInteractionBilinear sums over the triplets instead.
+        return rbf_W1, sph
 
 
 class InteractionBlockTripletsOnly(paddle.nn.Layer):
@@ -873,18 +873,26 @@ class EfficientInteractionBilinear(paddle.nn.Layer):
     def forward(self, basis, m, id_reduce, id_ragged_idx):
         rbf_W1, sph = basis
         nEdges = tuple(rbf_W1.shape)[0]
-        if nEdges == 0:
-            logger.warning(f"Zero graph edges found in {self.__class__}")
-            return paddle.zeros(shape=(0, 0))
-        Kmax = max(
-            paddle.max(x=id_ragged_idx) + 1,
-            paddle.to_tensor(data=0).to(id_ragged_idx.place),
+        # sum_k[e] = sum of outer(sph[t], m[t]) over the triplets t of edge e, the
+        # product of the padded [E, S, Kmax] and [E, Kmax, emb] tensors without the
+        # padding. No early return for nEdges == 0 (a branch on a dynamic dim breaks
+        # the SOT graph); zero edges give an empty [0, units_out] result.
+        sum_k = scatter(
+            sph.unsqueeze(-1) * m.unsqueeze(1),
+            id_reduce,
+            dim=0,
+            dim_size=nEdges,
+            reduce="sum",
         )
-        m2 = paddle.zeros(shape=[nEdges, Kmax, self.emb_size], dtype=m.dtype)
-        m2[id_reduce, id_ragged_idx] = m
-        sum_k = paddle.matmul(x=sph, y=m2)
-        rbf_W1_sum_k = paddle.matmul(x=rbf_W1, y=sum_k)
-        m_ca = paddle.matmul(x=rbf_W1_sum_k.transpose(perm=[2, 0, 1]), y=self.weight)
+        # Transposed product (rbf_W1 @ sum_k)^T = sum_k^T @ rbf_W1^T. rbf_W1 is shared
+        # by all interaction blocks; as a plain first operand, CINN's
+        # fuse_parallel_matmul_pass merges these matmuls across blocks although each
+        # block depends on the previous one, which leaves a cycle in the program and
+        # aborts compilation.
+        rbf_W1_sum_k_t = paddle.matmul(
+            x=sum_k, y=rbf_W1, transpose_x=True, transpose_y=True
+        )
+        m_ca = paddle.matmul(x=rbf_W1_sum_k_t.transpose(perm=[1, 0, 2]), y=self.weight)
         m_ca = paddle.sum(x=m_ca, axis=0)
         return m_ca
 
@@ -1189,11 +1197,17 @@ class RBFBasedLatticeUpdateBlockFrac(RBFBasedLatticeUpdateBlock):
         normalize_score: bool = True,
     ) -> paddle.Tensor:
         edge_scores = self.compute_score_per_edge(edge_emb=edge_emb, rbf=rbf)
+        # Static structure count: the per-structure sums below need no device read.
+        num_structures = lattice.shape[0]
         if normalize_score:
+            batch_edge = batch[edge_index[0]]
             num_edges = scatter(
-                paddle.ones_like(x=distance_vec[:, 0]), batch[edge_index[0]]
+                paddle.ones_like(x=distance_vec[:, 0]),
+                batch_edge,
+                dim=0,
+                dim_size=num_structures,
             )
-            edge_scores /= num_edges[batch[edge_index[0]], None]
+            edge_scores /= num_edges[batch_edge].unsqueeze(axis=-1)
         outs = []
         for i in range(self.num_out):
             lattice_update = edge_score_to_lattice_score_frac_symmetric(
@@ -1201,6 +1215,7 @@ class RBFBasedLatticeUpdateBlockFrac(RBFBasedLatticeUpdateBlock):
                 edge_index=edge_index,
                 edge_vectors=distance_vec,
                 batch=batch,
+                num_structures=num_structures,
             )
             outs.append(lattice_update)
         outs = paddle.stack(x=outs, axis=-1).sum(axis=-1)
@@ -1601,11 +1616,12 @@ class GemNetT(paddle.nn.Layer):
         """
         assert lattice is not None
         distorted_lattice = lattice
-        pos = frac_to_cart_coords_with_lattice(
-            frac_coords, num_atoms, lattice=distorted_lattice
-        )
         atomic_numbers = atom_types.cast(dtype="int64")
         if interaction_graph is None:
+            # pos is only needed to build the graph.
+            pos = frac_to_cart_coords_with_lattice(
+                frac_coords, num_atoms, lattice=distorted_lattice
+            )
             interaction_graph = self.generate_interaction_graph(
                 pos,
                 distorted_lattice,
@@ -1687,7 +1703,10 @@ class GemNetT(paddle.nn.Layer):
         # nMolecules = paddle.max(x=batch) + 1
         # E_t = scatter(E_t, batch, dim=0, dim_size=nMolecules, reduce="sum")
         F_st_vec = F_st[:, :, None] * V_st[:, None, :]
-        F_t = scatter(F_st_vec, idx_t, dim=0, dim_size=num_atoms.sum(), reduce="add")
+        # Static atom count; num_atoms.sum() would be read from the device.
+        F_t = scatter(
+            F_st_vec, idx_t, dim=0, dim_size=frac_coords.shape[0], reduce="add"
+        )
         F_t = F_t.squeeze(axis=1)
 
         return h, F_t, lattice_update
@@ -1745,11 +1764,12 @@ class GemNetTCtrl(GemNetT):
     ):
         assert lattice is not None
         distorted_lattice = lattice
-        pos = frac_to_cart_coords_with_lattice(
-            frac_coords, num_atoms, lattice=distorted_lattice
-        )
         atomic_numbers = atom_types.cast(dtype="int64")
         if interaction_graph is None:
+            # pos is only needed to build the graph.
+            pos = frac_to_cart_coords_with_lattice(
+                frac_coords, num_atoms, lattice=distorted_lattice
+            )
             interaction_graph = self.generate_interaction_graph(
                 pos,
                 distorted_lattice,
@@ -1843,7 +1863,10 @@ class GemNetTCtrl(GemNetT):
                 normalize_score=True,
             )
         F_st_vec = F_st[:, :, None] * V_st[:, None, :]
-        F_t = scatter(F_st_vec, idx_t, dim=0, dim_size=num_atoms.sum(), reduce="add")
+        # Static atom count; num_atoms.sum() would be read from the device.
+        F_t = scatter(
+            F_st_vec, idx_t, dim=0, dim_size=frac_coords.shape[0], reduce="add"
+        )
         F_t = F_t.squeeze(axis=1)
         return h, F_t, lattice_update
 
