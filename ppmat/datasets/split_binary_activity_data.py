@@ -19,6 +19,10 @@ Run from the repository root::
     python -m ppmat.datasets.split_binary_activity_data --mode=comp_inter \\
       --fold=0 --seed=2021 --output_dir=data/binary_activity/fold_0
 
+The binaryGamma source is distributed with GDI-NN. The input CSV identifies
+the two solvents, their composition and log activity coefficients. Missing
+source CSVs are downloaded from the configured BCE endpoint with MD5 checking.
+
 The comp-inter split stratifies five folds by TPSA. Each fold has 224,000
 training and 56,000 validation rows. The manifest records the source checksum,
 seed and row indices. Use a different output directory and dataset paths for
