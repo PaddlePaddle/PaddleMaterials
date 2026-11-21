@@ -632,7 +632,12 @@ class ThreeDInteraction(paddle.nn.Layer):
         num_edges,
         num_triple_ij,
     ):
-        if three_body_index.shape[0] == 0:
+        num_triplets = three_body_index.shape[0]
+        # Eager and static-shape capture see an int and keep the early return.
+        # With a dynamic triplet axis (compiled MD inference) the size is a
+        # tensor; branching on it would trace a cond whose backward breaks the
+        # forces, so the update is masked further down instead.
+        if isinstance(num_triplets, int) and num_triplets == 0:
             return edge_attr
         atom_mask = (
             self.atom_mlp(atom_attr)[edge_index[0][three_body_index[:, 1]]]
@@ -653,7 +658,12 @@ class ThreeDInteraction(paddle.nn.Layer):
             reduce="sum",
             dim_size=paddle.sum(x=num_edges).item(),
         )
-        edge_attr_prime = edge_attr + self.edge_gate_mlp(e_ij_tuda)
+        update = self.edge_gate_mlp(e_ij_tuda)
+        if not isinstance(num_triplets, int):
+            # Without triplets e_ij_tuda is zero, but the gated MLP has biases:
+            # zero the update so the result equals the eager early return.
+            update = update * (num_triplets > 0).astype(update.dtype)
+        edge_attr_prime = edge_attr + update
         return edge_attr_prime
 
 
@@ -1167,7 +1177,17 @@ class M3GNet(RuntimeMixin, paddle.nn.Layer):
             batch=graph.graph_node_id,
         )
 
-    @runtime_boundary("forward")
+    @runtime_boundary(
+        "forward",
+        # Edge and triplet counts change at every MD step; atom and graph
+        # counts stay static.
+        dynamic_dims={
+            "pbc_offsets": 0,
+            "edge_index": 1,
+            "three_body_indices": 0,
+            "num_triple_ij": 0,
+        },
+    )
     def _runtime_forward(
         self,
         pos,
