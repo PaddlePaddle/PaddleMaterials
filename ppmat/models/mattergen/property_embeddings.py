@@ -4,7 +4,8 @@
 # 双方对本代码及相关成果享有同等权利。
 
 # Copyright (C) 2026 Suzhou National Laboratory and Baidu PaddlePaddle team
-# This code was jointly developed by Suzhou National Laboratory and Baidu PaddlePaddle team.
+# This code was jointly developed by Suzhou National Laboratory and Baidu
+# PaddlePaddle team.
 # Suzhou National Laboratory provided the design concept for the model framework,
 # and Baidu PaddlePaddle team was responsible for the code implementation.
 # Both parties shall have equal rights to use this code and related work products.
@@ -37,6 +38,7 @@ from tqdm.auto import tqdm
 
 from ppmat.models.mattergen.globals import _USE_UNCONDITIONAL_EMBEDDING
 from ppmat.models.mattergen.globals import MAX_ATOMIC_NUM
+from ppmat.utils.execution import in_compiled_execution
 
 TensorOrStringType = TypeVar("TensorOrStringType", paddle.Tensor, list[str])
 
@@ -462,15 +464,27 @@ class PropertyEmbedding(paddle.nn.Layer):
             raise ValueError(f"Invalid scaler_name: {scaler_name}")
 
     def forward(self, data, use_unconditional_embedding) -> paddle.Tensor:
+        # Compiled execution skips this shortcut for tensor data: paddle.all() reads a
+        # device value, which breaks the SOT graph. The where() path below gives the
+        # same zeros, since the unconditional module depends only on the shape of its
+        # input.
         if (
-            paddle.all(x=use_unconditional_embedding)
+            (not isinstance(data, paddle.Tensor) or not in_compiled_execution())
+            and paddle.all(x=use_unconditional_embedding)
             and self.unconditional_embedding_module.only_depends_on_shape_of_input
         ):
             return self.unconditional_embedding_module(x=data)
         else:
             # data = batch[self.name]
-            if isinstance(data, paddle.Tensor) and data.dim() == 2:
-                data = data.squeeze(axis=-1)
+            if isinstance(data, paddle.Tensor):
+                if data.dim() == 2:
+                    data = data.squeeze(axis=-1)
+                # A missing label is NaN, and its row always uses the unconditional
+                # embedding. where() discards the conditional embedding of these
+                # rows, but SpaceGroupEmbeddingVector cannot embed NaN, so they get
+                # a valid value first.
+                mask = use_unconditional_embedding.reshape([-1] + [1] * (data.ndim - 1))
+                data = paddle.where(mask, paddle.ones_like(data), data)
             data = self.scaler(data)
             conditional_embedding: paddle.Tensor = self.conditional_embedding_module(
                 data
