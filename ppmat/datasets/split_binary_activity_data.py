@@ -12,6 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+"""Prepare binaryGamma training and validation CSVs.
+
+Run from the repository root::
+
+    python -m ppmat.datasets.split_binary_activity_data --mode=comp_inter \\
+      --fold=0 --seed=2021 --output_dir=data/binary_activity/fold_0
+
+The comp-inter split stratifies five folds by TPSA. Each fold has 224,000
+training and 56,000 validation rows. The manifest records the source checksum,
+seed and row indices. Use a different output directory and dataset paths for
+another fold. The system-extra mode holds out entire solvent pairs.
+"""
+
 import argparse
 import hashlib
 import json

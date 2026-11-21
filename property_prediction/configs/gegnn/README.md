@@ -28,7 +28,7 @@ The two solvents share a molecular GCN encoder. An interaction MPNN captures hyd
 
 ## Training
 
-Prepare the dataset using the [binaryGamma dataset instructions](../../../ppmat/datasets/README_binary_activity.md).
+Prepare the dataset using the [binaryGamma split script](../../../ppmat/datasets/split_binary_activity_data.py).
 
 ```bash
 python property_prediction/train.py -c property_prediction/configs/gegnn/gegnn_binary_activity.yaml
@@ -51,7 +51,7 @@ python property_prediction/predict.py --config_path=property_prediction/configs/
 For the downloadable checkpoint:
 
 ```bash
-python property_prediction/predict.py --model_name=gegnn_binary_activity --input_format=mixture_csv --input_path=property_prediction/example_data/binary_mixtures.csv
+python property_prediction/predict.py --config_path=property_prediction/configs/gegnn/gegnn_binary_activity.yaml --checkpoint_path=https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/ge-gnn/gegnn_binary_activity.zip --input_format=mixture_csv --input_path=property_prediction/example_data/binary_mixtures.csv Model.__init_params__.edge_in_feats=3
 ```
 
 ## Citation

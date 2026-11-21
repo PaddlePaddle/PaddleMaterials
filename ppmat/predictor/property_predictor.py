@@ -94,20 +94,7 @@ class PropertyPredictor(BasePredictor):
         return self._run_model(data)
 
     def from_mixture(self, data1, data2, x1):
-        """Predict binary-mixture activity coefficients from pre-built solvent data.
-
-        Args:
-            data1: Dict with keys ``graph``, ``hba``, ``hbd``, ``intra_hb`` for
-                the first mixture component (as produced by
-                ``BuildSolvent``).
-            data2: Dict with the same keys for the second component.
-            x1: Mole fraction of the first component, in ``[0, 1]``.
-                For batched prediction, pass equally sized sequences for
-                ``data1``, ``data2`` and ``x1``.
-
-        Returns:
-            Prediction dict from the model.
-        """
+        """Predict one mixture or a batch from prebuilt solvent data."""
         build_mixture = BuildBinaryMixture()
         if isinstance(data1, Mapping):
             samples = [build_mixture(data1, data2, x1)]
@@ -119,12 +106,7 @@ class PropertyPredictor(BasePredictor):
         return self._run_model(DefaultCollator()(samples))
 
     def from_mixture_csv(self, csv_path, save_path=None, batch_size=32):
-        """Predict log activity coefficients for SMILES pairs in a CSV.
-
-        The required columns are ``smiles1``, ``smiles2`` and ``x1``. The
-        returned table preserves input columns and adds ``ln_gamma1`` and
-        ``ln_gamma2``. Mole fractions must be finite and in ``[0, 1]``.
-        """
+        """Predict log activity coefficients for SMILES pairs in a CSV."""
         if batch_size < 1:
             raise ValueError("batch_size must be positive.")
         records = pd.read_csv(csv_path)
@@ -134,8 +116,6 @@ class PropertyPredictor(BasePredictor):
             raise ValueError(f"Mixture CSV is missing columns: {sorted(missing)}")
         if records[list(required)].isna().any().any():
             raise ValueError("Mixture CSV must not contain missing SMILES or x1.")
-        if self.graph_converter_fn is None:
-            raise ValueError("Mixture prediction requires Predict.graph_converter.")
         build_solvent = BuildSolvent(
             self.graph_converter_fn,
             self.predict_config.get("build_molecule_cfg"),

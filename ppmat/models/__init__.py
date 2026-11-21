@@ -14,7 +14,6 @@
 
 import copy
 import inspect
-from pathlib import Path
 from typing import Any
 from typing import Callable
 from typing import Dict
@@ -164,14 +163,6 @@ MODEL_REGISTRY = {
     "infgcn_omol25_mc_5k_trimmed": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_omol25_mc_5k_trimmed.zip",
     "infgcn_qm9": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_qm9.zip",
     "diffnmr_msdnmr_nless15": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/spectrum_elucidation/diffnmr/diffnmr_msdnmr_nless15.zip",
-    "gegnn_binary_activity": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/ge-gnn/gegnn_binary_activity.zip",
-}
-
-
-# Metadata missing from existing registered archives. Archive values take priority.
-# JSON resources are included by setup.py's package_data rule.
-MODEL_INFERENCE_DEFAULTS = {
-    "gegnn_binary_activity": "gegnn_binary_activity.json",
 }
 
 
@@ -274,10 +265,6 @@ def build_model_from_name(
     config_path = get_model_config_path(model_name, path)
 
     config = OmegaConf.load(config_path)
-    defaults_name = MODEL_INFERENCE_DEFAULTS.get(model_name)
-    if defaults_name is not None:
-        defaults_path = Path(__file__).with_name(defaults_name)
-        config = OmegaConf.merge(OmegaConf.load(defaults_path), config)
     config = OmegaConf.to_container(config, resolve=True)
 
     model_config = config.get("Model", None)

@@ -20,30 +20,6 @@ from ppmat.utils.scatter import scatter_mean
 from ppmat.utils.scatter import scatter_sum
 
 
-def _segment_sum(values, segment_ids, num_segments):
-    return scatter_sum(values, segment_ids, dim=0, dim_size=num_segments)
-
-
-def _segment_mean(values, segment_ids, num_segments):
-    return scatter_mean(values, segment_ids, dim=0, dim_size=num_segments)
-
-
-_ACTIVATION_MAP = {
-    "relu": (paddle.nn.ReLU, paddle.nn.functional.relu),
-    "elu": (paddle.nn.ELU, paddle.nn.functional.elu),
-    "leakyrelu": (paddle.nn.LeakyReLU, paddle.nn.functional.leaky_relu),
-    "softplus": (paddle.nn.Softplus, paddle.nn.functional.softplus),
-}
-
-
-def get_activation(activation, get_nn=False):
-    key = "relu" if activation is None else activation.lower()
-    if key not in _ACTIVATION_MAP:
-        raise ValueError(f"Unsupported activation: {activation}")
-    nn_cls, func = _ACTIVATION_MAP[key]
-    return nn_cls if get_nn else func
-
-
 class HigherOrderGraphConv(paddle.nn.Layer):
     """GCN convolution equivalent to PGL ``GCNConv(norm=True)``."""
 
@@ -114,9 +90,9 @@ class NNConv(paddle.nn.Layer):
         msg = paddle.matmul(h_src, edge_weight).squeeze(1)
 
         if self.aggregator == "sum":
-            aggregated = _segment_sum(msg, dst, graph.num_nodes)
+            aggregated = scatter_sum(msg, dst, dim=0, dim_size=graph.num_nodes)
         elif self.aggregator == "mean":
-            aggregated = _segment_mean(msg, dst, graph.num_nodes)
+            aggregated = scatter_mean(msg, dst, dim=0, dim_size=graph.num_nodes)
         else:
             raise ValueError(f"Unsupported aggregator: {self.aggregator}")
         return aggregated + self.bias
@@ -154,18 +130,16 @@ class MPNNconv(paddle.nn.Layer):
         node_out_feats=128,
         edge_hidden_feats=32,
         num_step_message_passing=6,
-        activation="relu",
     ):
         super().__init__()
-        self.mpnn_activation = get_activation(activation)
         self.project_node_feats = paddle.nn.Sequential(
             paddle.nn.Linear(node_in_feats, node_out_feats),
-            get_activation(activation, get_nn=True)(),
+            paddle.nn.ReLU(),
         )
         self.num_step_message_passing = num_step_message_passing
         edge_network = paddle.nn.Sequential(
             paddle.nn.Linear(edge_in_feats, edge_hidden_feats),
-            get_activation(activation, get_nn=True)(),
+            paddle.nn.ReLU(),
             paddle.nn.Linear(edge_hidden_feats, node_out_feats * node_out_feats),
         )
         self.gnn_layer = NNConv(
@@ -180,7 +154,9 @@ class MPNNconv(paddle.nn.Layer):
         node_feats = self.project_node_feats(node_feats)
         hidden_feats = node_feats
         for _ in range(self.num_step_message_passing):
-            messages = self.mpnn_activation(self.gnn_layer(g, node_feats, edge_feats))
+            messages = paddle.nn.functional.relu(
+                self.gnn_layer(g, node_feats, edge_feats)
+            )
             hidden_feats = self.gru(messages, hidden_feats)
             node_feats = hidden_feats
         return node_feats
@@ -191,6 +167,7 @@ class GEGNNBinary(paddle.nn.Layer):
 
     @staticmethod
     def _as_column(value):
+        # DefaultCollator supplies NumPy columns; the benchmark supplies tensors.
         if not isinstance(value, paddle.Tensor):
             value = paddle.to_tensor(value, dtype="float32")
         return value.cast("float32").reshape([-1, 1])
@@ -206,27 +183,13 @@ class GEGNNBinary(paddle.nn.Layer):
         self,
         in_dim=74,
         hidden_dim=256,
-        n_classes=1,
-        mlp_dropout_rate=0.0,
         mlp_activation="relu",
-        mpnn_activation="relu",
-        mlp_num_hid_layers=2,
         property_name="gamma",
         edge_in_feats=1,
     ):
         super().__init__()
-        if n_classes != 1:
-            raise ValueError("GEGNNBinary predicts one scalar excess Gibbs energy.")
-
-        if mlp_num_hid_layers != 2:
-            raise ValueError(
-                "The reference GE-GNN architecture uses exactly two hidden MLP layers."
-            )
-
         if edge_in_feats not in (1, 3):
-            raise ValueError("edge_in_feats must be 1 (reference) or 3 (legacy).")
-        if mlp_dropout_rate != 0.0:
-            raise ValueError("The reference GE-GNN does not apply MLP dropout.")
+            raise ValueError("edge_in_feats must be 1 or 3.")
         self.edge_in_feats = edge_in_feats
         self.conv1 = HigherOrderGraphConv(in_dim, hidden_dim)
         self.conv2 = HigherOrderGraphConv(hidden_dim, hidden_dim)
@@ -236,14 +199,12 @@ class GEGNNBinary(paddle.nn.Layer):
             node_out_feats=hidden_dim,
             edge_hidden_feats=32,
             num_step_message_passing=1,
-            activation=mpnn_activation,
         )
-        self.mlp_activation = get_activation(mlp_activation)
+        self.mlp_activation = getattr(paddle.nn.functional, mlp_activation)
         self.mfp_trans = paddle.nn.Linear(hidden_dim + 1, hidden_dim + 1)
         self.classify1 = paddle.nn.Linear(hidden_dim + 1, hidden_dim)
         self.classify2 = paddle.nn.Linear(hidden_dim, hidden_dim)
         self.classify3 = paddle.nn.Linear(hidden_dim, 1)
-        self.mlp_dropout_rate = mlp_dropout_rate
         if isinstance(property_name, (list, tuple)):
             property_name = property_name[0]
         self.property_name = property_name
@@ -268,8 +229,8 @@ class GEGNNBinary(paddle.nn.Layer):
         h1 = paddle.nn.functional.relu(self.conv2(g1, h1))
         h2 = paddle.nn.functional.relu(self.conv1(g2, h2))
         h2 = paddle.nn.functional.relu(self.conv2(g2, h2))
-        hg1 = _segment_mean(h1, g1.graph_node_id, batch_size)
-        hg2 = _segment_mean(h2, g2.graph_node_id, batch_size)
+        hg1 = scatter_mean(h1, g1.graph_node_id, dim=0, dim_size=batch_size)
+        hg2 = scatter_mean(h2, g2.graph_node_id, dim=0, dim_size=batch_size)
 
         inter_hb = self._as_column(data["inter_hb"])
         intra_hb1 = self._as_column(data["intra_hb1"])
@@ -294,10 +255,8 @@ class GEGNNBinary(paddle.nn.Layer):
         output = output.reshape([batch_size, 2, -1])
         return paddle.concat([output[:, 0], output[:, 1]], axis=0)
 
-    def _excess_gibbs_energy(self, data, x1, component_features=None):
+    def _excess_gibbs_energy(self, x1, component_features):
         batch_size = x1.shape[0]
-        if component_features is None:
-            component_features = self._component_features(data, batch_size)
         component1 = paddle.concat([component_features[:batch_size], x1], axis=1)
         component2 = paddle.concat([component_features[batch_size:], 1.0 - x1], axis=1)
         component1 = self.mlp_activation(self.mfp_trans(component1))
@@ -307,19 +266,17 @@ class GEGNNBinary(paddle.nn.Layer):
         output = self.mlp_activation(self.classify2(output))
         return self.classify3(output)
 
-    def _predict_head_gradient(self, data):
-        return self._predict_with_derivative(data, create_graph=False)
-
-    def _predict_with_derivative(self, data, create_graph):
+    def _forward(self, data, create_graph=False):
         x1 = self._as_column(data["x1"])
         # The collator tensors normally stop gradients. This input must remain
         # differentiable because ``ln(gamma)`` is defined by dG^E/dx1.
         x1.stop_gradient = False
-        component_features = None
-        if not create_graph:
+        if create_graph:
+            component_features = self._component_features(data, x1.shape[0])
+        else:
             with paddle.no_grad():
                 component_features = self._component_features(data, x1.shape[0])
-        excess_gibbs_energy = self._excess_gibbs_energy(data, x1, component_features)
+        excess_gibbs_energy = self._excess_gibbs_energy(x1, component_features)
         derivative = paddle.grad(
             outputs=excess_gibbs_energy,
             inputs=x1,
@@ -329,18 +286,10 @@ class GEGNNBinary(paddle.nn.Layer):
         prediction = self.activity_coefficients(excess_gibbs_energy, x1, derivative)
         return excess_gibbs_energy, derivative, prediction
 
-    def _forward(self, data, create_graph=False):
-        if create_graph:
-            return self._predict_with_derivative(data, create_graph=True)
-        return self._predict_head_gradient(data)
-
     def forward(self, data, return_loss=True, return_prediction=True):
-        if self.training and return_loss:
-            excess_gibbs_energy, derivative, output = self._forward(
-                data, create_graph=True
-            )
-        else:
-            excess_gibbs_energy, derivative, output = self._forward(data)
+        excess_gibbs_energy, derivative, output = self._forward(
+            data, create_graph=self.training and return_loss
+        )
         loss_dict = {}
         if return_loss:
             labels = paddle.concat(
@@ -360,59 +309,3 @@ class GEGNNBinary(paddle.nn.Layer):
     def predict(self, data):
         _, _, output = self._forward(data)
         return {self.property_name: output}
-
-
-class _TensorGraphView:
-    """Graph attributes constructed from traced tensors inside the adapter."""
-
-    def __init__(self, edges, node_features, graph_node_id):
-        self.edges = edges
-        self.num_nodes = int(node_features.shape[0])
-        self.node_feat = {"h": node_features}
-        self.graph_node_id = graph_node_id
-
-    def tensor(self):
-        return self
-
-
-class GEGNNTensorPredictor(paddle.nn.Layer):
-    """Expose GE-GNN prediction to ``to_static`` through tensor-only inputs.
-
-    Call :meth:`pack` outside the compiled function. PGL graph objects must not
-    cross the static input boundary. Node/edge counts may specialize the graph
-    and trigger compilation again. This adapter preserves the composition
-    derivative; do not wrap prediction in ``paddle.no_grad()``.
-    """
-
-    def __init__(self, model):
-        super().__init__()
-        self.model = model
-
-    @staticmethod
-    def pack(data):
-        """Pack an existing collated binary-mixture batch without rebuilding it."""
-        flat = {
-            key: GEGNNBinary._as_column(data[key])
-            for key in ("x1", "inter_hb", "intra_hb1", "intra_hb2")
-        }
-        for key in ("g1", "g2", "empty_solvsys"):
-            graph = data[key].tensor()
-            flat[key + "_edges"] = graph.edges
-            flat[key + "_graph_node_id"] = graph.graph_node_id
-            if key != "empty_solvsys":
-                flat[key + "_node_features"] = graph.node_feat["h"]
-            else:
-                flat[key + "_node_features"] = paddle.zeros(
-                    [int(graph.num_nodes), 1], dtype="float32"
-                )
-        return flat
-
-    def forward(self, flat):
-        data = {key: flat[key] for key in ("x1", "inter_hb", "intra_hb1", "intra_hb2")}
-        for key in ("g1", "g2", "empty_solvsys"):
-            data[key] = _TensorGraphView(
-                flat[key + "_edges"],
-                flat[key + "_node_features"],
-                flat[key + "_graph_node_id"],
-            )
-        return self.model.predict(data)[self.model.property_name]

@@ -84,11 +84,7 @@ Model:
     in_dim: 74
     edge_in_feats: 1
     hidden_dim: 256
-    n_classes: 1
-    mlp_dropout_rate: 0.0
     mlp_activation: "softplus"
-    mpnn_activation: "relu"
-    mlp_num_hid_layers: 2
     property_name: ${Global.label_names}
 
 

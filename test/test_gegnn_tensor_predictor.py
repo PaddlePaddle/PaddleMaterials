@@ -14,14 +14,19 @@
 
 import copy
 import os
+import runpy
 import unittest
+from pathlib import Path
 
 import numpy as np
 import paddle
 import pgl
 
 from ppmat.models.gegnn import GEGNNBinary
-from ppmat.models.gegnn import GEGNNTensorPredictor
+
+GEGNNTensorPredictor = runpy.run_path(
+    str(Path(__file__).resolve().parents[1] / "tests/benchmark_gegnn_cinn.py")
+)["GEGNNTensorPredictor"]
 
 
 def batch():

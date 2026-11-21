@@ -64,17 +64,13 @@ class TestGEGNNBinary(unittest.TestCase):
 
     @staticmethod
     def _new_model():
-        return GEGNNBinary(in_dim=74, hidden_dim=8, n_classes=1)
+        return GEGNNBinary(in_dim=74, hidden_dim=8)
 
     def test_reference_and_legacy_edge_dimensions(self):
         batch = self._synthetic_batch()
         for edge_features in (1, 3):
             model = GEGNNBinary(in_dim=74, hidden_dim=8, edge_in_feats=edge_features)
             self.assertEqual(model.predict(batch)["gamma"].shape, [2, 2])
-        with self.assertRaisesRegex(ValueError, "edge_in_feats"):
-            GEGNNBinary(edge_in_feats=2)
-        with self.assertRaisesRegex(ValueError, "dropout"):
-            GEGNNBinary(mlp_dropout_rate=0.1)
 
     def test_checkpoint_edge_dimension_mismatch_is_not_silently_ignored(self):
         reference = self._new_model()
@@ -131,8 +127,8 @@ class TestGEGNNBinary(unittest.TestCase):
         model = self._new_model()
         model.eval()
 
-        reference = model._predict_with_derivative(batch, create_graph=True)
-        optimized = model._predict_head_gradient(batch)
+        reference = model._forward(batch, create_graph=True)
+        optimized = model._forward(batch)
         for expected, actual in zip(reference, optimized):
             np.testing.assert_allclose(
                 actual.numpy(), expected.numpy(), rtol=3e-5, atol=3e-6
@@ -379,7 +375,7 @@ class TestBinaryActivityPipeline(unittest.TestCase):
             _as_column=GEGNNBinary._as_column,
             global_conv1=capture,
         )
-        with patch("ppmat.models.gegnn._segment_mean", side_effect=[hg1, hg2]):
+        with patch("ppmat.models.gegnn.scatter_mean", side_effect=[hg1, hg2]):
             output = GEGNNBinary._component_features(model, batch, 2)
         np.testing.assert_array_equal(output.numpy(), paddle.concat([hg1, hg2]).numpy())
 
@@ -539,46 +535,6 @@ class TestMixtureCSVPrediction(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "Mole fraction"):
             self.predictor.from_mixture_csv(self.csv_path)
-
-    def test_registered_archive_with_missing_inference_metadata(self):
-        config = OmegaConf.load(self.config_path)
-        config.Model["__init_params__"].edge_in_feats = 3
-        model = build_model(OmegaConf.to_container(config, resolve=True)["Model"])
-        package_dir = os.path.join(self.root.name, "registered_package")
-        os.makedirs(package_dir)
-        checkpoint = os.path.join(package_dir, "best.pdparams")
-        paddle.save(model.state_dict(), checkpoint)
-        complete_path = os.path.join(self.root.name, "complete.yaml")
-        OmegaConf.save(config, complete_path)
-        del config["Vocabulary"]
-        del config.Predict["graph_converter"]
-        config.Predict["build_molecule_cfg"] = {"format": "smiles", "add_hs": False}
-        OmegaConf.save(config, os.path.join(package_dir, "gegnn_binary_activity.yaml"))
-        with patch(
-            "ppmat.models.download.get_weights_path_from_url", return_value=package_dir
-        ):
-            registered = PropertyPredictor(
-                model_name="gegnn_binary_activity", device="cpu"
-            )
-        explicit = PropertyPredictor(
-            config_path=complete_path, checkpoint_path=checkpoint, device="cpu"
-        )
-        self.assertEqual(registered.model.edge_in_feats, 3)
-        self.assertEqual(registered.model.conv1.linear.weight.shape[1], 8)
-        self.assertIsNotNone(registered.graph_converter_fn)
-        self.assertFalse(registered.eval_with_no_grad)
-        self.assertFalse(registered.predict_config["build_molecule_cfg"]["add_hs"])
-        pd.DataFrame({"smiles1": ["CCO"], "smiles2": ["O"], "x1": [0.5]}).to_csv(
-            self.csv_path, index=False
-        )
-        actual = registered.from_mixture_csv(self.csv_path)
-        expected = explicit.from_mixture_csv(self.csv_path)
-        np.testing.assert_allclose(
-            actual[["ln_gamma1", "ln_gamma2"]],
-            expected[["ln_gamma1", "ln_gamma2"]],
-            rtol=0,
-            atol=1e-6,
-        )
 
     def test_cli_loads_checkpoint_directory(self):
         pd.DataFrame({"smiles1": ["CCO"], "smiles2": ["O"], "x1": [0.5]}).to_csv(
