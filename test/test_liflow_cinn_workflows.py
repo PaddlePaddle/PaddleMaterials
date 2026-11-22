@@ -105,7 +105,7 @@ def test_liflow_uses_single_forward_boundary(monkeypatch, inference_batch):
     assert boundary_names == ["forward"]
     assert set(prediction) == {"velocity"}
     assert prediction["velocity"].shape == [N_ATOMS, 3]
-    assert model.get_runtime_options("cinn") == {"full_graph": False}
+    assert model.get_runtime_options("cinn") == {"full_graph": False, "dynamic_shape": True}
 
 
 def test_runtime_cache_compiled_once_per_mode(monkeypatch, inference_batch):
@@ -163,7 +163,7 @@ def test_config_propagates_to_trainer(monkeypatch, tmp_path):
     )
 
     assert trainer.execution_backend == "cinn"
-    assert trainer.model.get_runtime_options("cinn") == {"full_graph": False}
+    assert trainer.model.get_runtime_options("cinn") == {"full_graph": False, "dynamic_shape": True}
 
 
 def test_config_propagates_to_integrator_predictor(monkeypatch):
@@ -178,5 +178,5 @@ def test_config_propagates_to_integrator_predictor(monkeypatch):
         periodic=True,
     )
 
-    assert predictor.propagator.get_runtime_options("cinn") == {"full_graph": False}
-    assert predictor.corrector.get_runtime_options("cinn") == {"full_graph": False}
+    assert predictor.propagator.get_runtime_options("cinn") == {"full_graph": False, "dynamic_shape": True}
+    assert predictor.corrector.get_runtime_options("cinn") == {"full_graph": False, "dynamic_shape": True}
