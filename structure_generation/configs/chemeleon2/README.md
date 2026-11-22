@@ -4,88 +4,114 @@
 
 ## Abstract
 
-Chemeleon2 generates periodic crystal structures with a variational autoencoder
-(VAE), a diffusion Transformer in the learned latent space, and a reinforcement
-learning (RL) stage that fine-tunes the diffusion denoiser with Group Relative
-Policy Optimization (GRPO). PaddleMaterials implements all three stages.
+Chemeleon2 combines a variational autoencoder (VAE), latent diffusion and
+reinforcement learning to generate periodic crystal structures. The VAE learns
+continuous representations of crystal geometry and composition, a diffusion
+Transformer learns to generate these representations, and Group Relative Policy
+Optimization (GRPO) adapts the generator using rewards for novelty, diversity or
+material properties. PaddleMaterials provides all three stages through the
+unified `Chemeleon2` model.
+
+![Chemeleon2 architecture and GRPO fine-tuning](../../docs/chemeleon2_arch.png)
 
 ## Model Description
 
 ### Overview
 
-`Chemeleon2` is the single entry point for both training (`forward`, with `stage`
-selecting `vae`, `diffusion` or `rl`) and generation (`sample`/`predict`). The VAE,
-the DiT denoiser and the GRPO wrapper are internal sub-modules.
+A crystal is represented by atomic numbers $A$, a lattice matrix
+$L \in \mathbb{R}^{3 \times 3}$ and fractional coordinates
+$X \in [0,1)^{N \times 3}$. The VAE maps these inputs to eight latent values
+per atom. Generation denoises a latent sample and decodes it into $(A,L,X)$;
+the requested atom count is fixed while atom types and geometry are generated.
 
-The VAE encodes atomic numbers, fractional coordinates and the lattice matrix
-into eight latent values per atom. Its decoder reconstructs atom types,
-fractional coordinates, atom-count-scaled lengths and lattice angles. The LDM
-learns Gaussian diffusion in this continuous latent space; it does not diffuse
-atom types and fractional coordinates separately. The RL stage keeps the VAE
-frozen and optimizes only the LDM denoiser against a composable reward.
+| Stage | Objective | Trainable components | Configuration |
+| --- | --- | --- | --- |
+| VAE | Crystal reconstruction and latent regularization | Encoder and decoder | [chemeleon2_mp20_vae.yaml](chemeleon2_mp20_vae.yaml) |
+| Diffusion | Noise prediction in VAE latent space | Diffusion Transformer; VAE frozen | [chemeleon2_mp20_ldm.yaml](chemeleon2_mp20_ldm.yaml) |
+| RL | Reward-guided generation with GRPO | Diffusion Transformer; VAE and condition embeddings frozen | [chemeleon2_mp20_rl.yaml](chemeleon2_mp20_rl.yaml) |
+
+The `stage` configuration selects `vae`, `diffusion` or `rl`. VAE training alone
+does not provide de novo sampling. The released vocabulary supports atomic
+numbers 1 through 99; index zero is reserved for corruption.
 
 ### Method
 
-VAE training combines atom classification, coordinate and lattice reconstruction,
-and KL losses. Translation, rotation and coordinate/type corruption are optional.
-The LDM freezes the VAE and trains a masked epsilon predictor. Its scheduler is
-configured through `noise_scheduler_cfg` and built by `build_scheduler`.
-DDIM with 50 inference steps is the default; DDPM is also supported. Neither
-sampler clips the latent prediction when `clip_denoised=False`.
+#### 1) Crystal representation learning
 
-The RL stage rolls out a DDIM sampling trajectory, decodes the final latent with
-the frozen VAE, scores each structure with the reward components, and recomputes
-the per-step Gaussian log-probabilities with gradients enabled to form the
-clipped GRPO objective (`clip_ratio`, `kl_weight`, `entropy_weight`). Groups of
-`num_group_samples` rollouts share an advantage normalization controlled by
-`group_reward_norm`. Only the denoiser is optimized; the VAE and the condition
-embedding are frozen. The reward function composes pluggable components:
-`CreativityReward` (unique AND novel), `EnergyReward` (energy above hull),
-`StructureDiversityReward` / `CompositionDiversityReward` (per-sample MMD over
-frozen-VAE features) and `CustomReward`. RL training uses DDIM because the
-learned-variance DDPM path does not expose per-step means. `Chemeleon2RLModule`
-return meets the framework training contract (`forward` ->`{"loss_dict": {"loss"}}`)
-and delegates `sample`/`predict` to the wrapped LDM, so it is a drop-in model for
-`BaseTrainer` and `StructureSampler`.
+The VAE encoder produces a Gaussian posterior for each atom's latent vector.
+The decoder reconstructs atomic numbers, fractional coordinates, lattice lengths
+normalized by $N^{1/3}$, and lattice angles. Training combines atom classification,
+coordinate and lattice reconstruction losses, and KL regularization. Translation,
+rotation and coordinate/type corruption can be enabled during training.
 
-Port deviations from the upstream RL stage:
+#### 2) Latent diffusion and sampling
 
-- `amd` is not a project dependency. `CreativityReward` falls back to an inverse
-  lattice-parameter distance when a structure is unique but not novel (or vice
-  versa); with `amd` installed the AMD distance is used.
-- Upstream uses a MACE calculator for energy above hull. MACE is PyTorch-only and
-  is not used here. `EnergyReward` requires an injectable ASE `calculator` plus a
-  pickled pymatgen phase diagram; it is omitted from the supplied RL config, which
-  runs on CPU-only metrics.
-- Diversity reference features are computed at runtime from a configurable
-  reference subset with the frozen VAE, instead of shipping precomputed tensors.
+The diffusion stage freezes the VAE. For a posterior sample $z$ and the stored
+latent scale $s$, the normalized representation is $z_0=z/s$. Gaussian corruption
+is applied in this continuous latent space:
 
-The upstream learned-variance objective is not implemented: `learn_sigma=True`
-retains the released parameter layout, but the additional output channels are
-excluded from the epsilon loss. DDPM uses fixed variance. This implementation
-must not be described as numerically equivalent to upstream learned-range DDPM.
+$$
+z_t = \sqrt{\bar{\alpha}_t}\,z_0
+    + \sqrt{1-\bar{\alpha}_t}\,\epsilon,
+\qquad \epsilon \sim \mathcal{N}(0,I).
+$$
 
-The released VAE vocabulary has 100 entries indexed by atomic number, including
-index zero for corruption. Its supported physical atomic numbers are 1 through
-99. Supporting atomic number 100 requires a larger VAE vocabulary and compatible
-weights. Composition embeddings likewise require `in_dim` greater than every
-atomic number they encode; composition vectors are normalized to unit sum.
+The diffusion Transformer predicts $\epsilon$ with a mean squared error loss over
+unpadded atomic latents. Sampling reverses this process, rescales the generated
+latents by $s$ and decodes the crystal. DDIM with 50 inference steps is the
+default; fixed-variance DDPM is also supported. Atom types and fractional
+coordinates are reconstructed by the VAE rather than diffused separately.
 
-Conditional training uses `condition_names` and `property_embeddings_adapt_cfg`.
-Each embedding is configured with `__class_name__` and `__init_params__`; supported
-encoders are `ValueEncoder`, `CategoricalEncoder`, `CompositionEncoder` and
-`ChemicalSystemEncoder`. `p_unconditional` controls joint condition dropout and
-`cfg_scale` controls classifier-free guidance at sampling. The revised conditional
-configuration is incompatible with earlier conditional checkpoints.
+Conditional models use `condition_names` and `property_embeddings_adapt_cfg`.
+The supported encoders are `ValueEncoder`, `CategoricalEncoder`,
+`CompositionEncoder` and `ChemicalSystemEncoder`. `p_unconditional` controls
+joint condition dropout, and `cfg_scale` controls classifier-free guidance.
+The supplied LDM checkpoint is unconditional. Fixed-composition sampling via
+`by_chemical_formula` is unsupported.
 
-Configurations use `*_cfg` names built by `build_model`. The released
-`chemeleon2_ldm` and `chemeleon2_vae` packages share this layout: `chemeleon2_ldm`
-is a unified `Chemeleon2` checkpoint with `core.`-prefixed weights, and
-`chemeleon2_vae` keeps bare `Chemeleon2VAEModule` weights.
+#### 3) Reward-guided fine-tuning
 
-CINN dispatch is available at `denoise_step`; eager/CINN parity for structure
-sampling is verified on GPU, for both a single denoise step and full DDIM
-sampling (atol 2e-5).
+As illustrated above, the diffusion model acts as the policy and decoded
+crystals are scored by the reward function. GRPO normalizes rewards within
+rollout groups and optimizes a clipped policy objective with KL and entropy
+regularization. RL uses stochastic DDIM trajectories (`eta > 0`); only the
+denoiser is updated.
+
+| Reward | Purpose |
+| --- | --- |
+| `CreativityReward` | Encourage unique and novel crystals |
+| `StructureDiversityReward` | Encourage geometric diversity using frozen-VAE features |
+| `CompositionDiversityReward` | Encourage compositional diversity using frozen-VAE features |
+| `EnergyReward` | Penalize energy above the convex hull |
+| `CustomReward` | Provide an extension point for custom objectives |
+
+The supplied RL configuration combines creativity and the two diversity rewards.
+Energy rewards require an ASE calculator supplied through
+`build_model(..., energy_calculator=calculator)` and a gzip-compressed pickle of
+a pymatgen phase diagram configured by `phase_diagram_path`. They are not enabled
+by default.
+
+The port uses an epsilon-only diffusion objective and fixed DDPM variance;
+`learn_sigma=True` retains the released output layout without learning variance.
+For creativity rewards, AMD distances are used when available; otherwise the
+implementation uses a lattice-parameter distance. Diversity reference features
+are computed with the frozen VAE. These choices differ from upstream settings,
+so learned-range DDPM equivalence and upstream RL benchmark results are not
+claimed. CINN support for diffusion-stage denoising is described in
+[the execution-backend documentation](../../../docs/cinn.md).
+
+#### 4) Evaluation metrics
+
+`CrystalVUNMetric` reports three population statistics:
+
+- **Validity:** the fraction of all generated crystals passing composition and
+  geometric validity checks.
+- **Uniqueness:** the fraction of distinct structures among valid crystals,
+  including comparisons across generated batches.
+- **Novelty:** the fraction of unique valid structures that match no structure
+  in the reference population. This result is omitted without a reference set.
+
+These metrics do not measure thermodynamic stability or S.U.N.
 
 ## Dataset Description
 
@@ -93,76 +119,110 @@ sampling (atol 2e-5).
 | --- | --- | --- | --- |
 | [MP20](https://paddle-org.bj.bcebos.com/paddlematerial/datasets/mp_20/mp_20.zip) | 27136 | 9047 | 9046 |
 
-The supplied configurations reuse `MP20Dataset` and its automatic download.
-Stage-two training loads the registered `chemeleon2_vae` weights by default.
-For a custom VAE, set `vae_pretrained_model_name=null` and provide `vae_ckpt_path`.
-The RL stage draws `num_atoms` from the training batches and starts from the
-registered `chemeleon2_ldm` denoiser.
+### RL reference population
 
-`StructGenMetric` reports validity and uniqueness. Validity uses composition and
-structure checks, without fingerprint extraction. Uniqueness compares valid
-structures across the complete generated population, including cross-batch
-duplicates. Novelty is returned only when `reference_file_path` or
-`reference_structures` provides a reference population. A reference pickle must
-contain training-set pymatgen structures and is not included in the MP20 archive;
-`data/mp_20/novelty_reference.pkl` holds the MP20 training structures used below.
+RL requires `data/mp_20/novelty_reference.pkl` for novelty and diversity rewards.
+This file is not included in the MP20 archive. Prepare it from the training
+split, preserving row order and excluding validation and test structures:
+
+```bash
+python - <<'PY'
+import pickle
+from pathlib import Path
+
+import pandas as pd
+
+from ppmat.datasets.build_structure import BuildStructure
+from ppmat.datasets.mp20_dataset import MP20Dataset
+from ppmat.utils import download
+
+source = Path("data/mp_20/train.csv")
+if not source.is_file():
+    root = download.get_datasets_path_from_url(MP20Dataset.url, MP20Dataset.md5)
+    source = Path(root) / MP20Dataset.name / source.name
+structures = [
+    BuildStructure.build_one(cif, "cif_str", niggli=False, canocial=False)
+    for cif in pd.read_csv(source)["cif"]
+]
+target = Path("data/mp_20/novelty_reference.pkl")
+target.parent.mkdir(parents=True, exist_ok=True)
+with target.open("wb") as handle:
+    pickle.dump(structures, handle, protocol=4)
+PY
+```
 
 ## Results
 
-`StructGenMetric` on `data/mp_20/novelty_reference.pkl` (MP20 training
-structures, not shipped with the MP20 archive), 50 samples of 20 atoms with
-DDIM 50 steps (eval seed 2024):
+The previously reported small-sample evaluation uses the converted pretrained
+LDM with DDIM 50 steps, 50 structures of 20 atoms, and seed 2024. Novelty is measured
+against the MP20 training structures in `novelty_reference.pkl`.
 
 | Model | Dataset | Valid (%) | Unique (%) | Novel (%) | Config | Checkpoint |
 | --- | --- | --- | --- | --- | --- | --- |
-| Chemeleon2 (diffusion) | MP20 | 98.0 | 100.0 | 100.0 | [chemeleon2_mp20_ldm.yaml](chemeleon2_mp20_ldm.yaml) | [Registered LDM](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/Chemeleon2/chemeleon2_ldm.zip) |
+| Chemeleon2 (diffusion) | MP20 | 98.0 | 100.0 | 100.0 | [chemeleon2_mp20_ldm.yaml](chemeleon2_mp20_ldm.yaml) | [Pretrained LDM](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/Chemeleon2/chemeleon2_ldm.zip) |
 
-These values come from the released LDM denoiser, not an RL-fine-tuned result.
-The RL stage is a functional smoke run (reward 1.41-1.65 over 30 steps; see the
-[RL config](chemeleon2_mp20_rl.yaml)), not a converged result.
+This evaluates the pretrained diffusion checkpoint, not a full training run with
+the supplied YAML or an RL-fine-tuned model. RL has integration-test coverage;
+no converged RL generation result is reported here.
 
 ## Command
 
 ### Training
 
+Train the diffusion Transformer from scratch with the registered VAE frozen:
+
 ```bash
-# Stage 1: VAE
-python structure_generation/train.py -c structure_generation/configs/chemeleon2/chemeleon2_mp20_vae.yaml Trainer.pretrained_model_path=null
-# Stage 2: LDM (uses the registered frozen VAE)
 python structure_generation/train.py -c structure_generation/configs/chemeleon2/chemeleon2_mp20_ldm.yaml
-# Stage 3: RL (uses the registered frozen LDM denoiser)
-python structure_generation/train.py -c structure_generation/configs/chemeleon2/chemeleon2_mp20_rl.yaml
 ```
 
-To train on band gaps, select a conditional configuration built from
-`chemeleon2_mp20_ldm.yaml` (see the conditional-training notes above). The RL
-config accepts `Global.num_group_samples`, `Global.sampling_steps` and the reward
-components through `Model.__init_params__.reward_fn_cfg`.
+To train the VAE, select its configuration from the stage table. It loads the
+registered VAE by default; add
+`Model.__init_params__.vae_pretrained_model_name=null` for training from scratch.
+For RL, prepare the reference population above and select the RL configuration;
+it starts from the registered LDM.
+
+To use a custom VAE in diffusion training, set `vae_pretrained_model_name=null`
+and set `vae_ckpt_path` to a unified VAE training checkpoint. These checkpoints
+use `core.` parameter keys; older local bare VAE checkpoints need that prefix
+added before loading. Registered VAE component packages load directly.
+The inference-only [sample configuration](chemeleon2_mp20_sample.yaml) is used
+with a complete LDM checkpoint.
 
 ### Validation
+
+Evaluate VAE reconstruction on the validation split using the registered VAE:
 
 ```bash
 python structure_generation/train.py -c structure_generation/configs/chemeleon2/chemeleon2_mp20_vae.yaml Global.do_train=False Global.do_eval=True
 ```
 
-Validation and testing load the registered VAE through the YAML by default.
-Custom checkpoint paths can be supplied in `Trainer.pretrained_model_path`.
-
 ### Testing
+
+Evaluate VAE reconstruction on the test split using the registered VAE:
 
 ```bash
 python structure_generation/train.py -c structure_generation/configs/chemeleon2/chemeleon2_mp20_vae.yaml Global.do_train=False Global.do_eval=False Global.do_test=True
 ```
 
+For a custom unified VAE checkpoint, disable `vae_pretrained_model_name` and set
+`Trainer.pretrained_model_path`. Reconstruction losses are distinct from the
+generation metrics reported above.
+
 ### Sample
+
+Generate a 20-atom crystal with the registered LDM:
 
 ```bash
 python structure_generation/sample.py --model_name=chemeleon2_ldm --mode=by_num_atoms --num_atoms=20
 ```
 
-The sampler writes generated CIF files under its default output directory.
+Generated structures are saved as CIF files under the default output directory.
 
 ## Citation
+
+[Original implementation](https://github.com/hspark1212/chemeleon2) and
+[upstream documentation](https://hspark1212.github.io/chemeleon2/) provide further
+background on the method.
 
 ```bibtex
 @article{Park2025chemeleon2,

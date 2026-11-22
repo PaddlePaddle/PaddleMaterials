@@ -36,6 +36,7 @@ from ppmat.models.chemeleon2.common import to_dense_batch
 from ppmat.models.chemeleon2.common.utils import build_structure_array
 from ppmat.models.chemeleon2.rl_module.components import standardize
 from ppmat.models.chemeleon2.rl_module.reward import build_reward
+from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.schedulers import build_scheduler
 
 DEFAULT_RL_CONFIGS = {
@@ -126,7 +127,7 @@ def _safe_structure(data):
     )
 
 
-class Chemeleon2RLModule(nn.Layer):
+class Chemeleon2RLModule(RuntimeMixin, nn.Layer):
     """GRPO reinforcement-learning wrapper around a Chemeleon2 LDM."""
 
     def __init__(
@@ -144,7 +145,10 @@ class Chemeleon2RLModule(nn.Layer):
         condition_names=None,
         vae_pretrained_model_name=None,
         vae_ckpt_path=None,
-        **_unused_compat,
+        energy_calculator=None,
+        reference_structures=None,
+        execution_backend="eager",
+        runtime_options=None,
     ):
         super().__init__()
 
@@ -205,9 +209,37 @@ class Chemeleon2RLModule(nn.Layer):
             )
         self.sampling_diffusion = self._build_sampling_diffusion()
 
-        self.reward_fn = build_reward(reward_fn_cfg)
+        self.ldm.set_execution_backend(execution_backend)
+        self.ldm.set_runtime_options(runtime_options or {})
+        self.reward_fn = build_reward(
+            reward_fn_cfg,
+            energy_calculator=energy_calculator,
+            reference_structures=reference_structures,
+        )
         if self.reward_fn is None:
             raise ValueError("reward_fn_cfg must be provided for RL training.")
+
+    @property
+    def execution_backend(self):
+        return self.ldm.execution_backend
+
+    def set_execution_backend(self, backend):
+        self.ldm.set_execution_backend(backend)
+
+    def set_runtime_options(self, runtime_options):
+        self.ldm.set_runtime_options(runtime_options)
+
+    def get_runtime_options(self, backend):
+        return self.ldm.get_runtime_options(backend)
+
+    def invalidate_runtime(self):
+        self.ldm.invalidate_runtime()
+
+    def _run_runtime(self, name, function, *args, **kwargs):
+        return self.ldm._run_runtime(name, function, *args, **kwargs)
+
+    def validate_execution_backend(self, *, use_amp=False, world_size=1):
+        self.ldm.validate_execution_backend(use_amp=use_amp, world_size=world_size)
 
     def _build_sampling_diffusion(self):
         steps = int(self.sampling_configs["sampling_steps"])
@@ -245,9 +277,7 @@ class Chemeleon2RLModule(nn.Layer):
         return self.ldm.predict(data, **kwargs)
 
     def _denoise(self, x, t, mask=None, y=None, cfg_scale=None):
-        if cfg_scale is not None:
-            return self.ldm.denoiser.forward_with_cfg(x, t, mask, y, cfg_scale)
-        return self.ldm.denoiser(x, t, mask=mask, y=y, apply_mask=True)
+        return self.ldm._runtime_denoise(x, t, mask=mask, y=y, cfg_scale=cfg_scale)
 
     def _prepare_rollout_batch(self, crystal_batch):
         group = self.num_group_samples

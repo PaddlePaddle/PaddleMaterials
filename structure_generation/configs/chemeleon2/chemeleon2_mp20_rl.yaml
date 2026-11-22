@@ -134,7 +134,7 @@ Sample:
     format: array
     niggli: False
   metrics:
-    __class_name__: StructGenMetric
+    __class_name__: CrystalVUNMetric
     __init_params__:
       reference_file_path: ${Global.reference_file}
   model_sample_params:

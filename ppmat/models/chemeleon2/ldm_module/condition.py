@@ -16,6 +16,9 @@ import numpy as np
 import paddle
 import paddle.nn as nn
 
+from ppmat.models.mattergen.property_embeddings import SetEmbeddingType
+from ppmat.models.mattergen.property_embeddings import data_is_not_nan
+
 
 def _double_condition(value):
     """Repeat each value for the unconditional and conditional CFG halves."""
@@ -38,6 +41,7 @@ class Chemeleon2ConditionModule(nn.Layer):
             raise ValueError("At least one condition embedding is required.")
         self.hidden_dim = hidden_dim
         self.p_unconditional = p_unconditional
+        self.embedding_type = SetEmbeddingType(p_unconditional)
         self.encoders = nn.LayerDict()
         for name, cfg in property_embeddings_adapt_cfg.items():
             self.encoders[name] = eval(cfg["__class_name__"])(
@@ -66,7 +70,17 @@ class Chemeleon2ConditionModule(nn.Layer):
             }
         batch_size = len(list(batch_y.values())[0])
         if training:
-            drop_mask = paddle.rand([batch_size]) < self.p_unconditional
+            available = paddle.stack(
+                [data_is_not_nan(batch_y[name]) for name in self.target_condition],
+                axis=1,
+            ).all(axis=1)
+            joint = paddle.where(
+                available,
+                paddle.zeros([batch_size]),
+                paddle.full([batch_size], float("nan")),
+            )
+            drop_mask = self.embedding_type({"joint": joint}, ["joint"])["joint"]
+            drop_mask = drop_mask.reshape([-1])
         else:
             drop_mask = paddle.concat(
                 [paddle.zeros([batch_size]), paddle.ones([batch_size])]

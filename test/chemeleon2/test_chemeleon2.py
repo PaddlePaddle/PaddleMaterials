@@ -26,10 +26,12 @@ from ppmat.datasets import build_dataloader
 from ppmat.datasets.build_structure import BuildStructure
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
-from ppmat.metrics import StructGenMetric
+from ppmat.metrics import CrystalVUNMetric
+from ppmat.metrics import build_metric
 from ppmat.models import build_model
 from ppmat.schedulers import build_scheduler
 from ppmat.trainer.base_trainer import BaseTrainer
+from ppmat.utils.execution import configure_execution_backend
 
 _CONFIG_DIR = (
     Path(__file__).resolve().parents[2] / "structure_generation/configs/chemeleon2"
@@ -43,8 +45,8 @@ def _load_cfg(name, small=True):
         config.Global.vae_num_layers = 1
         config.Global.vae_num_heads = 4
         config.Global.vae_feedforward_dim = 64
+        config.Model.__init_params__.vae_pretrained_model_name = None
         if name != "vae":
-            config.Model.__init_params__.vae_pretrained_model_name = None
             config.Global.dit_hidden_dim = 32
             config.Global.dit_num_layers = 1
             config.Global.dit_num_heads = 4
@@ -62,13 +64,31 @@ def _structure_array(num_atoms_list):
     }
 
 
-def test_vae_training_pipeline():
+def _structure_loader(batch):
+    return paddle.io.DataLoader(
+        [
+            {
+                "structure_array": {
+                    key: ConcatData(value.numpy())
+                    for key, value in batch["structure_array"].items()
+                }
+            }
+        ],
+        batch_size=1,
+        collate_fn=DefaultCollator(),
+    )
+
+
+def test_vae_training_pipeline(tmp_path):
+    from cinn_workflow_harness import trainer_config
+
     cfg = _load_cfg("vae")
-    cfg["__init_params__"]["augmentation"] = {"translate": True, "rotate": True}
-    cfg["__init_params__"]["noise"] = {"ratio": 0.4, "corruption_scale": 0.1}
+    params = cfg["__init_params__"]["vae_cfg"]["__init_params__"]
+    params["augmentation"] = {"translate": True, "rotate": True}
+    params["noise"] = {"ratio": 0.4, "corruption_scale": 0.1}
     vae = build_model(cfg)
     batch = {"structure_array": _structure_array([3, 5])}
-    converted = vae._convert_train_batch(batch)
+    converted = vae.core._convert_train_batch(batch)
     assert converted["cart_coords"].shape == [8, 3]
     optimizer = paddle.optimizer.Adam(learning_rate=1e-3, parameters=vae.parameters())
     initial = {key: value.clone() for key, value in vae.state_dict().items()}
@@ -89,6 +109,25 @@ def test_vae_training_pipeline():
     vae.eval()
     with paddle.no_grad():
         assert paddle.isfinite(vae(batch)["loss_dict"]["loss"]).item()
+    loader = _structure_loader(batch)
+    trainer = BaseTrainer(
+        trainer_config(tmp_path, 1),
+        vae,
+        train_dataloader=loader,
+        val_dataloader=loader,
+        optimizer=optimizer,
+    )
+    trainer.train()
+    assert trainer.state.global_step == 1
+    ldm_config = _load_cfg("ldm")
+    ldm_config["__init_params__"]["vae_ckpt_path"] = str(
+        tmp_path / "checkpoints/latest.pdparams"
+    )
+    ldm = build_model(ldm_config)
+    for key, value in vae.core.state_dict().items():
+        np.testing.assert_array_equal(value.numpy(), ldm.vae.state_dict()[key].numpy())
+    with pytest.raises(ValueError, match="only the eager"):
+        configure_execution_backend(vae, "cinn", owner="test")
 
 
 @pytest.mark.parametrize("learn_sigma", [True, False])
@@ -253,7 +292,12 @@ def test_generation_metrics_cross_batch():
         niggli=False,
         canocial=False,
     )
-    metric = StructGenMetric(reference_structures=[structure])
+    metric = build_metric(
+        {
+            "__class_name__": "CrystalVUNMetric",
+            "__init_params__": {"reference_structures": [structure]},
+        }
+    )
     expected = {"validity": 2 / 3, "uniqueness": 0.5, "novelty": 0.0}
     assert metric([valid, valid, invalid]) == expected
     metric.update_step(result={"result": [valid]}, batch=None, stage="sample")
@@ -263,16 +307,32 @@ def test_generation_metrics_cross_batch():
     assert metric.compute_epoch(stage="eval")["validity"] == 1
     metric.reset()
     assert metric.compute_epoch(stage="sample")["validity"] == 0
-    assert "novelty" not in StructGenMetric()([valid])
+    assert "novelty" not in CrystalVUNMetric()([valid])
 
 
-def test_ldm_trainer_resume_and_runtime(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param(
+            "gpu",
+            marks=pytest.mark.skipif(
+                os.environ.get("PPMAT_RUN_CINN_WORKFLOW_TESTS") != "1",
+                reason="Set PPMAT_RUN_CINN_WORKFLOW_TESTS=1 for GPU compilation.",
+            ),
+        ),
+    ],
+)
+def test_ldm_trainer_resume_and_runtime(tmp_path, monkeypatch, device):
     from cinn_workflow_harness import patch_cinn_runtime
     from cinn_workflow_harness import trainer_config
 
     from ppmat.models import Chemeleon2LDMModule
 
-    patch_cinn_runtime(monkeypatch, Chemeleon2LDMModule)
+    if device == "cpu":
+        patch_cinn_runtime(monkeypatch, Chemeleon2LDMModule)
+    else:
+        paddle.set_device("gpu")
     batch = {"structure_array": _structure_array([3, 5])}
     loader = paddle.io.DataLoader(
         [
@@ -369,6 +429,15 @@ def test_ldm_cinn_dispatch_and_parity(monkeypatch):
 
     monkeypatch.setattr(ldm.core, "_run_runtime", dispatch)
     ldm.core.set_execution_backend("cinn")
+    monkeypatch.setattr(ldm.core, "validate_execution_backend", lambda **kw: None)
+    assert configure_execution_backend(ldm, None, owner="test") == "cinn"
+    assert (
+        configure_execution_backend(
+            ldm, "cinn", init_params={"full_graph": False}, owner="test"
+        )
+        == "cinn"
+    )
+    assert ldm.get_runtime_options("cinn")["full_graph"] is False
     assert set(ldm.state_dict()) == keys
     paddle.seed(7)
     with paddle.no_grad():
@@ -404,7 +473,11 @@ def test_released_weight_layout(stage, monkeypatch, tmp_path):
 
     monkeypatch.setattr(download, "get_weights_path_from_url", cached_package)
     state = paddle.load(str(checkpoint))
-    model = build_model(_load_cfg(stage, small=False))
+    config = _load_cfg(stage, small=False)
+    config["__init_params__"]["vae_pretrained_model_name"] = None
+    model = build_model(config)
+    if stage == "vae":
+        model = model.core
     assert model.state_dict().keys() == state.keys()
     for key, value in model.state_dict().items():
         assert value.shape == state[key].shape
@@ -414,7 +487,13 @@ def test_released_weight_layout(stage, monkeypatch, tmp_path):
     assert legacy.state_dict().keys() == state.keys()
     for key, value in legacy.state_dict().items():
         np.testing.assert_array_equal(value.numpy(), state[key].numpy())
-    del legacy, state
+    del legacy
+    if stage == "vae":
+        unified = build_model(_load_cfg(stage, small=False))
+        for key, value in unified.core.state_dict().items():
+            np.testing.assert_array_equal(value.numpy(), state[key].numpy())
+        del unified
+    del state
     if stage == "ldm":
         sampler = StructureSampler(
             model_name="chemeleon2_ldm",
@@ -430,7 +509,11 @@ def test_released_weight_layout(stage, monkeypatch, tmp_path):
     os.environ.get("PPMAT_RUN_CINN_WORKFLOW_TESTS") != "1",
     reason="Set PPMAT_RUN_CINN_WORKFLOW_TESTS=1 for GPU compilation.",
 )
-def test_ldm_cinn_gpu_compile_parity():
+def test_ldm_cinn_gpu_compile_parity(tmp_path, monkeypatch):
+    from cinn_workflow_harness import trainer_config
+
+    from ppmat.sampler import StructureSampler
+
     if not (paddle.is_compiled_with_cuda() and paddle.base.is_compiled_with_cinn()):
         pytest.skip("CUDA Paddle with CINN is required.")
     previous_device = paddle.get_device()
@@ -446,14 +529,125 @@ def test_ldm_cinn_gpu_compile_parity():
             ldm.set_execution_backend("cinn")
             cinn = ldm._runtime_denoise(x, t, mask=mask)
         assert paddle.allclose(eager, cinn, atol=2e-5).item()
+        runtimes = dict(ldm.core._runtime_cache)
+        with paddle.no_grad():
+            ldm._runtime_denoise(x, t, mask=mask)
+        assert all(
+            ldm.core._runtime_cache[key] is value for key, value in runtimes.items()
+        )
+        ldm.set_runtime_options({"cinn": {"full_graph": False, "dynamic_shape": False}})
+        assert not ldm.core._runtime_cache
+
+        batch = {"structure_array": _structure_array([3, 5])}
+        trained = {}
+        gradients = {}
+        for backend in ("eager", "cinn"):
+            paddle.seed(42)
+            np.random.seed(42)
+            model = build_model(_load_cfg("ldm"))
+            optimizer = paddle.optimizer.SGD(
+                learning_rate=1e-3, parameters=model.parameters()
+            )
+            original_step = optimizer.step
+
+            def checked_step():
+                for param in model.denoiser.parameters():
+                    assert param.grad is not None
+                    assert paddle.isfinite(param.grad).all().item()
+                gradients[backend] = {
+                    key: param.grad.numpy().copy()
+                    for key, param in model.denoiser.named_parameters()
+                }
+                original_step()
+
+            monkeypatch.setattr(optimizer, "step", checked_step)
+            loader = _structure_loader(batch)
+            trainer = BaseTrainer(
+                trainer_config(tmp_path / backend / "training", 1),
+                model,
+                train_dataloader=loader,
+                val_dataloader=loader,
+                optimizer=optimizer,
+                execution_config={
+                    "backend": backend,
+                    "__init_params__": {"full_graph": False},
+                },
+            )
+            paddle.seed(123)
+            np.random.seed(123)
+            trainer.train()
+            assert trainer.state.global_step == 1
+            trained[backend] = {
+                key: value.numpy().copy() for key, value in model.state_dict().items()
+            }
+            assert all(np.isfinite(value).all() for value in trained[backend].values())
+        for key, value in gradients["eager"].items():
+            np.testing.assert_allclose(
+                value, gradients["cinn"][key], atol=2e-5, rtol=2e-5
+            )
+        assert trained["eager"].keys() == trained["cinn"].keys()
+        for key, value in trained["eager"].items():
+            np.testing.assert_allclose(
+                value, trained["cinn"][key], atol=2e-5, rtol=2e-5
+            )
+
+        samples = {}
+        for backend in ("eager", "cinn"):
+            sampler = StructureSampler(
+                model_name="chemeleon2_ldm",
+                config_overrides=[
+                    f"Execution.backend={backend}",
+                    "Execution.__init_params__.full_graph=false",
+                    "Sample.model_sample_params.progress=false",
+                ],
+            )
+            assert sampler.execution_backend == backend
+            paddle.seed(2024)
+            np.random.seed(2024)
+            output = tmp_path / backend / "samples"
+            samples[backend] = sampler.sample_by_num_atoms(20, save_path=str(output))
+            assert len(list(output.glob("*.cif"))) == 1
+            assert (
+                sampler.sample_config["model_sample_params"]["num_inference_steps"]
+                == 50
+            )
+        before = samples["eager"]["result"][0]
+        after = samples["cinn"]["result"][0]
+        np.testing.assert_array_equal(before["atom_types"], after["atom_types"])
+        for key in ("frac_coords", "lattice"):
+            np.testing.assert_allclose(before[key], after[key], atol=2e-5, rtol=2e-5)
     finally:
         paddle.set_device(previous_device)
 
 
-def test_rl_training_and_sampling():
+def test_rl_training_and_sampling(tmp_path):
+    import gzip
+    import pickle
+
+    from ase.calculators.emt import EMT
+    from cinn_workflow_harness import trainer_config
+    from pymatgen.analysis.phase_diagram import PDEntry
+    from pymatgen.analysis.phase_diagram import PhaseDiagram
+
     # Macro check: the full GRPO forward/backward and LDM-delegated sampling.
     paddle.seed(0)
     ldm_params = _load_cfg("ldm")["__init_params__"]
+    references = [
+        BuildStructure.build_one(
+            {
+                "atom_types": [28],
+                "frac_coords": [[0, 0, 0]],
+                "lattice": (np.eye(3) * 4).tolist(),
+            },
+            "array",
+            niggli=False,
+            canocial=False,
+        )
+    ]
+    calculator = EMT()
+    phase_path = tmp_path / "phase_diagram_20261122110000.pkl.gz"
+    with gzip.open(phase_path, "wb") as handle:
+        pickle.dump(PhaseDiagram([PDEntry("Ni", 0)]), handle)
     model = build_model(
         {
             "__class_name__": "Chemeleon2",
@@ -466,12 +660,17 @@ def test_rl_training_and_sampling():
                 "reward_fn_cfg": {
                     "__class_name__": "ReinforceReward",
                     "__init_params__": {
+                        "phase_diagram_path": str(phase_path),
                         "components": [
                             {
                                 "__class_name__": "CreativityReward",
                                 "__init_params__": {"weight": 1.0},
-                            }
-                        ]
+                            },
+                            {
+                                "__class_name__": "EnergyReward",
+                                "__init_params__": {"weight": 0.1},
+                            },
+                        ],
                     },
                 },
                 "sampling_configs": {
@@ -481,9 +680,18 @@ def test_rl_training_and_sampling():
                     "cfg_scale": 2.0,
                 },
             },
-        }
+        },
+        reference_structures=references,
+        energy_calculator=calculator,
     )
-    output = model({"structure_array": _structure_array([3, 4])})
+    assert model.core.reward_fn.reference_structures is references
+    provider = model.core.reward_fn.energy_provider
+    assert provider.calculator is calculator
+    assert np.isfinite(provider(references)).all()
+    batch = {"structure_array": _structure_array([3, 4])}
+    optimizer = paddle.optimizer.Adam(learning_rate=1e-4, parameters=model.parameters())
+    initial = {key: value.clone() for key, value in model.state_dict().items()}
+    output = model(batch)
     loss = output["loss_dict"]["loss"]
     assert paddle.isfinite(loss).item()
     loss.backward()
@@ -491,6 +699,23 @@ def test_rl_training_and_sampling():
     vae = model.core.ldm.vae
     assert all(p.grad is not None for p in denoiser.parameters())
     assert all(p.stop_gradient and p.grad is None for p in vae.parameters())
+    optimizer.step()
+    optimizer.clear_grad()
+    assert all(paddle.isfinite(p).all().item() for p in model.parameters())
+    assert any(
+        not paddle.equal_all(value, initial[key])
+        for key, value in model.state_dict().items()
+    )
+    loader = _structure_loader(batch)
+    trainer = BaseTrainer(
+        trainer_config(tmp_path, 1),
+        model,
+        train_dataloader=loader,
+        val_dataloader=loader,
+        optimizer=optimizer,
+    )
+    trainer.train()
+    assert trainer.state.global_step == 1
 
     model.eval()
     with paddle.no_grad():
@@ -509,6 +734,13 @@ def test_unified_model_train_and_sample():
     # One Chemeleon2 object covers both training (forward loss) and sampling.
     paddle.seed(0)
     ldm = _load_cfg("ldm")["__init_params__"]
+    with pytest.raises(TypeError, match="misspelled_option"):
+        build_model(
+            {
+                "__class_name__": "Chemeleon2",
+                "__init_params__": {"misspelled_option": 1},
+            }
+        )
     model = build_model(
         {
             "__class_name__": "Chemeleon2",

@@ -60,7 +60,7 @@
 | 任务 | 模型 | 数据集 |
 |------|------|--------|
 | **性质预测** | MEGNet、iComformer、DimeNet++、SphereNet | MP2018、MP2024、JARVIS、QM9 等 |
-| **结构生成** | Chemeleon2、MatterGen、DiffCSP | MP20、ALEX 等 |
+| **结构生成** | MatterGen、DiffCSP | MP20、ALEX 等 |
 | **机器学习原子间势** | CHGNet、MatterSim、SphereNet | MPTRJ、MD17 等 |
 | **电子结构** | InfGCN | QM9_ES、MP_ES、OMol25_MC_ES 等 |
 | **谱图解析** | DiffNMR | MSD_NMR 等 |

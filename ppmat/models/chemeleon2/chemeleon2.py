@@ -97,7 +97,9 @@ class Chemeleon2LDMModule(RuntimeMixin, nn.Layer):
                 raise ValueError("Choose a registered VAE or a local VAE checkpoint.")
             load_pretrain(self.vae, MODEL_REGISTRY[vae_pretrained_model_name])
         if vae_ckpt_path is not None:
-            load_pretrain(self.vae, vae_ckpt_path)
+            vae_checkpoint = nn.Layer()
+            vae_checkpoint.add_sublayer("core", self.vae)
+            load_pretrain(vae_checkpoint, vae_ckpt_path)
         if ldm_ckpt_path is not None:
             load_pretrain(self, ldm_ckpt_path)
         for param in self.vae.parameters():
@@ -400,7 +402,7 @@ def _condition_batch(value, offset, count, total):
     raise ValueError(f"condition length {n} must match num_samples ({total}) or be 1.")
 
 
-class Chemeleon2(nn.Layer):
+class Chemeleon2(RuntimeMixin, nn.Layer):
     """Unified Chemeleon2 model: one object for training and sampling.
 
     Internally this composes the VAE, the DiT denoiser and (for the RL stage) the
@@ -436,7 +438,8 @@ class Chemeleon2(nn.Layer):
         sampling_configs=None,
         execution_backend="eager",
         runtime_options=None,
-        **_compat,
+        energy_calculator=None,
+        reference_structures=None,
     ):
         super().__init__()
         if stage not in ("vae", "diffusion", "rl"):
@@ -444,6 +447,10 @@ class Chemeleon2(nn.Layer):
                 f"stage must be one of 'vae', 'diffusion', 'rl', got {stage!r}."
             )
         self.stage = stage
+        if stage != "rl" and (
+            energy_calculator is not None or reference_structures is not None
+        ):
+            raise ValueError("Reward runtime dependencies require stage='rl'.")
 
         if stage == "vae":
             from ppmat.models import build_model
@@ -451,6 +458,16 @@ class Chemeleon2(nn.Layer):
             self.core = build_model(vae_cfg)
             if self.core is None:
                 raise ValueError("stage='vae' requires a VAE configuration.")
+            if vae_pretrained_model_name is not None:
+                from ppmat.models import MODEL_REGISTRY
+
+                if vae_ckpt_path is not None:
+                    raise ValueError(
+                        "Choose a registered VAE or a local VAE checkpoint."
+                    )
+                load_pretrain(self.core, MODEL_REGISTRY[vae_pretrained_model_name])
+            if vae_ckpt_path is not None:
+                load_pretrain(self, vae_ckpt_path)
         else:
             has_ldm_components = any(
                 value is not None
@@ -482,44 +499,30 @@ class Chemeleon2(nn.Layer):
                 if ldm_ckpt_path is not None:
                     load_pretrain(self.core, ldm_ckpt_path)
             else:
-                from ppmat.models.chemeleon2.rl_module.rl_module import (
-                    Chemeleon2RLModule,
-                )  # NOQA
+                from ppmat.models.chemeleon2.rl_module import rl_module
 
-                if ldm_pretrained_model_name is not None:
-                    self.core = Chemeleon2RLModule(
-                        ldm_pretrained_model_name=ldm_pretrained_model_name,
-                        rl_configs=rl_configs,
-                        reward_fn_cfg=reward_fn_cfg,
-                        sampling_configs=sampling_configs,
-                    )
-                else:
-                    self.core = Chemeleon2RLModule(
-                        ldm_cfg={
-                            "__class_name__": "Chemeleon2LDMModule",
-                            "__init_params__": {
-                                "denoiser_cfg": denoiser_cfg,
-                                "noise_scheduler_cfg": noise_scheduler_cfg,
-                                "vae_cfg": vae_cfg,
-                                "property_embeddings_adapt_cfg": (
-                                    property_embeddings_adapt_cfg
-                                ),
-                                "condition_names": condition_names,
-                                "vae_pretrained_model_name": (
-                                    vae_pretrained_model_name
-                                ),
-                                "vae_ckpt_path": vae_ckpt_path,
-                            },
-                        },
-                        ldm_ckpt_path=ldm_ckpt_path,
-                        rl_configs=rl_configs,
-                        reward_fn_cfg=reward_fn_cfg,
-                        sampling_configs=sampling_configs,
-                    )
+                self.core = rl_module.Chemeleon2RLModule(
+                    ldm_pretrained_model_name=ldm_pretrained_model_name,
+                    ldm_ckpt_path=ldm_ckpt_path,
+                    denoiser_cfg=denoiser_cfg,
+                    noise_scheduler_cfg=noise_scheduler_cfg,
+                    vae_cfg=vae_cfg,
+                    property_embeddings_adapt_cfg=property_embeddings_adapt_cfg,
+                    condition_names=condition_names,
+                    vae_pretrained_model_name=vae_pretrained_model_name,
+                    vae_ckpt_path=vae_ckpt_path,
+                    rl_configs=rl_configs,
+                    reward_fn_cfg=reward_fn_cfg,
+                    sampling_configs=sampling_configs,
+                    energy_calculator=energy_calculator,
+                    reference_structures=reference_structures,
+                    execution_backend=execution_backend,
+                    runtime_options=runtime_options,
+                )
 
+        self.set_execution_backend(execution_backend)
+        self.set_runtime_options(runtime_options or {})
         if ckpt_path is not None:
-            from ppmat.utils.save_load import load_pretrain
-
             load_pretrain(self, ckpt_path)
 
     @property
@@ -558,50 +561,79 @@ class Chemeleon2(nn.Layer):
             )
         return predict_fn(data, **kwargs)
 
-    # Read-only pass-throughs to the active internal component. They keep CINN
-    # dispatch, resume checks and conditional-training inspection working on the
-    # unified object without exposing the component itself as the model.
+    @property
+    def _ldm(self):
+        return self.core.ldm if self.stage == "rl" else self.core
+
     @property
     def denoiser(self):
-        return self.core.denoiser
+        return self._ldm.denoiser
 
     @property
     def vae(self):
-        return self.core.vae
+        return self.core if self.stage == "vae" else self._ldm.vae
 
     @property
     def diffusion(self):
-        return self.core.diffusion
+        return self._ldm.diffusion
 
     @property
     def condition_module(self):
-        return self.core.condition_module
+        return self._ldm.condition_module
 
     @property
     def latent_std(self):
-        return self.core.latent_std
+        return self._ldm.latent_std
 
     def calculate_loss(self, *args, **kwargs):
         return self.core.calculate_loss(*args, **kwargs)
 
+    @property
+    def execution_backend(self):
+        return "eager" if self.stage == "vae" else self.core.execution_backend
+
     def set_execution_backend(self, backend):
-        return self.core.set_execution_backend(backend)
+        if self.stage == "vae":
+            if backend != "eager":
+                raise ValueError("The VAE stage supports only the eager backend.")
+            return
+        self.core.set_execution_backend(backend)
+
+    def set_runtime_options(self, runtime_options):
+        if self.stage == "vae":
+            if runtime_options:
+                raise ValueError("The VAE stage does not accept runtime options.")
+            return
+        self.core.set_runtime_options(runtime_options)
+
+    def get_runtime_options(self, backend):
+        if self.stage == "vae":
+            if backend != "eager":
+                raise ValueError("The VAE stage supports only the eager backend.")
+            return {}
+        return self.core.get_runtime_options(backend)
+
+    def invalidate_runtime(self):
+        if self.stage != "vae":
+            self.core.invalidate_runtime()
 
     def _run_runtime(self, *args, **kwargs):
         return self.core._run_runtime(*args, **kwargs)
 
     def _runtime_denoise(self, *args, **kwargs):
-        return self.core._runtime_denoise(*args, **kwargs)
+        return self._ldm._runtime_denoise(*args, **kwargs)
 
     @property
     def use_cfg(self):
-        return getattr(self.core, "use_cfg", False)
+        return getattr(self._ldm, "use_cfg", False)
 
     @property
     def noise_scheduler_cfg(self):
-        return self.core.noise_scheduler_cfg
+        return self._ldm.noise_scheduler_cfg
 
     def validate_execution_backend(self, *, use_amp=False, world_size=1):
+        if self.stage == "vae":
+            return
         return self.core.validate_execution_backend(
             use_amp=use_amp, world_size=world_size
         )

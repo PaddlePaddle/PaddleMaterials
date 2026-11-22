@@ -315,14 +315,18 @@ class EnergyAboveHullProvider:
         return energies
 
 
-def build_reward(cfg):
+def build_reward(cfg, *, energy_calculator=None, reference_structures=None):
     """Build a reward function from a ``__class_name__``/``__init_params__`` cfg."""
 
     if cfg is None:
         return None
     cfg = dict(cfg)
     class_name = cfg.pop("__class_name__")
-    init_params = cfg.pop("__init_params__", {})
+    init_params = dict(cfg.pop("__init_params__", {}))
+    if energy_calculator is not None:
+        init_params["energy_calculator"] = energy_calculator
+    if reference_structures is not None:
+        init_params["reference_structures"] = reference_structures
     if class_name in ("ReinforceReward", "Chemeleon2ReinforceReward"):
         return ReinforceReward(**init_params)
     raise KeyError(f"Unknown reward function {class_name!r}.")

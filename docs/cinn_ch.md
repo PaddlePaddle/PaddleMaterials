@@ -86,11 +86,7 @@ def _runtime_forward(self, pos, edge_index, idx_kj):
 | `CHGNet` | `forward` | AST | 能量/力/应力/磁矩推理 |
 | `DiffCSP` | `denoise_step` | SOT | 结构采样 |
 | `MatterGen`、`MatterGenWithCondition` | `denoise_step` | SOT | 无条件和条件采样 |
-| `Chemeleon2LDMModule` | `denoise_step` | SOT | 结构采样 |
-| `Chemeleon2VAEModule` | 无 | 仅 eager | 仅训练 |
-| `MolecularGraphFormer` | `graph_encoder`、`denoise_step` | SOT | 无独立注册流程 |
-| `NMRNetCLIP` | `graph_encoder`、`spectrum_encoder` | SOT | 无独立注册流程 |
-| `DiffPrior` | `denoise_step` | SOT | 无独立注册流程 |
+| `Chemeleon2` | `denoise_step` | SOT | 扩散阶段使用注册权重采样；VAE 训练使用 eager |
 | `DiffNMR` | `spectrum_encoder`、`denoise_step` | SOT | 反向扩散 |
 | `InfGCN` | 无 | 仅 eager | CINN 不可用 |
 

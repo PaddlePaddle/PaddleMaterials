@@ -32,8 +32,8 @@ if TYPE_CHECKING:
     from pymatgen.core.structure import Structure
 
 
-class StructGenMetric(StreamingMetricBase):
-    """Metrics for unconditional crystal structure generation.
+class CrystalVUNMetric(StreamingMetricBase):
+    """Crystal validity, uniqueness and reference-set novelty metrics.
 
     Evaluates a list of generated structures (the ``array`` dicts produced by
     structure generation models) with three standard indicators:
