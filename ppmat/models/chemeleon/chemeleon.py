@@ -30,6 +30,10 @@ Interface notes:
   - the text encoder is injected at construction time (any module exposing
     get_text_embeds(batch_text, cond_drop_prob), e.g. TextEncoder +
     MinimalBert); None builds an unguided model.
+  - vocab is the parsed vocabulary of a registered "Vocabulary" config
+    entry, injected by build_model(vocab=vocab) (ppmat.vocab.build_vocab);
+    the tokenizer of the assembled text encoder is built from it in place
+    of the pre-registry bundled resource file.
   - the beta and sigma noise scheduler configs are required at construction
     time and assembled through the ppmat.schedulers build_scheduler factory
     (classes registered as ChemeleonBetaScheduler / ChemeleonSigmaScheduler);
@@ -52,7 +56,6 @@ from tqdm import tqdm
 from ppmat.models.chemeleon.cspnet import DECODER_OUTPUTS
 from ppmat.models.chemeleon.cspnet import CSPNet
 from ppmat.models.chemeleon.cspnet import SinusoidalTimeEmbeddings
-from ppmat.models.chemeleon.minimal_bert import VOCAB_PATH
 from ppmat.models.chemeleon.minimal_bert import BertWordPieceTokenizer
 from ppmat.models.chemeleon.minimal_bert import MinimalBert
 from ppmat.models.chemeleon.schema import TrajectoryContainer
@@ -65,12 +68,13 @@ from ppmat.schedulers.scheduling_chemeleon import ChemeleonD3PM
 from ppmat.schedulers.scheduling_chemeleon import d_log_p_wrapped_normal
 
 
-def _build_text_encoder_from_cfg(cfg: Dict[str, Any]):
+def _build_text_encoder_from_cfg(cfg: Dict[str, Any], vocab: Dict[str, Any]):
     """Assemble the bundled text condition encoder from a config dict.
 
-    The default text front-end couples the bundled WordPiece tokenizer and
-    MinimalBert transformer with the TextEncoder wrapper; a clip_dim entry
-    adds the contrastive projection stage on top of the class-token
+    The default text front-end couples the WordPiece tokenizer built from
+    the injected vocabulary (the "text" role of the build_vocab product)
+    and MinimalBert transformer with the TextEncoder wrapper; a clip_dim
+    entry adds the contrastive projection stage on top of the class-token
     embedding. trainable_text_encoder=False freezes the transformer
     backbone (the text_emb MLP and the null embedding stay trainable).
     """
@@ -92,7 +96,9 @@ def _build_text_encoder_from_cfg(cfg: Dict[str, Any]):
         text_embed_dim=text_embed_dim,
         max_text_len=cfg.get("max_text_len", 256),
         text_dim=cfg.get("text_dim", 512),
-        tokenizer=BertWordPieceTokenizer(str(VOCAB_PATH), do_lower_case=False),
+        tokenizer=BertWordPieceTokenizer(
+            vocab["text"]["tokens"], do_lower_case=False
+        ),
         text_transformer=text_transformer,
         text_proj=text_proj,
     )
@@ -107,10 +113,19 @@ class Chemeleon(RuntimeMixin, paddle.nn.Layer):
         text_encoder=None,
         execution_backend: str = "eager",
         runtime_options: Optional[dict] = None,
+        vocab: Optional[dict] = None,
         text_encoder_cfg: Optional[Dict[str, Any]] = None,
         **kwargs,
     ):
         super().__init__()
+        if vocab is None:
+            raise ValueError(
+                "Chemeleon requires the parsed vocabulary of a registered "
+                "'Vocabulary' config entry: add a top-level 'Vocabulary' "
+                "section (a name from ppmat.vocab.VOCAB_REGISTRY) so that "
+                "build_model(model_cfg, vocab=build_vocab(...)) injects it "
+                "here."
+            )
         # execution-runtime dispatch; eager default = pass-through
         self._init_runtime(execution_backend, runtime_options)
         # time embedding
@@ -118,7 +133,7 @@ class Chemeleon(RuntimeMixin, paddle.nn.Layer):
         # text embedding (injected module; None => unguided model)
         self.text_guide = bool(_config.get("text_guide", text_encoder is not None))
         if self.text_guide and text_encoder is None and text_encoder_cfg is not None:
-            text_encoder = _build_text_encoder_from_cfg(text_encoder_cfg)
+            text_encoder = _build_text_encoder_from_cfg(text_encoder_cfg, vocab)
         if self.text_guide and text_encoder is None:
             raise ValueError(
                 "text_guide=True requires a text_encoder module at construction."

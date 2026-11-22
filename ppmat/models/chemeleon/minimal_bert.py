@@ -40,24 +40,10 @@ do_lower_case=False) with the batching options used by the model:
 padding="longest", truncation=True, max_length, and tensor return.
 """
 
-import collections
 import unicodedata
-from pathlib import Path
 
 import paddle
 import paddle.nn.functional as F
-
-VOCAB_PATH = Path(__file__).resolve().parent / "resources" / "vocab.txt"
-
-
-def load_vocab(vocab_path):
-    """Read a standard BERT vocab.txt into an ordered token->id mapping."""
-    vocab = collections.OrderedDict()
-    with open(vocab_path, "r", encoding="utf-8") as reader:
-        for index, line in enumerate(reader):
-            token = line.rstrip("\n")
-            vocab[token] = index
-    return vocab
 
 
 def whitespace_tokenize(text):
@@ -246,11 +232,15 @@ class BertWordPieceTokenizer:
     tokens accounted for) and paddle tensor return via return_tensors="pt".
     """
 
-    def __init__(self, vocab_file, do_lower_case=False):
-        self.vocab = load_vocab(vocab_file)
-        self.ids_to_tokens = collections.OrderedDict(
-            [(ids, tok) for tok, ids in self.vocab.items()]
-        )
+    def __init__(self, tokens, do_lower_case=False):
+        """Build from the ordered vocabulary tokens (id == list index).
+
+        ``tokens`` is the token list of the registered vocabulary (the
+        build_vocab product injected into the model), replacing the
+        pre-registry on-disk file load.
+        """
+        self.vocab = {token: index for index, token in enumerate(tokens)}
+        self.ids_to_tokens = dict(enumerate(tokens))
         self.basic_tokenizer = BasicTokenizer(do_lower_case=do_lower_case)
         self.wordpiece_tokenizer = WordpieceTokenizer(
             vocab=self.vocab, unk_token="[UNK]"

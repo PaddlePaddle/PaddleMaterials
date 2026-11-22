@@ -108,6 +108,26 @@ def _make_config():
     }
 
 
+def _make_vocab():
+    """Well-formed build_vocab product shape for the constructor contract.
+
+    Chemeleon requires the parsed vocabulary of a registered Vocabulary
+    entry at construction. The stub text encoder never consumes it (the
+    tokenizer only matters for the in-model text_encoder_cfg assembly),
+    so this minimal "text" role mirrors the build_vocab product fields.
+    """
+    tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]"]
+    return {
+        "text": {
+            "type": "token",
+            "num_embeddings": len(tokens),
+            "tokens": tokens,
+            "token_to_id": {token: index for index, token in enumerate(tokens)},
+            "id_to_token": dict(enumerate(tokens)),
+        }
+    }
+
+
 def _make_model(execution_backend="eager"):
     with paddle.utils.unique_name.guard():
         paddle.seed(2026)
@@ -124,6 +144,7 @@ def _make_model(execution_backend="eager"):
             text_encoder=_StubTextEncoder(),
             execution_backend=execution_backend,
             runtime_options={"cinn": {"full_graph": True}},
+            vocab=_make_vocab(),
         )
 
 
