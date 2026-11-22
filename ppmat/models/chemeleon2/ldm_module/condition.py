@@ -12,70 +12,37 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from enum import Enum
-
+import numpy as np
 import paddle
 import paddle.nn as nn
 
 
-class ConditionType(Enum):
-    COMPOSITION = "composition"
-    CHEMICAL_SYSTEM = "chemical_system"
-    VALUE = "float"
-    CATEGORICAL = "categorical"
+def _double_condition(value):
+    """Repeat each value for the unconditional and conditional CFG halves."""
+    if isinstance(value, paddle.Tensor):
+        return paddle.concat([value, value], axis=0)
+    if isinstance(value, np.ndarray):
+        return np.concatenate([value, value], axis=0)
+    if isinstance(value, (list, tuple)):
+        return list(value) * 2
+    return [value, value]
 
 
 class Chemeleon2ConditionModule(nn.Layer):
-    def __init__(
-        self,
-        condition_type,
-        hidden_dim,
-        drop_prob,
-        stats=None,
-        num_classes=None,
-        max_num_elements=100,
-    ):
+    def __init__(self, property_embeddings_adapt_cfg, hidden_dim, p_unconditional):
         super().__init__()
-        self.condition_type = condition_type
-        self.target_condition = list(condition_type.keys())
+        if not 0 <= p_unconditional <= 1:
+            raise ValueError("p_unconditional must lie in [0, 1].")
+        self.target_condition = list(property_embeddings_adapt_cfg)
+        if not self.target_condition:
+            raise ValueError("At least one condition embedding is required.")
         self.hidden_dim = hidden_dim
-        self.drop_prob = drop_prob
-        self.stats = stats if stats is not None else {}
-        self.num_classes = num_classes if num_classes is not None else {}
-        self.max_num_elements = max_num_elements
-
+        self.p_unconditional = p_unconditional
         self.encoders = nn.LayerDict()
-        for cond_name, cond_type in condition_type.items():
-            if cond_type == ConditionType.COMPOSITION.value:
-                self.encoders[cond_name] = CompositionEncoder(
-                    in_dim=max_num_elements,
-                    hidden_dim=hidden_dim,
-                )
-            elif cond_type == ConditionType.CHEMICAL_SYSTEM.value:
-                self.encoders[cond_name] = ChemicalSystemEncoder(
-                    in_dim=max_num_elements,
-                    hidden_dim=hidden_dim,
-                )
-            elif cond_type in (ConditionType.VALUE.value, "value"):
-                _stats = self.stats.get(cond_name, {})
-                self.encoders[cond_name] = ValueEncoder(
-                    hidden_dim=hidden_dim,
-                    mean=_stats.get("mean", None),
-                    std=_stats.get("std", None),
-                )
-            elif cond_type == ConditionType.CATEGORICAL.value:
-                if cond_name not in self.num_classes:
-                    raise ValueError(
-                        "num_classes for categorical condition "
-                        f"'{cond_name}' must be provided as a dict entry, "
-                        "e.g. num_classes={'<condition name>': <num classes>}"
-                    )
-                self.encoders[cond_name] = CategoricalEncoder(
-                    in_dim=self.num_classes[cond_name],
-                    hidden_dim=hidden_dim,
-                )
-            else:
-                raise ValueError(f"Unsupported condition type: {cond_type}")
+        for name, cfg in property_embeddings_adapt_cfg.items():
+            self.encoders[name] = eval(cfg["__class_name__"])(
+                hidden_dim=hidden_dim, **cfg["__init_params__"]
+            )
 
         self.proj = nn.Sequential(
             nn.Linear(len(self.encoders) * hidden_dim, hidden_dim, bias_attr=True),
@@ -93,25 +60,19 @@ class Chemeleon2ConditionModule(nn.Layer):
 
         first = list(batch_y.values())[0]
         if isinstance(first, (int, float)):
-            # Normalize scalar payloads like the sampler does
             batch_y = {
                 k: ([v] if isinstance(v, (int, float)) else v)
                 for k, v in batch_y.items()
             }
         batch_size = len(list(batch_y.values())[0])
         if training:
-            if self.drop_prob < 0:
-                raise ValueError(f"drop_prob must be >= 0, got {self.drop_prob}")
-            drop_mask = paddle.rand([batch_size]) < self.drop_prob
+            drop_mask = paddle.rand([batch_size]) < self.p_unconditional
         else:
             drop_mask = paddle.concat(
                 [paddle.zeros([batch_size]), paddle.ones([batch_size])]
             )
             drop_mask = drop_mask.astype("bool")
-            batch_y = {
-                k: paddle.concat([v, v]) if isinstance(v, paddle.Tensor) else v * 2
-                for k, v in batch_y.items()
-            }
+            batch_y = {k: _double_condition(v) for k, v in batch_y.items()}
 
         cond_embeds = []
         for cond_name, encoder in self.encoders.items():
@@ -163,7 +124,6 @@ class ValueEncoder(BaseEncoder):
         def preprocess(batch):
             if not isinstance(batch, paddle.Tensor):
                 batch = paddle.to_tensor(batch, dtype="float32")
-            # Accept scalar/1-D/2-D payloads uniformly as [B, 1]
             batch = batch.reshape([-1]).astype("float32").unsqueeze(-1)
             if mean is not None and std is not None:
                 batch = (batch - mean) / std
@@ -182,8 +142,6 @@ class CategoricalEncoder(BaseEncoder):
     def __init__(self, in_dim, hidden_dim):
         def preprocess(batch):
             if isinstance(batch, list):
-                idx = paddle.to_tensor(batch, dtype="int64")
-            elif not isinstance(batch, paddle.Tensor):
                 idx = paddle.to_tensor(batch, dtype="int64")
             else:
                 idx = batch.astype("int64")
@@ -214,8 +172,7 @@ class _ElementEncoder(BaseEncoder):
         from pymatgen.core import Element
 
         v = paddle.zeros([self._in_dim])
-        self._fill(v, s, Element)
-        return v.unsqueeze(0)
+        return self._fill(v, s, Element).unsqueeze(0)
 
 
 class CompositionEncoder(_ElementEncoder):
@@ -225,8 +182,13 @@ class CompositionEncoder(_ElementEncoder):
 
             comp = Composition(comp_str).reduced_composition
             for el, amt in comp.get_el_amt_dict().items():
-                v[Element(el).Z] = float(amt)
-            v = v / v.sum() if v.sum() > 0 else v
+                atomic_number = Element(el).Z
+                if atomic_number >= in_dim:
+                    raise ValueError(
+                        f"Atomic number {atomic_number} requires a larger in_dim."
+                    )
+                v[atomic_number] = float(amt)
+            return v / v.sum()
 
         super().__init__(in_dim, hidden_dim, fill)
 
@@ -235,6 +197,12 @@ class ChemicalSystemEncoder(_ElementEncoder):
     def __init__(self, in_dim, hidden_dim):
         def fill(v, cs, Element):
             for el in cs.split("-"):
-                v[Element(el).Z] = 1.0
+                atomic_number = Element(el).Z
+                if atomic_number >= in_dim:
+                    raise ValueError(
+                        f"Atomic number {atomic_number} requires a larger in_dim."
+                    )
+                v[atomic_number] = 1.0
+            return v
 
         super().__init__(in_dim, hidden_dim, fill)

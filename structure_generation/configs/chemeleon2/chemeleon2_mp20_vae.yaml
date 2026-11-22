@@ -1,7 +1,16 @@
 Global:
+  do_train: True
   do_eval: True
+  do_test: False
+  max_num_elements: 100
+  latent_dim: 8
+  vae_hidden_dim: 512
+  vae_num_layers: 8
+  vae_num_heads: 8
+  vae_feedforward_dim: 2048
 
 Trainer:
+  pretrained_model_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/Chemeleon2/chemeleon2_vae.zip
   max_epochs: 100
   seed: 42
   output_dir: ./output/chemeleon2_vae
@@ -18,27 +27,27 @@ Trainer:
 Model:
   __class_name__: Chemeleon2VAEModule
   __init_params__:
-    encoder:
+    encoder_cfg:
       __class_name__: Chemeleon2TransformerEncoder
       __init_params__:
-        max_num_elements: 100
-        d_model: 512
-        nhead: 8
-        dim_feedforward: 2048
+        max_num_elements: ${Global.max_num_elements}
+        d_model: ${Global.vae_hidden_dim}
+        nhead: ${Global.vae_num_heads}
+        dim_feedforward: ${Global.vae_feedforward_dim}
         activation: gelu
         dropout: 0.0
-        num_layers: 8
-    decoder:
+        num_layers: ${Global.vae_num_layers}
+    decoder_cfg:
       __class_name__: Chemeleon2TransformerDecoder
       __init_params__:
-        max_num_elements: 100
-        d_model: 512
-        nhead: 8
-        dim_feedforward: 2048
+        max_num_elements: ${Global.max_num_elements}
+        d_model: ${Global.vae_hidden_dim}
+        nhead: ${Global.vae_num_heads}
+        dim_feedforward: ${Global.vae_feedforward_dim}
         activation: gelu
         dropout: 0.0
-        num_layers: 8
-    latent_dim: 8
+        num_layers: ${Global.vae_num_layers}
+    latent_dim: ${Global.latent_dim}
     loss_weights:
       atom_types: 1.0
       lengths: 1.0
@@ -103,4 +112,3 @@ Dataset:
       __class_name__: BatchSampler
       __init_params__:
         batch_size: 32
-

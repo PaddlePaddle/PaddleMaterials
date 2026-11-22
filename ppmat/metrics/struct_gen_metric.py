@@ -15,20 +15,24 @@
 from __future__ import annotations
 
 import pickle
+from typing import TYPE_CHECKING
 from typing import Any
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Sequence
 
-from pymatgen.analysis.structure_matcher import StructureMatcher
-from pymatgen.core.composition import Composition
-from pymatgen.core.structure import Structure
+import numpy as np
 
-from ppmat.metrics.utils import Crystal
+from ppmat.datasets.build_structure import BuildStructure
+from ppmat.metrics.streaming_base import StreamingMetricBase
+
+if TYPE_CHECKING:
+    from pymatgen.core.composition import Composition
+    from pymatgen.core.structure import Structure
 
 
-class StructGenMetric:
+class StructGenMetric(StreamingMetricBase):
     """Metrics for unconditional crystal structure generation.
 
     Evaluates a list of generated structures (the ``array`` dicts produced by
@@ -43,10 +47,7 @@ class StructGenMetric:
       pymatgen structures (``reference_file_path``) or directly as a list
       (``reference_structures``).
 
-    The metric is consumed offline and in one shot by
-    ``StructureSampler.compute_metric`` (``metric(total_results)``). It
-    intentionally does not implement ``StreamingMetricBase``: there is no
-    incremental train/eval consumer for structure-generation metrics.
+    One-shot and streaming evaluation share the same global structure pool.
     """
 
     def __init__(
@@ -57,6 +58,8 @@ class StructGenMetric:
         angle_tol: float = 10,
         ltol: float = 0.3,
     ) -> None:
+        from pymatgen.analysis.structure_matcher import StructureMatcher
+
         if reference_file_path is not None and reference_structures is not None:
             raise ValueError(
                 "Pass either reference_file_path or reference_structures, not both."
@@ -84,6 +87,17 @@ class StructGenMetric:
                 self._reference_index.setdefault(
                     self._composition_key(ref_structure), []
                 ).append(ref_structure)
+        self.reset()
+
+    def update_step(self, *, result, batch, stage):
+        if "result" in result:
+            self._samples.setdefault(stage, []).extend(result["result"])
+
+    def compute_epoch(self, *, stage):
+        return self(self._samples.get(stage, []))
+
+    def reset(self):
+        self._samples = {}
 
     @staticmethod
     def _composition_key(structure: Structure) -> Composition:
@@ -102,20 +116,47 @@ class StructGenMetric:
         )
 
     def __call__(self, pred_data: Sequence[Dict[str, Any]]) -> Dict[str, float]:
-        crystals = [Crystal(crys_array_dict) for crys_array_dict in pred_data]
-        valid_crystals = [c for c in crystals if c.valid and c.constructed]
-        total = len(crystals)
-        n_valid = len(valid_crystals)
+        from ppmat.metrics.utils import smact_validity
+        from ppmat.metrics.utils import structure_validity
+
+        valid_structures = []
+        for data in pred_data:
+            try:
+                data = dict(data)
+                if "lattice" in data:
+                    data["lattice"] = np.asarray(data["lattice"]).tolist()
+                structure = BuildStructure.build_one(
+                    data, "array", niggli=False, canocial=False
+                )
+                elements, counts = np.unique(
+                    structure.atomic_numbers, return_counts=True
+                )
+                counts = counts // np.gcd.reduce(counts)
+                if smact_validity(
+                    tuple(elements), tuple(counts)
+                ) and structure_validity(structure):
+                    valid_structures.append(structure)
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+                RuntimeError,
+                np.linalg.LinAlgError,
+            ):
+                continue
+        total = len(pred_data)
+        n_valid = len(valid_structures)
 
         results = {
             "validity": n_valid / total if total > 0 else 0.0,
             "uniqueness": 0.0,
-            "novelty": 0.0,
         }
+        if self.reference_structures is not None:
+            results["novelty"] = 0.0
         if n_valid == 0:
             return results
 
-        groups = self.matcher.group_structures([c.structure for c in valid_crystals])
+        groups = self.matcher.group_structures(valid_structures)
         n_unique = len(groups)
         results["uniqueness"] = n_unique / n_valid
 

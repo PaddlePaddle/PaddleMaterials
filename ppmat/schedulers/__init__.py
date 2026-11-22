@@ -19,6 +19,7 @@ import ppmat.schedulers.scheduling_wrapped_sde_ve as scheduling_wrapped_sde_ve  
 from ppmat.schedulers.scheduling_d3pm import D3PMScheduler
 from ppmat.schedulers.scheduling_ddpm import DDPMScheduler
 from ppmat.schedulers.scheduling_diffprior import NoiseScheduler
+from ppmat.schedulers.scheduling_epsilon_diffusion import EpsilonDiffusionScheduler
 from ppmat.schedulers.scheduling_lattice_vp import LatticeVPSDEScheduler
 from ppmat.schedulers.scheduling_sde_ve import ScoreSdeVeScheduler
 from ppmat.schedulers.scheduling_sde_ve import ScoreSdeVeSchedulerWrapped
@@ -28,6 +29,7 @@ NumAtomsVarianceAdjustedWrappedVESDE = (
 )
 __all__ = [
     "build_scheduler",
+    "EpsilonDiffusionScheduler",
     "DDPMScheduler",
     "ScoreSdeVeScheduler",
     "ScoreSdeVeSchedulerWrapped",

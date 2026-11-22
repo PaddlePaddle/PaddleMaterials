@@ -73,12 +73,12 @@ class Chemeleon2TransformerEncoder(nn.Layer):
         return self.d_model
 
     def forward(self, batch):
-        atom_types = batch.atom_types
-        lattices = batch.lattices
-        frac_coords = batch.frac_coords
-        token_idx = batch.token_idx
-        batch_idx = batch.batch
-        num_atoms = batch.num_atoms
+        atom_types = batch["atom_types"]
+        lattices = batch["lattice"]
+        frac_coords = batch["frac_coords"]
+        token_idx = batch["token_idx"]
+        batch_idx = batch["batch"]
+        num_atoms = batch["num_atoms"]
 
         x = self.atom_type_embedder(atom_types)
         x += self.lattices_embedder(lattices.reshape([-1, 9]))[batch_idx]

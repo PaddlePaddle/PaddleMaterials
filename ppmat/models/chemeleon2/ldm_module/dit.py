@@ -145,6 +145,7 @@ class Chemeleon2DiT(nn.Layer):
         mlp_ratio=4.0,
         condition_dim=None,
         learn_sigma=True,
+        frequency_embedding_dim=256,
     ):
         super().__init__()
 
@@ -155,7 +156,7 @@ class Chemeleon2DiT(nn.Layer):
         self.latent_dim = input_dim
 
         self.x_embedder = nn.Linear(input_dim, hidden_dim, bias_attr=True)
-        self.t_embedder = TimestepEmbedder(hidden_dim)
+        self.t_embedder = TimestepEmbedder(hidden_dim, frequency_embedding_dim)
 
         if condition_dim is not None:
             self.y_embedder = nn.Linear(condition_dim, hidden_dim, bias_attr=True)
@@ -191,10 +192,11 @@ class Chemeleon2DiT(nn.Layer):
 
         x = self.final_layer(x, c)
 
-        x = x.reshape([x.shape[0], 2 * x.shape[1], self.latent_dim])
+        output_multiplier = 2 if self.learn_sigma else 1
+        x = x.reshape([x.shape[0], output_multiplier * x.shape[1], self.latent_dim])
 
         if mask is not None and apply_mask:
-            x = x * mask.repeat(1, 2).unsqueeze(-1).astype(x.dtype)
+            x = x * mask.repeat(1, output_multiplier).unsqueeze(-1).astype(x.dtype)
 
         return x
 

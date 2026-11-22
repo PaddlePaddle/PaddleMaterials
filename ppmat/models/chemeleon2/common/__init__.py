@@ -13,11 +13,9 @@
 # limitations under the License.
 
 from ppmat.models.chemeleon2.common.distributions import DiagonalGaussianDistribution
-from ppmat.models.chemeleon2.common.schema import CrystalBatch
-from ppmat.models.chemeleon2.common.schema import build_structure_array
-from ppmat.models.chemeleon2.common.schema import create_empty_batch
 from ppmat.models.chemeleon2.common.utils import apply_augmentation
 from ppmat.models.chemeleon2.common.utils import apply_noise
+from ppmat.models.chemeleon2.common.utils import build_structure_array
 from ppmat.models.chemeleon2.common.utils import get_index_embedding
 from ppmat.models.chemeleon2.common.utils import make_attn_mask
 from ppmat.models.chemeleon2.common.utils import set_gelu_approx
@@ -25,10 +23,8 @@ from ppmat.models.chemeleon2.common.utils import to_dense_batch
 
 __all__ = [
     "DiagonalGaussianDistribution",
-    "CrystalBatch",
-    "build_structure_array",
-    "create_empty_batch",
     "to_dense_batch",
+    "build_structure_array",
     "apply_augmentation",
     "apply_noise",
     "get_index_embedding",

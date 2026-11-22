@@ -19,8 +19,7 @@ import paddle.nn.functional as F
 from ppmat.models.chemeleon2.common import DiagonalGaussianDistribution
 from ppmat.models.chemeleon2.common import apply_augmentation
 from ppmat.models.chemeleon2.common import apply_noise
-from ppmat.models.chemeleon2.common.schema import CrystalBatch
-from ppmat.models.chemeleon2.common.schema import build_structure_array
+from ppmat.models.chemeleon2.common.utils import build_structure_array
 from ppmat.utils.crystal import lattice_params_to_matrix_paddle
 
 _FA_SIMILARITY_MARGIN = 0.25
@@ -30,10 +29,10 @@ _FA_COSINE_FLOOR = 0.5
 class Chemeleon2VAEModule(nn.Layer):
     def __init__(
         self,
-        encoder,
-        decoder,
-        latent_dim,
-        loss_weights,
+        encoder_cfg=None,
+        decoder_cfg=None,
+        latent_dim=8,
+        loss_weights=None,
         augmentation=None,
         noise=None,
         atom_type_predict=True,
@@ -43,17 +42,10 @@ class Chemeleon2VAEModule(nn.Layer):
 
         from ppmat.models import build_model
 
-        if isinstance(encoder, dict):
-            self.encoder = build_model(encoder)
-        else:
-            self.encoder = encoder
-
-        if isinstance(decoder, dict):
-            self.decoder = build_model(decoder)
-        else:
-            self.decoder = decoder
+        self.encoder = build_model(encoder_cfg)
+        self.decoder = build_model(decoder_cfg)
         self.latent_dim = latent_dim
-        self.loss_weights = loss_weights
+        self.loss_weights = loss_weights if loss_weights is not None else {}
         self.augmentation = augmentation
         self.noise = noise
         self.atom_type_predict = atom_type_predict
@@ -80,62 +72,66 @@ class Chemeleon2VAEModule(nn.Layer):
         return decoder_out
 
     def reconstruct(self, decoder_out, batch):
-        batch_rec = CrystalBatch()
+        batch_rec = {}
 
         if decoder_out["atom_types"].ndim == 2:
-            batch_rec.atom_types = paddle.argmax(decoder_out["atom_types"], axis=1)
+            batch_rec["atom_types"] = paddle.argmax(decoder_out["atom_types"], axis=1)
         else:
-            batch_rec.atom_types = decoder_out["atom_types"]
+            batch_rec["atom_types"] = decoder_out["atom_types"]
 
-        batch_rec.frac_coords = decoder_out["frac_coords"]
+        batch_rec["frac_coords"] = decoder_out["frac_coords"]
 
         # Scale back the decoder lengths by num_atoms^(1/3)
         lengths_scaled = decoder_out["lengths"]
-        num_atoms = batch.num_atoms
+        num_atoms = batch["num_atoms"]
         if num_atoms.ndim <= 1:
             num_atoms = num_atoms.unsqueeze(-1)
 
         lengths = lengths_scaled * num_atoms ** (1 / 3)
-        batch_rec.lengths = lengths
-        batch_rec.lengths_scaled = lengths_scaled
+        batch_rec["lengths"] = lengths
+        batch_rec["lengths_scaled"] = lengths_scaled
 
         angles_radians = decoder_out["angles"]
         angles_degrees = paddle.rad2deg(angles_radians)
-        batch_rec.angles = angles_degrees
-        batch_rec.angles_radians = angles_radians
+        batch_rec["angles"] = angles_degrees
+        batch_rec["angles_radians"] = angles_radians
 
-        batch_rec.lattices = lattice_params_to_matrix_paddle(lengths, angles_degrees)
+        batch_rec["lattice"] = lattice_params_to_matrix_paddle(lengths, angles_degrees)
 
-        batch_rec.num_atoms = batch.num_atoms
-        batch_rec.batch = batch.batch
-        batch_rec.token_idx = batch.token_idx
-        batch_rec.num_nodes = batch.num_nodes
-        batch_rec.num_graphs = batch.num_graphs
+        batch_rec["num_atoms"] = batch["num_atoms"]
+        batch_rec["batch"] = batch["batch"]
+        batch_rec["token_idx"] = batch["token_idx"]
         return batch_rec
 
     def _convert_train_batch(self, batch):
         structure_array = batch["structure_array"]
-        crystal_batch = build_structure_array(CrystalBatch(), structure_array)
-        crystal_batch.lengths = structure_array["lengths"]
-        crystal_batch.angles = structure_array["angles"]
-        crystal_batch.angles_radians = paddle.deg2rad(structure_array["angles"])
+        crystal_batch = build_structure_array(structure_array)
+        crystal_batch["lengths"] = structure_array["lengths"]
+        crystal_batch["angles"] = structure_array["angles"]
+        crystal_batch["angles_radians"] = paddle.deg2rad(structure_array["angles"])
         num_atoms_tensor = structure_array["num_atoms"]
         if num_atoms_tensor.ndim == 1:
             num_atoms_tensor = num_atoms_tensor.unsqueeze(-1)
-        crystal_batch.lengths_scaled = structure_array["lengths"] / (
+        crystal_batch["lengths_scaled"] = structure_array["lengths"] / (
             num_atoms_tensor ** (1 / 3)
         )
-        cart_coords = paddle.matmul(
-            crystal_batch.frac_coords, crystal_batch.lattices[crystal_batch.batch]
+        cart_coords = paddle.einsum(
+            "bi,bij->bj",
+            crystal_batch["frac_coords"],
+            crystal_batch["lattice"][crystal_batch["batch"]],
         )
-        crystal_batch.cart_coords = cart_coords
+        crystal_batch["cart_coords"] = cart_coords
         return crystal_batch
 
     def forward(self, batch):
+        """Compute reconstruction loss without per-property predictions."""
         crystal_batch = self._convert_train_batch(batch)
-        loss_dict = self.calculate_loss(crystal_batch, training=True)
-        loss_dict["loss"] = loss_dict.get("total_loss", paddle.to_tensor([0.0]))
-        return {"loss_dict": loss_dict}
+        loss_dict = self.calculate_loss(crystal_batch, training=self.training)
+        loss_dict["loss"] = loss_dict["total_loss"]
+        return {
+            "loss_dict": loss_dict,
+            "label_dict": batch["structure_array"],
+        }
 
     def calculate_loss(self, batch, training=True):
         if training and self.augmentation is not None:
@@ -161,23 +157,23 @@ class Chemeleon2VAEModule(nn.Layer):
         loss_atom_types = 0
         if self.atom_type_predict:
             loss_atom_types = F.cross_entropy(
-                decoder_out["atom_types"], batch.atom_types
+                decoder_out["atom_types"], batch["atom_types"]
             )
-        loss_lengths = F.mse_loss(decoder_out["lengths"], batch.lengths_scaled)
-        loss_angles = F.mse_loss(decoder_out["angles"], batch.angles_radians)
-        loss_frac_coords = F.mse_loss(decoder_out["frac_coords"], batch.frac_coords)
+        loss_lengths = F.mse_loss(decoder_out["lengths"], batch["lengths_scaled"])
+        loss_angles = F.mse_loss(decoder_out["angles"], batch["angles_radians"])
+        loss_frac_coords = F.mse_loss(decoder_out["frac_coords"], batch["frac_coords"])
 
         loss_kl = encoded["posterior"].kl().mean()
 
         fa_loss = 0
         if self.loss_weights.get("fa", 0) > 0:
-            if not hasattr(batch, "mace_features") or batch.mace_features is None:
+            if "mace_features" not in batch:
                 raise ValueError(
                     "loss_weights['fa'] > 0 requires 'mace_features' in the "
                     "structure_array. Enable the 'mace_features' property in "
                     "MP20Dataset.property_names or set loss_weights['fa'] to 0."
                 )
-            mace_features = getattr(batch, "mace_features")
+            mace_features = batch["mace_features"]
             z = self.proj(encoded["z"])
             z_norm = F.normalize(z, axis=-1)
             mace_features_norm = F.normalize(mace_features, axis=-1)

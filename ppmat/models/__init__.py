@@ -21,9 +21,11 @@ from typing import Optional
 
 from omegaconf import OmegaConf
 
+from ppmat.models.chemeleon2.chemeleon2 import Chemeleon2
+from ppmat.models.chemeleon2.chemeleon2 import Chemeleon2LDMModule
 from ppmat.models.chemeleon2.ldm_module.condition import Chemeleon2ConditionModule
 from ppmat.models.chemeleon2.ldm_module.dit import Chemeleon2DiT
-from ppmat.models.chemeleon2.ldm_module.ldm import Chemeleon2LDMModule
+from ppmat.models.chemeleon2.rl_module.rl_module import Chemeleon2RLModule
 from ppmat.models.chemeleon2.vae_module.decoder import Chemeleon2TransformerDecoder
 from ppmat.models.chemeleon2.vae_module.encoder import Chemeleon2TransformerEncoder
 from ppmat.models.chemeleon2.vae_module.vae import Chemeleon2VAEModule
@@ -79,8 +81,10 @@ __all__ = [
     "DiffPrior",
     "DiffNMR",
     "InfGCN",
+    "Chemeleon2",
     "Chemeleon2VAEModule",
     "Chemeleon2LDMModule",
+    "Chemeleon2RLModule",
     "Chemeleon2DiT",
     "Chemeleon2ConditionModule",
     "Chemeleon2TransformerDecoder",

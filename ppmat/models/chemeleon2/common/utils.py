@@ -16,9 +16,12 @@ import math
 
 import paddle
 
+from ppmat.utils.crystal import lattice_params_to_matrix_paddle
+
 __all__ = [
     "get_index_embedding",
     "to_dense_batch",
+    "build_structure_array",
     "apply_augmentation",
     "apply_noise",
     "set_gelu_approx",
@@ -76,7 +79,7 @@ def to_dense_batch(x, batch_idx, max_num_nodes=None):
 def apply_augmentation(batch, translate=False, rotate=False):
     if not translate and not rotate:
         return batch
-    batch_aug = batch.clone()
+    batch_aug = {key: value.clone() for key, value in batch.items()}
     if translate:
         batch_aug = _augmentation_translate(batch_aug)
     if rotate:
@@ -85,8 +88,8 @@ def apply_augmentation(batch, translate=False, rotate=False):
 
 
 def _augmentation_translate(batch):
-    lengths_mean = batch.lengths.mean(axis=0)
-    lengths_std = batch.lengths.std(axis=0, unbiased=False)
+    lengths_mean = batch["lengths"].mean(axis=0)
+    lengths_std = batch["lengths"].std(axis=0, unbiased=False)
     random_translate = (
         paddle.normal(
             mean=paddle.abs(lengths_mean),
@@ -96,44 +99,44 @@ def _augmentation_translate(batch):
         )
         / 2
     )
-    cart_coords_aug = batch.cart_coords + random_translate
-    cell_per_node_inv = paddle.inverse(batch.lattices[batch.batch])
+    cart_coords_aug = batch["cart_coords"] + random_translate
+    cell_per_node_inv = paddle.inverse(batch["lattice"][batch["batch"]])
     frac_coords_aug = (
         paddle.einsum("bi,bij->bj", cart_coords_aug, cell_per_node_inv) % 1.0
     )
-    batch.cart_coords = cart_coords_aug
-    batch.frac_coords = frac_coords_aug
+    batch["cart_coords"] = cart_coords_aug
+    batch["frac_coords"] = frac_coords_aug
     return batch
 
 
 def _augmentation_rotate(batch):
     rot_mat = _random_rotation_matrix()
-    batch.cart_coords = paddle.matmul(batch.cart_coords, rot_mat.T)
-    batch.lattices = paddle.matmul(batch.lattices, rot_mat.T)
+    batch["cart_coords"] = paddle.matmul(batch["cart_coords"], rot_mat.T)
+    batch["lattice"] = paddle.matmul(batch["lattice"], rot_mat.T)
     return batch
 
 
 def apply_noise(batch, ratio=0.1, corruption_scale=0.1):
     if ratio <= 0:
         return batch
-    batch_noise = batch.clone()
-    total_num_atoms = batch_noise.num_nodes
+    batch_noise = {key: value.clone() for key, value in batch.items()}
+    total_num_atoms = batch_noise["atom_types"].shape[0]
     noise_num_atoms = int(total_num_atoms * ratio)
-    noise_atom_types = batch_noise.atom_types.clone()
+    noise_atom_types = batch_noise["atom_types"].clone()
     type_noise_idx = paddle.randperm(total_num_atoms)[:noise_num_atoms]
     noise_atom_types[type_noise_idx] = 0
-    noise_cart_coords = batch_noise.cart_coords.clone()
+    noise_cart_coords = batch_noise["cart_coords"].clone()
     coord_noise_idx = paddle.randperm(total_num_atoms)[:noise_num_atoms]
     noise_cart_coords[coord_noise_idx] += (
         paddle.randn([noise_num_atoms, 3]) * corruption_scale
     )
-    cell_per_node_inv = paddle.inverse(batch.lattices[batch.batch])
+    cell_per_node_inv = paddle.inverse(batch["lattice"][batch["batch"]])
     noise_frac_coords = (
         paddle.einsum("bi,bij->bj", noise_cart_coords, cell_per_node_inv) % 1.0
     )
-    batch_noise.atom_types = noise_atom_types
-    batch_noise.cart_coords = noise_cart_coords
-    batch_noise.frac_coords = noise_frac_coords
+    batch_noise["atom_types"] = noise_atom_types
+    batch_noise["cart_coords"] = noise_cart_coords
+    batch_noise["frac_coords"] = noise_frac_coords
     return batch_noise
 
 
@@ -178,3 +181,21 @@ def _random_rotation_matrix():
         dtype="float32",
     )
     return rot_mat
+
+
+def build_structure_array(structure_array):
+    batch = dict(structure_array)
+    num_atoms = batch["num_atoms"]
+    batch["batch"] = paddle.repeat_interleave(
+        paddle.arange(num_atoms.shape[0]), num_atoms
+    )
+    starts = paddle.cumsum(num_atoms) - num_atoms
+    batch["token_idx"] = (
+        paddle.arange(num_atoms.sum().item(), dtype=num_atoms.dtype)
+        - paddle.repeat_interleave(starts, num_atoms)
+    ).astype("int64")
+    if "lattice" not in batch and "lengths" in batch and "angles" in batch:
+        batch["lattice"] = lattice_params_to_matrix_paddle(
+            batch["lengths"], batch["angles"]
+        )
+    return batch
