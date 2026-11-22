@@ -3,8 +3,8 @@ Global:
   do_train: True
   do_eval: False
   do_test: False
-  # Number of training timesteps for the diffusion schedulers
-  num_train_timesteps: 1000
+  # Number of timesteps for the diffusion schedulers
+  num_timesteps: 1000
 
 Trainer:
   # Max epochs to train
@@ -77,7 +77,7 @@ Model:
       # diffusion
       text_guide: true
       cond_drop_prob: 0.2 # conditional drop probability
-      timesteps: ${Global.num_train_timesteps}
+      timesteps: ${Global.num_timesteps}
       d3pm_hybrid_coeff: 1.0 # hybrid coefficient for D3PM
       # loss weights for the three diffusion channels
       cost_atom_types: 1.0
@@ -89,11 +89,11 @@ Model:
       __class_name__: ChemeleonBetaScheduler
       __init_params__:
         scheduler_mode: cosine
-        timesteps: ${Global.num_train_timesteps}
+        timesteps: ${Global.num_timesteps}
     sigma_noise_scheduler_cfg:
       __class_name__: ChemeleonSigmaScheduler
       __init_params__:
-        timesteps: ${Global.num_train_timesteps}
+        timesteps: ${Global.num_timesteps}
     # bundled text front-end (WordPiece tokenizer + MinimalBert + wrapper)
     text_encoder_cfg:
       text_embed_dim: 768 # embedding dimension of the text encoder
@@ -170,8 +170,6 @@ Dataset:
         drop_last: False
         batch_size: 128
 
-# Sampling entry: structure_generation/sample.py --mode by_condition with
-# --condition text=<composition string>
 Sample:
   build_structure_cfg:
     format: ase_atoms
