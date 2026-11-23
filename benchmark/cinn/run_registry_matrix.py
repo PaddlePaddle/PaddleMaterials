@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_ONE = Path(__file__).with_name("benchmark_registered.py")
 COMPARE_BACKENDS = Path(__file__).with_name("compare_backends.py")
 CINN_SUPPORTED_PREFIXES = (
+    "chemeleon2_ldm",
     "chgnet_",
     "comformer_",
     "diffcsp_",

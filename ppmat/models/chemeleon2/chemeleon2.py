@@ -592,6 +592,12 @@ class Chemeleon2(RuntimeMixin, nn.Layer):
     def execution_backend(self):
         return "eager" if self.stage == "vae" else self.core.execution_backend
 
+    @property
+    def _runtime_cache(self):
+        # The wrapper delegates compilation to ``core``; expose its cache so
+        # callers can inspect the active runtime state.
+        return getattr(self.core, "_runtime_cache", {})
+
     def set_execution_backend(self, backend):
         if self.stage == "vae":
             if backend != "eager":
