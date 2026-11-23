@@ -96,7 +96,7 @@ Chemeleon2 reuses the existing `MP20Dataset` and its standard train/validation/t
 
 | Model | Dataset | S.U.N. (%) | Stable (%) | Unique (%) | Novel (%) | RMSD (Å) | GPUs | Training Time | Config | Checkpoint / Log |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| chemeleon2_mp20_ldm | mp20 | 6.00 | 6.20 | 93.00 | 99.80 | 0.120 | 1 | ~0.7 hours | [chemeleon2_mp20_ldm.yaml](chemeleon2_mp20_ldm.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/Chemeleon2/chemeleon2_ldm_100ep.zip) |
+| chemeleon2_mp20_ldm | mp20 | 6.00 | 6.20 | 93.00 | 99.80 | 0.120 | 1 | ~0.7 hours | [chemeleon2_mp20_ldm.yaml](chemeleon2_mp20_ldm.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/Chemeleon2/chemeleon2_ldm.zip) |
 
 Metrics are for the released `chemeleon2_ldm` checkpoint on 1,000 MP20-sized
 structures (DDIM 50 steps, seed 2024). Stability requires converged MatterSim 5M
