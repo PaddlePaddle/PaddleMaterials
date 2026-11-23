@@ -97,6 +97,7 @@ and timings.
 | `CHGNet` | `forward` | AST | energy/force/stress/magnetic-moment inference |
 | `DiffCSP` | `denoise_step` | SOT | structure sampling |
 | `MatterGen`, `MatterGenWithCondition` | `denoise_step` | SOT | unconditional and conditional sampling |
+| `Chemeleon2` | `denoise_step` | SOT | diffusion-stage sampling with registered weights; VAE training uses eager |
 | `MolecularGraphFormer` | `graph_encoder`, `denoise_step` | SOT | no standalone registered workflow |
 | `NMRNetCLIP` | `graph_encoder`, `spectrum_encoder` | SOT | no standalone registered workflow |
 | `DiffPrior` | `denoise_step` | SOT | no standalone registered workflow |

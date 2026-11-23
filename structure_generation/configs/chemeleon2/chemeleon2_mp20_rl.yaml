@@ -1,0 +1,141 @@
+Global:
+  do_train: True
+  do_eval: False
+  do_test: False
+  max_num_elements: 100
+  latent_dim: 8
+  num_group_samples: 4
+  sampling_steps: 10
+  eta: 1.0
+  cfg_scale: 2.0
+  reference_file: ./data/mp_20/novelty_reference.pkl
+  diversity_reference_size: 512
+
+Trainer:
+  max_epochs: 1
+  seed: 42
+  output_dir: ./output/chemeleon2_rl
+  save_freq: 200
+  log_freq: 1
+  start_eval_epoch: 1
+  eval_freq: 1000
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'epoch'
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: 'loss'
+  greater_is_better: False
+
+Model:
+  __class_name__: Chemeleon2
+  __init_params__:
+    stage: rl
+    ldm_pretrained_model_name: chemeleon2_ldm
+    rl_configs:
+      clip_ratio: 0.001
+      kl_weight: 1.0
+      entropy_weight: 1.0e-05
+      num_group_samples: ${Global.num_group_samples}
+      group_reward_norm: True
+    sampling_configs:
+      sampler: ddim
+      sampling_steps: ${Global.sampling_steps}
+      eta: ${Global.eta}
+      cfg_scale: ${Global.cfg_scale}
+      progress: False
+    reward_fn_cfg:
+      __class_name__: ReinforceReward
+      __init_params__:
+        normalize_fn: std
+        eps: 1.0e-04
+        reference_file_path: ${Global.reference_file}
+        diversity_reference_size: ${Global.diversity_reference_size}
+        components:
+          - __class_name__: CreativityReward
+            __init_params__:
+              weight: 1.0
+              normalize_fn: null
+          - __class_name__: StructureDiversityReward
+            __init_params__:
+              weight: 0.1
+              normalize_fn: norm
+          - __class_name__: CompositionDiversityReward
+            __init_params__:
+              weight: 1.0
+              normalize_fn: norm
+
+Optimizer:
+  __class_name__: AdamW
+  __init_params__:
+    lr: 1.0e-05
+    weight_decay: 0.0
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/train.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 8
+  val:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/val.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 8
+  test:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/test.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
+    loader:
+      num_workers: 4
+      use_shared_memory: False
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 8
+
+Sample:
+  data:
+    dataset:
+      __class_name__: NumAtomsCrystalDataset
+      __init_params__:
+        total_num: 10
+        prop_names: []
+        prop_values: []
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 10
+  build_structure_cfg:
+    format: array
+    niggli: False
+  metrics:
+    __class_name__: CrystalVUNMetric
+    __init_params__:
+      reference_file_path: ${Global.reference_file}
+  model_sample_params:
+    num_inference_steps: 50
