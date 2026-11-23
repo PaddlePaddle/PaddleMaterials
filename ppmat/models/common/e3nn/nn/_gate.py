@@ -30,7 +30,7 @@ class _Sortcut(paddle.nn.Layer):
             instructions += [tuple(range(i, i + len(irreps_out)))]
             i += len(irreps_out)
         assert len(irreps_in) == i, (len(irreps_in), i)
-        irreps_in, p, _ = paddle.sort(x=irreps_in), paddle.argsort(x=irreps_in)
+        irreps_in, p, _ = irreps_in.sort()
         instructions = [tuple(p[i] for i in x) for x in instructions]
         self.cut = Extract(irreps_in, self.irreps_outs, instructions)
         self.irreps_in = irreps_in.simplify()

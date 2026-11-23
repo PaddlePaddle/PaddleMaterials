@@ -50,26 +50,26 @@ class Extract(paddle.nn.Layer):
         assert x.shape[-1] == self.irreps_in.dim, "invalid input shape"
 
         out = []
-        for irreps in self.irreps_outs:
-            out.append(paddle.zeros(list(x.shape[:-1]) + [irreps.dim], dtype=x.dtype))
-        for i, (irreps_out, ins) in enumerate(zip(self.irreps_outs, self.instructions)):
-            if ins == tuple(range(len(self.irreps_in))):
-                out[i] = paddle.assign(x)
+        input_slices = self.irreps_in.slices()
+        for irreps_out, instructions in zip(self.irreps_outs, self.instructions):
+            if instructions == tuple(range(len(input_slices))):
+                out.append(paddle.assign(x))
+                continue
+            # Building the output from slices avoids slice assignment, whose
+            # backward op cannot be differentiated for force losses.
+            parts = [
+                x.slice([-1], [input_slices[i].start], [input_slices[i].stop])
+                for i in instructions
+            ]
+            if not parts:
+                result = x.slice([-1], [0], [0])
+            elif len(parts) == 1:
+                result = parts[0]
             else:
-                for s_out, i_in in zip(irreps_out.slices(), ins):
-                    i_start = self.irreps_in[:i_in].dim
-                    i_len = self.irreps_in[i_in].dim
-                    x_slice = x.slice([-1], [i_start], [i_start + i_len])
-                    if len(out[i].shape) == 1:
-                        out[i][s_out.start : s_out.stop] = x_slice
-                    else:
-                        idx = [slice(None)] * (
-                            len(out[i].shape) - 1
-                        )  
-                        idx.append(
-                            slice(s_out.start, s_out.stop)
-                        )  
-                        out[i][tuple(idx)] = x_slice
+                result = paddle.concat(parts, axis=-1)
+            if result.shape[-1] != irreps_out.dim:
+                raise ValueError("Extract instructions do not match output irreps")
+            out.append(result)
 
         if self.squeeze_out and len(out) == 1:
             return out[0]

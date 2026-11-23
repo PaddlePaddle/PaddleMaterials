@@ -34,3 +34,7 @@ Machine-learning interatomic potentials (MLIP) bridge the gap between quantum-le
 | &emsp;ML2DDB🌟                      | ✅                                       | -                                               | -                                               |
 
 **Legend:** ✅ Verified · 🧪 Implemented, pending validation · 🚧 In development · `-` Not supported · 🌟 Original Work
+
+## SevenNet
+
+See the [SevenNet guide](./configs/sevennet/README.md) for energy, force and stress prediction, and the single-GPU training example.

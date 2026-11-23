@@ -51,7 +51,11 @@ from ppmat.utils.model_package import get_model_config_path
 from ppmat.utils.model_package import resolve_model_package_dir
 from ppmat.vocab import build_vocab
 
+from ppmat.models.sevennet.sevennet import SevenNet
+from ppmat.models.sevennet.geometry import SevenNetGraphConverter
+
 __all__ = [
+    "SevenNet",
     "iComformer",
     "ComformerGraphConverter",
     "DiffCSP",
@@ -75,6 +79,7 @@ __all__ = [
     "InfGCN",
     "SFIN",
     "SphereNet",
+    "SevenNetGraphConverter",
 ]
 
 # Warning:
