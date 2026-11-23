@@ -252,7 +252,7 @@ class SelfConditioningResidualLayer(nn.Layer):
         return _rbf(dij.squeeze(1), d_max=self.rbf_dmax, d_count=self.rbf_dim)
 
 
-class CTMCVectorField(RuntimeMixin, nn.Layer):
+class FlowMolVectorField(RuntimeMixin, nn.Layer):
     """Continuous-time Markov chain vector field for molecular flow matching.
 
     Ported from the upstream PyTorch implementation (vector_field.py,
@@ -322,6 +322,8 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
 
         if n_vec_channels < 3:
             raise ValueError("n_vec_channels must be >= 3")
+        if n_recycles < 1 or convs_per_update * n_molecule_updates < 2:
+            raise ValueError("The vector field requires at least one position update.")
 
         self.n_cat_feats = {
             "atom_types": n_atom_types,
@@ -393,27 +395,28 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
         self.conv_layers = nn.LayerList(conv_layers)
 
         n_updaters = n_molecule_updates if separate_mol_updaters else 1
-        self.node_position_updaters = nn.LayerList(
-            [
-                NodePositionUpdate(
+        first_updater = int(separate_mol_updaters and convs_per_update == 1)
+        self.node_position_updaters = nn.LayerDict(
+            {
+                str(index): NodePositionUpdate(
                     n_hidden_scalars,
                     n_vec_channels,
                     n_gvps=n_position_update_gvps,
                     n_cp_feats=n_cp_feats,
                 )
-                for _ in range(n_updaters)
-            ]
+                for index in range(first_updater, n_updaters)
+            }
         )
-        self.edge_updaters = nn.LayerList(
-            [
-                EdgeUpdate(
+        self.edge_updaters = nn.LayerDict(
+            {
+                str(index): EdgeUpdate(
                     n_hidden_scalars,
                     n_hidden_edge_feats,
                     update_edge_w_distance=update_edge_w_distance,
                     rbf_dim=rbf_dim,
                 )
-                for _ in range(n_updaters)
-            ]
+                for index in range(first_updater, n_updaters)
+            }
         )
 
         self.node_output_head = nn.Sequential(
@@ -609,11 +612,11 @@ class CTMCVectorField(RuntimeMixin, nn.Layer):
                     else:
                         updater_idx = 0
 
-                    node_positions = self.node_position_updaters[updater_idx](
+                    node_positions = self.node_position_updaters[str(updater_idx)](
                         node_scalar_features, node_positions, node_vec_features
                     )
                     x_diff, d = self.precompute_distances(node_positions, src, dst)
-                    edge_features = self.edge_updaters[updater_idx](
+                    edge_features = self.edge_updaters[str(updater_idx)](
                         node_scalar_features, edge_features, d=d, src=src, dst=dst
                     )
 

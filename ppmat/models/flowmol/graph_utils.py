@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import numpy as np
+from scipy.optimize import linear_sum_assignment
 
 
 def build_batched_complete_graph(num_atoms: np.ndarray) -> dict:
@@ -52,3 +53,21 @@ def build_batched_complete_graph(num_atoms: np.ndarray) -> dict:
         "node_batch_idx": np.repeat(np.arange(len(num_atoms)), num_atoms),
         "edge_batch_idx": np.repeat(np.arange(len(num_atoms)), num_edges),
     }
+
+
+def align_position_prior(prior: np.ndarray, dst: np.ndarray) -> np.ndarray:
+    """Align a position prior to the endpoint (Kabsch, after permutation)."""
+    cost = np.linalg.norm(dst[:, None, :] - prior[None, :, :], axis=-1)
+    _, prior_idx = linear_sum_assignment(cost)
+    prior = prior[prior_idx]
+
+    prior_mean = prior.mean(axis=0, keepdims=True)
+    dst_mean = dst.mean(axis=0, keepdims=True)
+    prior_c = prior - prior_mean
+    dst_c = dst - dst_mean
+
+    h = prior_c.T @ dst_c
+    u, _, vh = np.linalg.svd(h)
+    r = vh.T @ u.T
+    aligned = prior_c @ r.T
+    return (aligned + dst_mean).astype("float32")

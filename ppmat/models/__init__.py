@@ -37,7 +37,8 @@ from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
 from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
 from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
 from ppmat.models.flowmol.flowmol import FlowMol
-from ppmat.models.flowmol.vector_field import CTMCVectorField
+from ppmat.models.flowmol.mol_converter import FlowMolMolConverter
+from ppmat.models.flowmol.vector_field import FlowMolVectorField
 from ppmat.models.infgcn.infgcn import InfGCN
 from ppmat.models.mattergen.mattergen import MatterGen
 from ppmat.models.mattergen.mattergen import MatterGenWithCondition
@@ -70,6 +71,7 @@ __all__ = [
     "M3GNet",
     "MolecularGraphConverter",
     "RadiusGraphConverter",
+    "FlowMolMolConverter",
     "MolecularGraphFormer",
     "NMRNetCLIP",
     "DiffPrior",
@@ -78,7 +80,7 @@ __all__ = [
     "SFIN",
     "SphereNet",
     "FlowMol",
-    "CTMCVectorField",
+    "FlowMolVectorField",
 ]
 
 # Warning:

@@ -87,7 +87,14 @@ class GVP(nn.Layer):
             cp_src, cp_dst = paddle.split(
                 Vcp, [self.n_cp_feats, self.n_cp_feats], axis=1
             )
-            cp = paddle.cross(cp_src, cp_dst, axis=-1)
+            cp = paddle.stack(
+                (
+                    cp_src[..., 1] * cp_dst[..., 2] - cp_src[..., 2] * cp_dst[..., 1],
+                    cp_src[..., 2] * cp_dst[..., 0] - cp_src[..., 0] * cp_dst[..., 2],
+                    cp_src[..., 0] * cp_dst[..., 1] - cp_src[..., 1] * cp_dst[..., 0],
+                ),
+                axis=-1,
+            )
             Vh = paddle.concat((Vh, cp), axis=1)
 
         Vu = paddle.einsum("b h c, h u -> b u c", Vh, self.Wu)

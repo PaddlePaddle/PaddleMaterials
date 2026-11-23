@@ -7,11 +7,29 @@ Global:
   atom_map: ["C", "H", "N", "O", "F"]
   # Fake-atom dropout probability shared by the model and the dataset
   fake_atom_p: 0.0
+  n_charges: 6
+  n_bond_types: 4
+  charge_offset: 2
   # Number of integration steps used during sampling
   num_inference_steps: 250
   # Position prior shared by the model and the training dataset
   prior_std: 1.0
   prior_align: True
+  # Build RDKit molecules directly from the raw QM9 xyz strings; bonds and bond
+  # orders are inferred by the FlowMol converter from the 3D geometry.
+  build_molecule_cfg:
+    format: xyz_block
+    sanitize: false
+    add_hs: false
+    remove_hs: false
+    kekulize: false
+    num_cpus: 10
+  # Dump the raw per-molecule arrays consumed by the FlowMolStructure transform.
+  graph_converter:
+    __class_name__: FlowMolMolConverter
+    __init_params__:
+      num_cpus: 10
+      covalent_factors: [1.1, 1.2, 1.3]
 
 Trainer:
   # Max epochs to train
@@ -60,7 +78,7 @@ Model:
       atom_charges: 1.0
       bond_types: 2.0
     interpolant_scheduler_config:
-      __class_name__: FlowMolInterpolantScheduler
+      __class_name__: InterpolantScheduler
       __init_params__:
         schedule_type:
           positions: linear
@@ -69,9 +87,9 @@ Model:
           bond_types: linear
         cosine_params: {}
     vector_field_config:
-      n_charges: 6
-      n_bond_types: 4
-      charge_offset: 2
+      n_charges: ${Global.n_charges}
+      n_bond_types: ${Global.n_bond_types}
+      charge_offset: ${Global.charge_offset}
       n_hidden_scalars: 256
       n_hidden_edge_feats: 128
       n_vec_channels: 16
@@ -124,15 +142,23 @@ Optimizer:
 Dataset:
   train:
     dataset:
-      __class_name__: FlowMolDataset
+      __class_name__: QM9Dataset
       __init_params__:
-        path: "./data/flowmol_qm9/train_data_processed.npz"
-        atom_map: ${Global.atom_map}
-        fake_atom_p: ${Global.fake_atom_p}
-        fake_atom_std: 1.0
-        prior_std: ${Global.prior_std}
-        prior_align: ${Global.prior_align}
-        seed: 42
+        path: "./data/qm9/train.csv"
+        property_names: []
+        build_molecule_cfg: ${Global.build_molecule_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+        transforms:
+          - __class_name__: FlowMolStructure
+            __init_params__:
+              atom_map: ${Global.atom_map}
+              fake_atom_p: ${Global.fake_atom_p}
+              prior_std: ${Global.prior_std}
+              prior_align: ${Global.prior_align}
+              seed: 42
+              n_charges: ${Global.n_charges}
+              n_bond_types: ${Global.n_bond_types}
+              charge_offset: ${Global.charge_offset}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -145,15 +171,23 @@ Dataset:
         batch_size: 128
   val:
     dataset:
-      __class_name__: FlowMolDataset
+      __class_name__: QM9Dataset
       __init_params__:
-        path: "./data/flowmol_qm9/val_data_processed.npz"
-        atom_map: ${Global.atom_map}
-        fake_atom_p: ${Global.fake_atom_p}
-        fake_atom_std: 1.0
-        prior_std: ${Global.prior_std}
-        prior_align: ${Global.prior_align}
-        seed: 42
+        path: "./data/qm9/val.csv"
+        property_names: []
+        build_molecule_cfg: ${Global.build_molecule_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+        transforms:
+          - __class_name__: FlowMolStructure
+            __init_params__:
+              atom_map: ${Global.atom_map}
+              fake_atom_p: ${Global.fake_atom_p}
+              prior_std: ${Global.prior_std}
+              prior_align: ${Global.prior_align}
+              seed: 42
+              n_charges: ${Global.n_charges}
+              n_bond_types: ${Global.n_bond_types}
+              charge_offset: ${Global.charge_offset}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -166,15 +200,23 @@ Dataset:
         batch_size: 128
   test:
     dataset:
-      __class_name__: FlowMolDataset
+      __class_name__: QM9Dataset
       __init_params__:
-        path: "./data/flowmol_qm9/test_data_processed.npz"
-        atom_map: ${Global.atom_map}
-        fake_atom_p: ${Global.fake_atom_p}
-        fake_atom_std: 1.0
-        prior_std: ${Global.prior_std}
-        prior_align: ${Global.prior_align}
-        seed: 42
+        path: "./data/qm9/test.csv"
+        property_names: []
+        build_molecule_cfg: ${Global.build_molecule_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+        transforms:
+          - __class_name__: FlowMolStructure
+            __init_params__:
+              atom_map: ${Global.atom_map}
+              fake_atom_p: ${Global.fake_atom_p}
+              prior_std: ${Global.prior_std}
+              prior_align: ${Global.prior_align}
+              seed: 42
+              n_charges: ${Global.n_charges}
+              n_bond_types: ${Global.n_bond_types}
+              charge_offset: ${Global.charge_offset}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -191,7 +233,7 @@ Sampler:
     dataset:
       __class_name__: FlowMolSamplingDataset
       __init_params__:
-        path: "./data/flowmol_qm9/train_data_n_atoms_histogram.npz"
+        path: "./data/qm9/train.csv"
         total_num: 64
         seed: 42
     loader:

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import paddle
+import pandas as pd
 import pytest
 from cinn_workflow_harness import assert_checkpoint_keys_unchanged
 from cinn_workflow_harness import gpu_cinn_or_skip
@@ -27,14 +28,16 @@ from cinn_workflow_harness import patch_cinn_runtime
 from cinn_workflow_harness import requires_gpu_cinn
 from cinn_workflow_harness import trainer_config
 from omegaconf import OmegaConf
+from rdkit import Chem
+from rdkit.Chem import AllChem
 
+from ppmat.datasets import build_dataloader
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
-from ppmat.datasets.flowmol_dataset import _FLOWMOL3_GEOM_ATOM_COUNTS
-from ppmat.datasets.flowmol_dataset import FlowMol3GeomSamplingDataset
-from ppmat.datasets.flowmol_dataset import FlowMolDataset
+from ppmat.datasets.flowmol_sampling_dataset import _FLOWMOL3_GEOM_ATOM_COUNTS
+from ppmat.datasets.flowmol_sampling_dataset import FlowMol3GeomSamplingDataset
 from ppmat.models import build_model
-from ppmat.models.flowmol.vector_field import CTMCVectorField
+from ppmat.models.flowmol.vector_field import FlowMolVectorField
 from ppmat.sampler import MolecularSampler
 from ppmat.trainer.base_trainer import BaseTrainer
 
@@ -47,7 +50,7 @@ FLOWMOL3_CONFIG_PATH = (
 )
 
 PRIOR_CONFIG = {
-    "positions": {"type": "centered-normal", "align": True, "kwargs": {"std": 1.0}},
+    "positions": {"type": "centered-normal", "kwargs": {"std": 1.0}},
     "atom_types": {"type": "ctmc"},
     "atom_charges": {"type": "ctmc"},
     "bond_types": {"type": "ctmc"},
@@ -105,7 +108,7 @@ def _build_model(vector_field_config=None, **overrides):
             "bond_types": 2.0,
         },
         "interpolant_scheduler_config": {
-            "__class_name__": "FlowMolInterpolantScheduler",
+            "__class_name__": "InterpolantScheduler",
             "__init_params__": {
                 "schedule_type": {
                     "positions": "linear",
@@ -131,62 +134,37 @@ def _build_model(vector_field_config=None, **overrides):
     return model
 
 
-def _write_synthetic_split(tmp_path, num_molecules=6, seed=0):
-    rng = np.random.RandomState(seed)
-    positions, atom_types, atom_charges = [], [], []
-    bond_types, bond_idxs = [], []
-    node_idx_array = []
-    edge_idx_array = []
-    node_offset = 0
-    edge_offset = 0
-    for _ in range(num_molecules):
-        n_atoms = int(rng.randint(3, 6))
-        positions.append(rng.standard_normal((n_atoms, 3)).astype("float32"))
-        one_hot = np.zeros((n_atoms, 5), dtype=bool)
-        one_hot[np.arange(n_atoms), rng.randint(0, 5, n_atoms)] = True
-        atom_types.append(one_hot)
-        atom_charges.append(rng.randint(-2, 4, n_atoms).astype("int32"))
-
-        upper_i, upper_j = np.triu_indices(n_atoms, k=1)
-        keep = rng.rand(upper_i.shape[0]) < 0.4
-        mol_bond_idxs = np.stack((upper_i[keep], upper_j[keep]), axis=1).astype("int32")
-        bond_idxs.append(mol_bond_idxs)
-        bond_types.append(rng.randint(0, 4, mol_bond_idxs.shape[0]).astype("int32"))
-
-        node_idx_array.append([node_offset, node_offset + n_atoms])
-        edge_idx_array.append([edge_offset, edge_offset + mol_bond_idxs.shape[0]])
-        node_offset += n_atoms
-        edge_offset += mol_bond_idxs.shape[0]
-
-    path = tmp_path / "train_data_processed.npz"
-    np.savez(
-        path,
-        positions=np.concatenate(positions, axis=0),
-        atom_types=np.concatenate(atom_types, axis=0).astype("float32"),
-        atom_charges=np.concatenate(atom_charges, axis=0),
-        bond_types=np.concatenate(bond_types, axis=0),
-        bond_idxs=np.concatenate(bond_idxs, axis=0),
-        node_idx_array=np.array(node_idx_array, dtype="int32"),
-        edge_idx_array=np.array(edge_idx_array, dtype="int32"),
-    )
-    np.savez(
-        tmp_path / "train_data_n_atoms_histogram.npz",
-        n_atoms=np.array([3, 4, 5], dtype="int64"),
-        n_atom_counts=np.array([10, 20, 30], dtype="int64"),
-    )
+def _write_synthetic_qm9_csv(tmp_path):
+    rows = []
+    for idx, smiles in enumerate(
+        ("CCO", "c1ccccc1", "C#N", "C[N+](=O)[O-]", "CF", "O")
+    ):
+        mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+        assert AllChem.EmbedMolecule(mol, randomSeed=idx + 1) == 0
+        rows.append(
+            {
+                "standard_xyz": Chem.MolToXYZBlock(mol),
+                "molecule_id": idx + 1,
+                "num_atoms": mol.GetNumAtoms(),
+            }
+        )
+    path = tmp_path / "train.csv"
+    pd.DataFrame(rows).to_csv(path, index=False)
     return str(path)
 
 
-def _training_dataset(tmp_path, **kwargs):
-    path = _write_synthetic_split(tmp_path)
-    dataset_kwargs = {
-        "path": path,
-        "atom_map": ["C", "H", "N", "O", "F"],
-        "prior_align": True,
-        "seed": 0,
-    }
-    dataset_kwargs.update(kwargs)
-    return FlowMolDataset(**dataset_kwargs)
+def _training_dataset(tmp_path, fake_atom_p=0.0):
+    config = OmegaConf.to_container(OmegaConf.load(CONFIG_PATH), resolve=True)
+    data_config = config["Dataset"]["train"]
+    params = data_config["dataset"]["__init_params__"]
+    params["path"] = _write_synthetic_qm9_csv(tmp_path)
+    params["cache_path"] = str(tmp_path / "qm9_cache")
+    params["transforms"][0]["__init_params__"]["fake_atom_p"] = fake_atom_p
+    params["build_molecule_cfg"]["num_cpus"] = 1
+    params["build_graph_cfg"]["__init_params__"]["num_cpus"] = 1
+    data_config["sampler"]["__init_params__"]["batch_size"] = 3
+    data_config["sampler"]["__init_params__"]["shuffle"] = False
+    return build_dataloader(data_config).dataset
 
 
 def _build_batch(num_atoms_list):
@@ -222,9 +200,6 @@ def _build_batch(num_atoms_list):
     return DefaultCollator()(samples)
 
 
-# ----------------------------- training chain -----------------------------
-
-
 def test_train_forward_from_config():
     config = OmegaConf.load(CONFIG_PATH)
     config = OmegaConf.to_container(config, resolve=True)
@@ -243,6 +218,25 @@ def test_train_forward_from_config():
     for value in output["loss_dict"].values():
         assert np.isfinite(float(value))
 
+    for schedule in (
+        {"convs_per_update": 2, "separate_mol_updaters": True},
+        {"convs_per_update": 1, "separate_mol_updaters": False},
+    ):
+        scheduled_model = _build_model(
+            vector_field_config={**SMALL_VECTOR_FIELD, **schedule}
+        )
+        loss = scheduled_model(batch)["loss_dict"]["loss"]
+        assert np.isfinite(float(loss))
+        loss.backward()
+        assert all(
+            parameter.grad is not None for parameter in scheduled_model.parameters()
+        )
+
+    with pytest.raises(ValueError, match="at least one position update"):
+        _build_model(
+            vector_field_config={**SMALL_VECTOR_FIELD, "n_molecule_updates": 1}
+        )
+
     # the released flowmol3 structure (token embeddings, time embedding and
     # the self-conditioning residual layer) must also run a training forward;
     # distort_p>0 additionally exercises the upstream position-distortion path
@@ -259,30 +253,62 @@ def test_train_forward_from_config():
         _build_model(
             prior_config={
                 **PRIOR_CONFIG,
-                "positions": {"type": "unsupported", "align": False, "kwargs": {}},
+                "positions": {"type": "unsupported", "kwargs": {}},
             }
         )
 
 
-def test_train_data_pipeline_feeds_forward(tmp_path):
-    dataset = _training_dataset(tmp_path)
+@pytest.mark.parametrize("fake_atom_p", [0.0, 0.3])
+def test_train_data_pipeline_feeds_forward(tmp_path, fake_atom_p):
+    dataset = _training_dataset(tmp_path, fake_atom_p)
     assert len(dataset) == 6
+    expected_heavy_bonds = ([1, 1], [1, 1, 1, 2, 2, 2], [3], [1, 1, 2], [1], [])
+    for idx, expected in enumerate(expected_heavy_bonds):
+        graph = dataset.load_from_cache(dataset.graphs[idx])
+        bonds = graph["bond_index"]
+        heavy = np.all(graph["atomic_numbers"][bonds] != 1, axis=1)
+        assert sorted(graph["bond_class"][heavy].tolist()) == expected
+    charged = dataset.load_from_cache(dataset.graphs[3])
+    assert sorted(charged["formal_charges"].tolist()) == [-1, 0, 0, 0, 0, 0, 1]
 
     sample = dataset[0]
-    n_atoms = int(sample["structure_array"]["num_atoms"].data[0])
-    positions = sample["structure_array"]["positions"].data
-    assert positions.shape == (n_atoms, 3)
-    assert np.allclose(positions.sum(axis=0), 0.0, atol=1e-4)
+    assert "graph" not in sample
+    assert np.allclose(
+        sample["structure_array"]["positions"].data.mean(axis=0), 0.0, atol=1e-6
+    )
+    second = dataset[0]
+    assert not np.array_equal(
+        sample["prior_positions"].data, second["prior_positions"].data
+    )
+    cached = _training_dataset(tmp_path, fake_atom_p)
+    np.testing.assert_array_equal(
+        cached[0]["structure_array"]["bond_types"].data,
+        sample["structure_array"]["bond_types"].data,
+    )
 
-    batch = DefaultCollator()([dataset[i] for i in range(3)])
-    assert batch["structure_array"]["num_atoms"].shape[0] == 3
-
-    model = _build_model()
-    prepared = model._prepare_batch(batch)
-    mask = prepared["upper_edge_mask"]
-    assert prepared["batch_size"] == 3
-    assert int(mask.sum()) == mask.shape[0] // 2
-    assert np.isfinite(float(model(batch)["loss_dict"]["loss"]))
+    loader = paddle.io.DataLoader(
+        dataset, batch_size=3, collate_fn=DefaultCollator(), return_list=True
+    )
+    batch = next(iter(loader))
+    model = _build_model(fake_atom_p=fake_atom_p)
+    model.train()
+    optimizer = paddle.optimizer.Adam(learning_rate=1e-3, parameters=model.parameters())
+    before = {key: value.numpy().copy() for key, value in model.state_dict().items()}
+    loss = model(batch)["loss_dict"]["loss"]
+    assert np.isfinite(float(loss))
+    loss.backward()
+    for parameter in model.parameters():
+        if not parameter.stop_gradient:
+            assert parameter.grad is not None, parameter.name
+            assert np.isfinite(parameter.grad.numpy()).all(), parameter.name
+    optimizer.step()
+    assert all(
+        np.isfinite(value.numpy()).all() for value in model.state_dict().values()
+    )
+    assert any(
+        not np.array_equal(before[key], value.numpy())
+        for key, value in model.state_dict().items()
+    )
 
 
 def test_ctmc_ignore_semantics():
@@ -377,8 +403,7 @@ def test_sample_with_fake_atoms_decodes_real_atoms(tmp_path):
 
 
 def test_sampling_framework_end_to_end(tmp_path):
-    path = _write_synthetic_split(tmp_path)
-    histogram_path = Path(path).with_name("train_data_n_atoms_histogram.npz")
+    csv_path = _write_synthetic_qm9_csv(tmp_path)
     checkpoint_path = str(tmp_path / "best.pdparams")
     paddle.save(_build_model().state_dict(), checkpoint_path)
 
@@ -395,7 +420,7 @@ def test_sampling_framework_end_to_end(tmp_path):
         checkpoint_path=checkpoint_path,
         config_overrides=[
             "Dataset.train=null",
-            f"Sampler.data.dataset.__init_params__.path={histogram_path}",
+            f"Sampler.data.dataset.__init_params__.path={csv_path}",
             "Sampler.data.dataset.__init_params__.total_num=4",
             f"Sampler.output_dir={tmp_path / 'out'}",
             "Sampler.model_sample_params.num_inference_steps=4",
@@ -530,7 +555,7 @@ def test_cinn_dispatch_is_numerically_identical(vector_field_config, monkeypatch
         recorded.append(name)
         return function(*args, **kwargs)
 
-    monkeypatch.setattr(CTMCVectorField, "_run_runtime", record_run_runtime)
+    monkeypatch.setattr(FlowMolVectorField, "_run_runtime", record_run_runtime)
     cinn_model.set_execution_backend("cinn")
     assert cinn_model.execution_backend == "cinn"
     paddle.seed(11)
@@ -544,7 +569,7 @@ def test_cinn_dispatch_is_numerically_identical(vector_field_config, monkeypatch
 def test_cinn_trainer_resume_orchestration(tmp_path, monkeypatch):
     """Checkpoint save/resume stays consistent with CINN dispatch selected."""
 
-    patch_cinn_runtime(monkeypatch, CTMCVectorField)
+    patch_cinn_runtime(monkeypatch, FlowMolVectorField)
     dataset = _training_dataset(tmp_path)
     train_loader = _training_loader(dataset)
     val_loader = _training_loader(dataset)
@@ -573,8 +598,27 @@ def test_cinn_trainer_resume_orchestration(tmp_path, monkeypatch):
     resumed_trainer, resumed_optimizer = _build_trainer(
         resumed_model, tmp_path / "resumed", 2, "cinn", train_loader, val_loader
     )
+    saved_model = paddle.load(str(checkpoint_dir / "latest.pdparams"))
+    saved_optimizer = paddle.load(str(checkpoint_dir / "latest.pdopt"))
+    resumed_epoch = resumed_trainer.train_epoch
+    restored = []
+
+    def check_restored_state(*args, **kwargs):
+        assert resumed_trainer.state.global_step == first_trainer.state.global_step
+        assert resumed_optimizer.get_lr() == first_trainer.optimizer.get_lr()
+        for key, value in resumed_model.state_dict().items():
+            np.testing.assert_array_equal(value.numpy(), saved_model[key].numpy())
+        optimizer_state = resumed_optimizer.state_dict()
+        assert optimizer_state.keys() == saved_optimizer.keys()
+        for key, value in optimizer_state.items():
+            np.testing.assert_array_equal(value, saved_optimizer[key])
+        restored.append(True)
+        return resumed_epoch(*args, **kwargs)
+
+    monkeypatch.setattr(resumed_trainer, "train_epoch", check_restored_state)
     with paddle.utils.unique_name.guard():
         resumed_trainer.train(resume_from_checkpoint=str(checkpoint_dir / "latest"))
+    assert restored == [True]
 
     straight_model = _build_unique_model()
     straight_model.set_state_dict(initial_state)

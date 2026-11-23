@@ -42,7 +42,7 @@ Model:
       atom_charges: 1.0
       bond_types: 2.0
     interpolant_scheduler_config:
-      __class_name__: FlowMolInterpolantScheduler
+      __class_name__: InterpolantScheduler
       __init_params__:
         schedule_type:
           positions: linear

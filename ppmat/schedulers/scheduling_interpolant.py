@@ -15,11 +15,13 @@
 import paddle
 
 
-class FlowMolInterpolantScheduler:
-    """Schedules the interpolation progress alpha(t) of every feature.
+class InterpolantScheduler:
+    """Continuous-time interpolation schedules with analytic derivatives.
 
-    The existing noise/transition schedulers act on discrete timesteps and
-    expose neither continuous alpha(t) nor its analytic derivative.
+    For each feature, linear interpolation uses alpha(t) = t and power-cosine
+    interpolation uses alpha(t) = sin(pi * t**nu / 2)**2, with t in [0, 1].
+    Inputs have shape [batch_size]; outputs have shape [batch_size, num_features]
+    in the order given by feature_names.
 
     Args:
         feature_names (list): Feature names in interpolation order.
@@ -56,12 +58,6 @@ class FlowMolInterpolantScheduler:
         for feat, feat_schedule_type in self.schedule_dict.items():
             if feat_schedule_type == "cosine" and feat not in self.cosine_params:
                 raise ValueError(f"must specify cosine_params for feature {feat}")
-
-    def loss_weights(self, t: paddle.Tensor) -> paddle.Tensor:
-        """Time-dependent loss weights; small at the start of the trajectory."""
-        alpha_t = self.alpha_t(t)
-        weights = alpha_t / (1 - alpha_t)
-        return paddle.clip(weights, min=0.05, max=1.5)
 
     def alpha_t(self, t: paddle.Tensor) -> paddle.Tensor:
         per_feat_alpha = []

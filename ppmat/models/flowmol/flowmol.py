@@ -22,7 +22,7 @@ import paddle.nn as nn
 
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.flowmol.graph_utils import build_batched_complete_graph
-from ppmat.models.flowmol.vector_field import CTMCVectorField
+from ppmat.models.flowmol.vector_field import FlowMolVectorField
 from ppmat.models.flowmol.vector_field import centered_normal_prior_batched
 from ppmat.schedulers import build_scheduler
 from ppmat.utils import logger
@@ -30,6 +30,9 @@ from ppmat.utils import logger
 FEATURE_NAMES = ["positions", "atom_types", "atom_charges", "bond_types"]
 # the mask token is appended after the real atom types and decodes to "Se"
 MASK_ATOM_SYMBOL = "Se"
+# Bounds of the upstream time-scaled training objective.
+TIME_LOSS_WEIGHT_MIN = 0.05
+TIME_LOSS_WEIGHT_MAX = 1.5
 
 
 class FlowMol(RuntimeMixin, nn.Layer):
@@ -97,7 +100,7 @@ class FlowMol(RuntimeMixin, nn.Layer):
         # torch divides by non-ignored nodes
         self.ignore_index = -100
 
-        self.vector_field = CTMCVectorField(
+        self.vector_field = FlowMolVectorField(
             n_atom_types=self.n_atom_types,
             feature_names=self.feature_names,
             interpolant_scheduler=self.interpolant_scheduler,
@@ -114,7 +117,7 @@ class FlowMol(RuntimeMixin, nn.Layer):
     def _runtime_cache(self):
         """Read-only view of the runtime cache owned by the vector field.
 
-        The numerical boundary lives on ``CTMCVectorField``; exposing its
+        The numerical boundary lives on ``FlowMolVectorField``; exposing its
         cache keeps the top-level model contract-compatible with tooling
         that reads compiled runtime state from the workflow model.
         """
@@ -233,7 +236,12 @@ class FlowMol(RuntimeMixin, nn.Layer):
         targets = self._build_targets(batch, state, upper_edge_mask)
 
         if self.time_scaled_loss:
-            time_weights = self.interpolant_scheduler.loss_weights(t)
+            alpha_t = self.interpolant_scheduler.alpha_t(t)
+            time_weights = paddle.clip(
+                alpha_t / (1 - alpha_t),
+                min=TIME_LOSS_WEIGHT_MIN,
+                max=TIME_LOSS_WEIGHT_MAX,
+            )
 
         losses = {}
         for feat_idx, feat in enumerate(self.feature_names):
