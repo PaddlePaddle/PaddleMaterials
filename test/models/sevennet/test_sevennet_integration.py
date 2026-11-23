@@ -1,5 +1,6 @@
 """Small, path-independent SevenNet integration tests."""
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -8,8 +9,8 @@ import paddle
 import pytest
 from pymatgen.core import Lattice, Structure
 
-from ppmat.models.sevennet import SevenNet, SevenNetGraphConverter
-from ppmat.models.sevennet.parse_input import init_model_config
+from ppmat.models import SevenNet, SevenNetGraphConverter
+from ppmat.models.sevennet.config import init_model_config
 from ppmat.utils.eager_comp_setting import setting_eager_mode
 
 
@@ -67,6 +68,7 @@ def test_forward_predict_and_backward():
             "['_check_forward_predict_and_backward']()",
             str(Path(__file__).resolve()),
         ],
+        env={**os.environ, "FLAGS_new_einsum": "0"},
         check=True,
         timeout=90,
     )
@@ -75,3 +77,43 @@ def test_forward_predict_and_backward():
 def test_parallel_mode_reports_unsupported():
     with pytest.raises(NotImplementedError, match="serial model"):
         SevenNet({}, parallel=True)
+
+
+
+def test_pretrained_predictions_match_upstream():
+    asset_path = os.environ.get("SEVENNET_REVIEW_ASSETS")
+    if not asset_path:
+        pytest.skip("Set SEVENNET_REVIEW_ASSETS to the extracted review archives")
+
+    import numpy as np
+    from ase.io import read
+    from pymatgen.io.ase import AseAtomsAdaptor
+
+    from ppmat.predictor import PotentialPredictor
+
+    assets = Path(asset_path)
+    model_dir = assets / "sevennet0"
+    reference_dir = assets / "sevennet-validation-data" / "sevennet0_reference"
+    predictor = PotentialPredictor(
+        config_path=str(model_dir / "sevennet0.yaml"),
+        checkpoint_path=str(model_dir / "checkpoints/latest.pdparams"),
+        device="gpu:0",
+    )
+    tolerances = {"energy": 1e-4, "force": 1e-5, "stress": 1e-6}
+    maximum = dict.fromkeys(tolerances, 0.0)
+    structures = sorted(reference_dir.glob("*.extxyz"))
+    assert len(structures) == 8, f"Expected eight references in {reference_dir}"
+    for path in structures:
+        structure = AseAtomsAdaptor.get_structure(read(path))
+        predictions = predictor.from_structures(structure)
+        with np.load(path.with_name(path.stem + "_torch.npz")) as reference:
+            for name, tolerance in tolerances.items():
+                prediction = np.asarray(predictions[name])
+                target = reference[name].reshape(prediction.shape)
+                assert np.isfinite(prediction).all(), f"{path.name}: nonfinite {name}"
+                np.testing.assert_allclose(
+                    prediction, target, atol=tolerance, rtol=0,
+                    err_msg=f"{path.name}: {name}",
+                )
+                maximum[name] = max(maximum[name], float(np.max(np.abs(prediction - target))))
+    print(f"{len(structures)} structures. Maximum absolute errors: {maximum}")

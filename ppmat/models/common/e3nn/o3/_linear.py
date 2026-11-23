@@ -23,7 +23,6 @@ import paddle
 
 from ppmat.models.common.e3nn import o3
 from ppmat.models.common.e3nn.util import prod
-from ppmat.models.common.e3nn.util.einsum_compat import einsum_compat
 from ppmat.models.common.e3nn.util.codegen import CodeGenMixin
 
 from ._tensor_product._codegen import _sum_tensors
@@ -348,7 +347,7 @@ def _codegen_linear(
                 flat_weight_index += path_nweight
 
                 if f_in is None:
-                    ein_out = einsum_compat(f"{z}uw,zui->zwi", w, x_list[ins.i_in])
+                    ein_out = paddle.einsum(f"{z}uw,zui->zwi", w, x_list[ins.i_in])
                 else:
                     ein_out = paddle.einsum(f"{z}xyuw,zxui->zywi", w, x_list[ins.i_in])
 

@@ -20,7 +20,6 @@ import paddle
 
 from ppmat.models.common.e3nn import o3
 from ppmat.models.common.e3nn.util import prod
-from ppmat.models.common.e3nn.util.einsum_compat import einsum_compat
 
 from ._instruction import Instruction
 
@@ -470,16 +469,16 @@ def codegen_tensor_product_left_right(
             key = ins.i_in1, ins.i_in2, ins.connection_mode[:2]
             if key not in xx_dict:
                 if ins.connection_mode[:2] == "uu":
-                    xx_dict[key] = einsum_compat("zui,zuj->zuij", x1_tensor, x2_tensor)
+                    xx_dict[key] = paddle.einsum("zui,zuj->zuij", x1_tensor, x2_tensor)
                 else:
-                    xx_dict[key] = einsum_compat("zui,zvj->zuvij", x1_tensor, x2_tensor)
+                    xx_dict[key] = paddle.einsum("zui,zvj->zuvij", x1_tensor, x2_tensor)
             xx = xx_dict[key]
             l1l2l3 = mul_ir_in1.ir.l, mul_ir_in2.ir.l, mul_ir_out.ir.l
             w3j = w3j_dict.get(l1l2l3, None)
             if ins.connection_mode == "uvw":
                 assert ins.has_weight
                 if specialized_code and l1l2l3 == (0, 0, 0):
-                    result = einsum_compat(
+                    result = paddle.einsum(
                         f"{z}uvw,zu,zv->zw",
                         w,
                         x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
@@ -493,7 +492,7 @@ def codegen_tensor_product_left_right(
                         x2_tensor,
                     ) / sqrt(mul_ir_out.ir.dim)
                 elif specialized_code and mul_ir_in2.ir.l == 0:
-                    result = einsum_compat(
+                    result = paddle.einsum(
                         f"{z}uvw,zui,zv->zwi",
                         w,
                         x1_tensor,
@@ -509,32 +508,32 @@ def codegen_tensor_product_left_right(
                 assert mul_ir_in1.mul == mul_ir_out.mul
                 if ins.has_weight:
                     if specialized_code and l1l2l3 == (0, 0, 0):
-                        result = einsum_compat(
+                        result = paddle.einsum(
                             f"{z}uv,zu,zv->zu",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         )
                     elif specialized_code and mul_ir_in1.ir.l == 0:
-                        result = einsum_compat(
+                        result = paddle.einsum(
                             f"{z}uv,zu,zvj->zuj",
                             w,
                             x1_tensor.reshape(batch_numel, mul_ir_in1.dim),
                             x2_tensor,
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_in2.ir.l == 0:
-                        result = einsum_compat(
+                        result = paddle.einsum(
                             f"{z}uv,zui,zv->zui",
                             w,
                             x1_tensor,
                             x2_tensor.reshape(batch_numel, mul_ir_in2.dim),
                         ) / sqrt(mul_ir_out.ir.dim)
                     elif specialized_code and mul_ir_out.ir.l == 0:
-                        result = einsum_compat(
+                        result = paddle.einsum(
                             f"{z}uv,zui,zvi->zu", w, x1_tensor, x2_tensor
                         ) / sqrt(mul_ir_in1.ir.dim)
                     else:
-                        result = einsum_compat(f"{z}uv,ijk,zuvij->zuk", w, w3j, xx)
+                        result = paddle.einsum(f"{z}uv,ijk,zuvij->zuk", w, w3j, xx)
                 else:
                     result = paddle.einsum("ijk,zuvij->zuk", w3j, xx)
             elif ins.connection_mode == "uvv":
@@ -677,7 +676,7 @@ def codegen_tensor_product_left_right(
                         x2_tensor,
                     ) / sqrt(mul_ir_out.ir.dim)
                 elif specialized_code and mul_ir_in2.ir.l == 0:
-                    result = einsum_compat(
+                    result = paddle.einsum(
                         "zui,zu->zui",
                         x1_tensor,
                         x2_tensor.reshape(batch_numel, mul_ir_in2.dim),

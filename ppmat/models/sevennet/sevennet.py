@@ -23,9 +23,11 @@ from collections.abc import Sequence
 import paddle
 from pgl import Graph
 
-from ppmat.models.sevennet import _keys as KEY
+from ppmat.losses import HuberLoss, L1Loss, MSELoss
+
+from . import config as KEY
 from ppmat.models.sevennet.model_build import build_E3_equivariant_model
-from ppmat.models.sevennet.parse_input import init_model_config
+from ppmat.models.sevennet.config import init_model_config
 
 
 EV_A3_TO_GPA = 160.21766208
@@ -167,7 +169,7 @@ class SevenNet(paddle.nn.Layer):
             "Huber",
         }:
             self.loss_fn = (
-                paddle.nn.SmoothL1Loss(
+                HuberLoss(
                     delta=huber_loss_delta
                 )
             )
@@ -177,7 +179,7 @@ class SevenNet(paddle.nn.Layer):
             "mse",
         }:
             self.loss_fn = (
-                paddle.nn.MSELoss()
+                MSELoss()
             )
 
         elif loss_type in {
@@ -185,7 +187,7 @@ class SevenNet(paddle.nn.Layer):
             "l1",
         }:
             self.loss_fn = (
-                paddle.nn.L1Loss()
+                L1Loss()
             )
 
         else:
@@ -599,10 +601,7 @@ class SevenNet(paddle.nn.Layer):
                     continue
 
                 loss_property = (
-                    self.loss_fn(
-                        input=valid_pred,
-                        label=valid_label,
-                    )
+                    self.loss_fn(valid_pred, valid_label)
                 )
 
                 loss_dict[

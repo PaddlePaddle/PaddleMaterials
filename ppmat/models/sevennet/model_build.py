@@ -2,23 +2,59 @@ import copy
 from collections import OrderedDict
 from typing import Any, Dict, List, Tuple, Type, Union
 
-from ppmat.models.sevennet import _const as _const
-from ppmat.models.sevennet import _keys as KEY
-from ppmat.models.sevennet import util as util
-from ppmat.models.common.e3nn.math import normalize2mom
-from ppmat.models.common.e3nn.o3 import Irreps
+import paddle
 
-from .nn.edge_embedding import (BesselBasis, EdgeEmbedding, PolynomialCutoff,
-                                SphericalEncoding, XPLORCutoff)
-from .nn.force_output import ForceStressOutputFromEdge
-from .nn.interaction_blocks import NequIP_interaction_block
-from .nn.linear import AtomReduce, FCN_e3nn, IrrepsLinear
-from .nn.node_embedding import OnehotEmbedding
-from .nn.scale import ModalWiseRescale, Rescale, SpeciesWiseRescale
-from .nn.self_connection import (SelfConnectionIntro,
-                                 SelfConnectionLinearIntro,
-                                 SelfConnectionOutro)
-from .nn.sequential import AtomGraphSequential
+from ppmat.models.common.e3nn.math import normalize2mom
+from ppmat.models.chgnet.chgnet import CutoffPolynomial
+from ppmat.models.common.e3nn.o3 import Irreps, SphericalHarmonics
+
+from . import config as KEY
+from .geometry import (
+    BesselBasis, EdgeEmbedding, ForceStressOutputFromEdge, XPLORCutoff,
+)
+from .layers import (
+    AtomReduce, FCN_e3nn, IrrepsLinear, NequIP_interaction_block, OnehotEmbedding,
+    Rescale, SelfConnectionIntro, SelfConnectionLinearIntro,
+    SelfConnectionOutro, SpeciesWiseRescale,
+)
+
+
+class AtomGraphSequential(paddle.nn.Sequential):
+    def __init__(self, modules, type_map, data_key_grad):
+        for layer in modules.values():
+            if not getattr(layer, "layer_instantiated", True):
+                layer.instantiate()
+        # Preserve layer names for compatibility with converted checkpoints.
+        super().__init__(*modules.items())
+        self.key_grad = data_key_grad
+
+        species_indices = [-1] * 120
+        for atomic_number, index in type_map.items():
+            atomic_number = int(atomic_number)
+            if not 0 <= atomic_number < len(species_indices):
+                raise ValueError(f"Unsupported atomic number in type map: {atomic_number}")
+            species_indices[atomic_number] = int(index)
+        self.register_buffer(
+            "z_to_onehot_tensor", paddle.to_tensor(species_indices, dtype="int64")
+        )
+
+    def set_is_batch_data(self, flag):
+        for layer in self.children():
+            if hasattr(layer, "_is_batch_data"):
+                layer._is_batch_data = bool(flag)
+
+    def forward(self, graph):
+        atomic_numbers = graph[KEY.ATOMIC_NUMBERS].astype("int64").reshape([-1])
+        if paddle.any((atomic_numbers < 0) | (atomic_numbers >= 120)).item():
+            raise ValueError("SevenNet input contains an invalid atomic number")
+        species = paddle.gather(self.z_to_onehot_tensor, atomic_numbers)
+        if paddle.any(species < 0).item():
+            unknown = atomic_numbers[species < 0].numpy().tolist()
+            raise ValueError(f"Unsupported atomic numbers: {unknown}")
+        graph[KEY.NODE_FEATURE] = species
+        graph[self.key_grad].stop_gradient = False
+        return super().forward(graph)
+
 
 def init_self_connection(config: Dict[str, Any]) -> List[Tuple[Type, Type]]:
     self_connection_type_list = config[KEY.SELF_CONNECTION_TYPE]
@@ -51,7 +87,11 @@ def init_edge_embedding(config: Dict[str, Any]) -> EdgeEmbedding:
     envelop_dct.update(_cutoff_param)
     envelop_name = envelop_dct.pop(KEY.CUTOFF_FUNCTION_NAME)
     if envelop_name == "poly_cut":
-        env = PolynomialCutoff(**envelop_dct)
+        cutoff = envelop_dct.pop("cutoff_length")
+        cutoff_coeff = envelop_dct.pop("poly_cut_p_value", 6)
+        if envelop_dct:
+            raise ValueError(f'Unknown polynomial cutoff options: {sorted(envelop_dct)}')
+        env = CutoffPolynomial(cutoff=cutoff, cutoff_coeff=cutoff_coeff)
     elif envelop_name == "XPLOR":
         env = XPLORCutoff(**envelop_dct)
     lmax_edge = config[KEY.LMAX]
@@ -59,7 +99,12 @@ def init_edge_embedding(config: Dict[str, Any]) -> EdgeEmbedding:
         lmax_edge = config[KEY.LMAX_EDGE]
     parity = -1 if config[KEY.IS_PARITY] else 1
     _normalize_sph = config[KEY._NORMALIZE_SPH]
-    sph = SphericalEncoding(lmax_edge, parity, normalize=_normalize_sph)
+    sph = SphericalHarmonics(
+        Irreps.spherical_harmonics(lmax_edge, parity),
+        normalize=_normalize_sph,
+        normalization="component",
+        irreps_in=Irreps("1x1o" if parity == -1 else "1x1e"),
+    )
     return EdgeEmbedding(basis_module=rbf, cutoff_module=env, spherical_module=sph)
 
 
@@ -85,7 +130,7 @@ def init_feature_reduce(config: Dict[str, Any], irreps_x: Irreps) -> OrderedDict
             }
         )
     else:
-        act = _const.ACTIVATION[config[KEY.READOUT_FCN_ACTIVATION]]
+        act = KEY.ACTIVATION[config[KEY.READOUT_FCN_ACTIVATION]]
         hidden_neurons = config[KEY.READOUT_FCN_HIDDEN_NEURONS]
         layers.update(
             {
@@ -105,7 +150,7 @@ def init_feature_reduce(config: Dict[str, Any], irreps_x: Irreps) -> OrderedDict
 
 def init_shift_scale(
     config: Dict[str, Any],
-) -> Union[Rescale, SpeciesWiseRescale, ModalWiseRescale]:
+) -> Union[Rescale, SpeciesWiseRescale]:
     # for mm, ex, shift: modal_idx -> shifts
     shift_scale = []
     train_shift_scale = config[KEY.TRAIN_SHIFT_SCALE]
@@ -124,17 +169,7 @@ def init_shift_scale(
     shift, scale = shift_scale
 
     rescale_module = None
-    if config.get(KEY.USE_MODALITY, False):
-        rescale_module = ModalWiseRescale.from_mappers(  # type: ignore
-            shift,
-            scale,
-            config[KEY.USE_MODAL_WISE_SHIFT],
-            config[KEY.USE_MODAL_WISE_SCALE],
-            type_map=type_map,
-            modal_map=config[KEY.MODAL_MAP],
-            train_shift_scale=train_shift_scale,
-        )
-    elif all([isinstance(s, float) for s in shift_scale]):
+    if all([isinstance(s, float) for s in shift_scale]):
         rescale_module = Rescale(shift, scale, train_shift_scale=train_shift_scale)
     elif any([isinstance(s, list) for s in shift_scale]):
         rescale_module = SpeciesWiseRescale.from_mappers(  # type: ignore
@@ -171,7 +206,7 @@ def build_E3_equivariant_model(
     lmax_node = config[KEY.LMAX]
     if config[KEY.LMAX_NODE] > 0:
         lmax_node = config[KEY.LMAX_NODE]
-    act_radial = _const.ACTIVATION[config[KEY.ACTIVATION_RADIAL]]
+    act_radial = KEY.ACTIVATION[config[KEY.ACTIVATION_RADIAL]]
     self_connection_pair_list = init_self_connection(config)
     irreps_manual = None
     if config[KEY.IRREPS_MANUAL] is not False:
@@ -221,16 +256,15 @@ def build_E3_equivariant_model(
         "act_radial": act_radial,
         "bias_in_linear": use_bias_in_linear,
         "num_species": num_species,
-        "parallel": parallel,
     }
     interaction_builder = None
     if interaction_type in ["nequip"]:
         act_scalar = {}
         act_gate = {}
         for k, v in config[KEY.ACTIVATION_SCARLAR].items():
-            act_scalar[k] = _const.ACTIVATION_DICT[k][v]
+            act_scalar[k] = KEY.ACTIVATION_DICT[k][v]
         for k, v in config[KEY.ACTIVATION_GATE].items():
-            act_gate[k] = _const.ACTIVATION_DICT[k][v]
+            act_gate[k] = KEY.ACTIVATION_DICT[k][v]
         param_interaction_block.update({"act_scalar": act_scalar, "act_gate": act_gate})
     if interaction_type == "nequip":
         interaction_builder = NequIP_interaction_block
@@ -252,7 +286,7 @@ def build_E3_equivariant_model(
                 lmax_node = 0
                 parity_mode = "even"
             irreps_out = (
-                util.infer_irreps_out(
+                KEY.infer_irreps_out(
                     irreps_x,
                     irreps_filter,
                     lmax_node,
@@ -262,7 +296,7 @@ def build_E3_equivariant_model(
                 if irreps_manual is None
                 else irreps_manual[t + 1]
             )
-            irreps_out_tp = util.infer_irreps_out(
+            irreps_out_tp = KEY.infer_irreps_out(
                 irreps_x, irreps_filter, irreps_out.lmax, parity_mode, fix_multiplicity
             )
         else:
@@ -284,17 +318,9 @@ def build_E3_equivariant_model(
     gradient_module = ForceStressOutputFromEdge()
     grad_key = gradient_module.get_grad_key()
     layers.update({"force_output": gradient_module})
-    common_args = {
-        "cutoff": cutoff,
-        "type_map": config[KEY.TYPE_MAP],
-        "modal_map": config.get(KEY.MODAL_MAP, None),
-        "eval_type_map": False if parallel else True,
-        "eval_modal_map": False
-        if not config.get(KEY.USE_MODALITY, False) or parallel
-        else True,
-        "data_key_grad": grad_key,
-    }
-    model = AtomGraphSequential(layers, **common_args)
+    model = AtomGraphSequential(
+        layers, type_map=config[KEY.TYPE_MAP], data_key_grad=grad_key
+    )
     # Upstream e3nn uses a different random stream to estimate these
     # constants. Apply its values only to this model, including radial MLPs.
     factors = {
