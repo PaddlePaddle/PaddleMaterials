@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN"><head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#071327">
+  <meta name="description" content="PaddleMaterials — 面向材料科学的开源 AI 基础设施。">
+  <title>PaddleMaterials · 材料科学 AI 基础设施</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&amp;family=Manrope:wght@400;500;600;700;800&amp;family=Noto+Sans+SC:wght@400;500;600;700;800&amp;display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="site-shell">
+    <header class="topbar" data-header="">
+      <a class="brand" href="#top" aria-label="PaddleMaterials 首页"><span class="brand-mark"><img src="./ppmat_logo_image.png" alt="" aria-hidden="true"></span><span class="brand-wordmark"><img src="./ppmat_logo_character.png" alt="PaddleMaterials"></span></a>
+      <nav class="desktop-nav" aria-label="主导航">
+        <a href="#capabilities">能力矩阵</a>
+        <a href="#workflow">工作流</a>
+        <a href="#quickstart">快速开始</a>
+        <a href="https://paddlepaddle.github.io/PaddleMaterials/models_overview.html" target="_blank" rel="noreferrer">任务模型 <span class="external">↗</span></a>
+        <a href="https://paddlepaddle.github.io/PaddleMaterials/trainer_docs.html" target="_blank" rel="noreferrer">Trainer 文档 <span class="external">↗</span></a>
+      </nav>
+      <div class="topbar-actions">
+        <a class="github-link" href="https://github.com/PaddlePaddle/PaddleMaterials" target="_blank" rel="noreferrer"><span class="github-dot"></span> GitHub</a>
+        <a class="button button-small button-dark" href="#quickstart">开始使用 <span>→</span></a>
+        <button class="menu-toggle" type="button" aria-label="打开菜单" aria-expanded="false" data-menu-toggle=""><span></span><span></span></button>
+      </div>
+      <div class="mobile-nav" data-mobile-nav="">
+        <a href="#capabilities">能力矩阵</a>
+        <a href="#workflow">工作流</a>
+        <a href="#quickstart">快速开始</a>
+        <a href="https://paddlepaddle.github.io/PaddleMaterials/models_overview.html" target="_blank" rel="noreferrer">任务模型 ↗</a>
+        <a href="https://paddlepaddle.github.io/PaddleMaterials/trainer_docs.html" target="_blank" rel="noreferrer">Trainer 文档 ↗</a>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero section-wrap">
+        <div class="hero-copy">
+          <div class="eyebrow"><span class="status-dot"></span> Open-source AI infrastructure for materials science.</div>
+          <h1>让材料发现，<br><em>跑得更快。</em></h1>
+          <p class="hero-lede">PaddleMaterials 是面向材料科学的智能开发套件，连接材料结构、性质、电子结构、谱图与模拟，支持从预测到生成的端到端研究流程。</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#quickstart">探索 PaddleMaterials <span>↗</span></a>
+            <a class="text-link" href="https://paddlepaddle.github.io/PaddleMaterials/trainer_docs.html" target="_blank" rel="noreferrer">阅读 Trainer 文档 <span>→</span></a>
+          </div>
+          <div class="hero-note"><span class="spark">✦</span> 从结构到性质，从预测到表征，把研究流程交给模型。</div>
+        </div>
+        <div class="hero-visual" aria-label="材料科学 AI 网络示意图">
+          <div class="visual-glow glow-a"></div>
+          <div class="visual-glow glow-b"></div>
+          <div class="orbital orbital-one"></div>
+          <div class="orbital orbital-two"></div>
+          <div class="network-card">
+            <div class="network-topline"><span>material graph / live</span><span class="mono">01</span></div>
+            <svg class="network-svg" viewBox="0 0 600 440" role="img" aria-label="材料图网络">
+              <defs>
+                <linearGradient id="edgeGradient" x1="0" x2="1" y1="0" y2="1">
+                  <stop offset="0" stop-color="#61e2dc"></stop>
+                  <stop offset="1" stop-color="#4d86ff"></stop>
+                </linearGradient>
+                <radialGradient id="nodeGradient">
+                  <stop offset="0" stop-color="#e1fffa"></stop>
+                  <stop offset="0.55" stop-color="#61e2dc"></stop>
+                  <stop offset="1" stop-color="#3487ff"></stop>
+                </radialGradient>
+              </defs>
+              <g class="network-lines" stroke="url(#edgeGradient)" stroke-width="2" fill="none">
+                <path d="M95 102 L252 56 L404 126 L510 245 L422 365 L244 402 L92 319 L95 102 Z"></path>
+                <path d="M252 56 L244 402"></path><path d="M95 102 L404 126"></path><path d="M404 126 L92 319"></path><path d="M510 245 L95 102"></path>
+                <path d="M244 402 L510 245"></path><path d="M92 319 L404 126"></path>
+              </g>
+              <g class="network-nodes">
+                <circle cx="95" cy="102" r="23"></circle><circle cx="252" cy="56" r="31"></circle><circle cx="404" cy="126" r="27"></circle><circle cx="510" cy="245" r="21"></circle>
+                <circle cx="422" cy="365" r="30"></circle><circle cx="244" cy="402" r="23"></circle><circle cx="92" cy="319" r="29"></circle>
+                <circle cx="246" cy="218" r="34" class="node-core"></circle>
+              </g>
+              <g class="network-labels" fill="#b6c8e7" font-family="DM Mono, monospace" font-size="10">
+                <text x="70" y="72">ATOM_01</text><text x="408" y="102">ATOM_03</text><text x="334" y="392" text-anchor="middle">BOND_07</text><text x="255" y="205">CORE</text>
+              </g>
+            </svg>
+            <div class="network-footer"><span><i class="legend-dot cyan"></i> geometry</span><span><i class="legend-dot blue"></i> learned state</span><span class="mono">8 nodes · 12 edges</span></div>
+          </div>
+          <div class="floating-metric metric-a"><span class="metric-label">ENERGY ERROR</span><strong>0.018 <small>eV</small></strong><span class="metric-trend">↓ 28.4%</span></div>
+          <div class="floating-metric metric-b"><span class="metric-label">TRAINING RUN</span><strong>24<span>m</span> 18<span>s</span></strong><span class="metric-live"><i></i> active</span></div>
+        </div>
+      </section>
+
+      <section class="signal-strip section-wrap" aria-label="平台能力概览">
+        <div class="signal-intro"><span class="mono">/ PLATFORM SIGNALS</span><strong>一套工具，连接<br>材料研究的每一步。</strong></div>
+        <div class="signal-stat"><span class="mono">01</span><strong>可复用</strong><small>预置模型权重和数据集</small></div>
+        <div class="signal-stat"><span class="mono">02</span><strong>可扩展</strong><small>模块化能力扩展</small></div>
+        <div class="signal-stat"><span class="mono">03</span><strong>可复现</strong><small>配置驱动实验</small></div>
+      </section>
+
+      <section class="capabilities section-wrap" id="capabilities">
+        <div class="section-heading"><div><span class="eyebrow">WHAT YOU CAN BUILD</span><h2>从材料数据，<br><span>到可验证的发现。</span></h2></div><p>每项能力分别展示已支持的预训练模型与 AI-ready 数据集，帮助研究者快速找到合适的起点。</p></div>
+        <div class="capability-grid capability-grid-six">
+          <article class="capability-card card-blue">
+            <div class="card-index">CAPABILITY / 01</div>
+            <div class="capability-icon icon-graph">⌬</div>
+            <h3>属性预测</h3>
+            <p>从结构与组成出发，预测形成能、带隙、弹性模量等性质。</p>
+            <div class="resource-groups" aria-label="属性预测支持资源">
+              <div class="resource-row resource-models"><span class="resource-type">模型</span><div class="resource-tags"><span>MEGNet</span><span>iComFormer</span><span>DimeNet++</span><span>SphereNet</span></div></div>
+              <div class="resource-row resource-datasets"><span class="resource-type">数据集</span><div class="resource-tags"><span>MP2018 / 2020 / 2024</span><span>JARVIS dft_2d / dft_3d</span><span>Alexandria pbe_2d</span><span>ML2DDB</span></div></div>
+            </div>
+            <a href="https://github.com/PaddlePaddle/PaddleMaterials/tree/develop/property_prediction" target="_blank" rel="noreferrer"><span class="module-link-label">进入模块</span><span class="module-link-arrow">↗</span></a>
+          </article>
+          <article class="capability-card card-mint">
+            <div class="card-index">CAPABILITY / 02</div>
+            <div class="capability-icon icon-cube">◇</div>
+            <h3>结构生成</h3>
+            <p>面向逆向设计，生成新的晶体结构，探索更大的材料空间。</p>
+            <div class="resource-groups" aria-label="结构生成支持资源">
+              <div class="resource-row resource-models"><span class="resource-type">模型</span><div class="resource-tags"><span>MatterGen</span><span>DiffCSP</span></div></div>
+              <div class="resource-row resource-datasets"><span class="resource-type">数据集</span><div class="resource-tags"><span>MP20</span><span>ALEX MP20</span><span>ML2DDB</span></div></div>
+            </div>
+            <a href="https://github.com/PaddlePaddle/PaddleMaterials/tree/develop/structure_generation" target="_blank" rel="noreferrer"><span class="module-link-label">进入模块</span><span class="module-link-arrow">↗</span></a>
+          </article>
+          <article class="capability-card card-yellow">
+            <div class="card-index">CAPABILITY / 03</div>
+            <div class="capability-icon icon-wave">∿</div>
+            <h3>机器学习原子间势函数</h3>
+            <p>用可学习势函数替代高成本 DFT，支撑分子动力学计算。</p>
+            <div class="resource-groups" aria-label="机器学习原子间势函数支持资源">
+              <div class="resource-row resource-models"><span class="resource-type">模型</span><div class="resource-tags"><span>CHGNet</span><span>MatterSim</span><span>SphereNet</span></div></div>
+              <div class="resource-row resource-datasets"><span class="resource-type">数据集</span><div class="resource-tags"><span>MPtrj</span><span>ML2DDB</span></div></div>
+            </div>
+            <a href="https://github.com/PaddlePaddle/PaddleMaterials/tree/develop/interatomic_potentials" target="_blank" rel="noreferrer"><span class="module-link-label">进入模块</span><span class="module-link-arrow">↗</span></a>
+          </article>
+          <article class="capability-card card-lilac">
+            <div class="card-index">CAPABILITY / 04</div>
+            <div class="capability-icon icon-density">◌</div>
+            <h3>电子结构</h3>
+            <p>预测电子密度等物理场，帮助理解材料内部的电子结构。</p>
+            <div class="resource-groups" aria-label="电子结构支持资源">
+              <div class="resource-row resource-models"><span class="resource-type">模型</span><div class="resource-tags"><span>InfGCN</span></div></div>
+              <div class="resource-row resource-datasets"><span class="resource-type">数据集</span><div class="resource-tags"><span>MP_EC</span><span>MD17_EC</span><span>QM9_EC</span><span>OMol25_EC</span></div></div>
+            </div>
+            <a href="https://github.com/PaddlePaddle/PaddleMaterials/tree/develop/electronic_structure" target="_blank" rel="noreferrer"><span class="module-link-label">进入模块</span><span class="module-link-arrow">↗</span></a>
+          </article>
+          <article class="capability-card card-sky">
+            <div class="card-index">CAPABILITY / 05</div>
+            <div class="capability-icon icon-spectrum">◒</div>
+            <h3>谱图解析</h3>
+            <p>从 NMR 等实验谱图重建分子结构，连接信号与化学空间。</p>
+            <div class="resource-groups" aria-label="谱图解析支持资源">
+              <div class="resource-row resource-models"><span class="resource-type">模型</span><div class="resource-tags"><span>DiffNMR</span></div></div>
+              <div class="resource-row resource-datasets"><span class="resource-type">数据集</span><div class="resource-tags"><span>MSD-NMR</span></div></div>
+            </div>
+            <a href="https://github.com/PaddlePaddle/PaddleMaterials/tree/develop/spectrum_elucidation" target="_blank" rel="noreferrer"><span class="module-link-label">进入模块</span><span class="module-link-arrow">↗</span></a>
+          </article>
+          <article class="capability-card card-peach">
+            <div class="card-index">CAPABILITY / 06</div>
+            <div class="capability-icon icon-enhance">✦</div>
+            <h3>谱图增强</h3>
+            <p>增强显微图像与谱图信号，为实验数据提供更清晰的输入。</p>
+            <div class="resource-groups" aria-label="谱图增强支持资源">
+              <div class="resource-row resource-models"><span class="resource-type">模型</span><div class="resource-tags"><span>SFIN</span></div></div>
+              <div class="resource-row resource-datasets"><span class="resource-type">数据集</span><div class="resource-tags"><span>HAADF STEM</span><span>BF STEM</span></div></div>
+            </div>
+            <a href="https://github.com/PaddlePaddle/PaddleMaterials/tree/develop/spectrum_enhancement" target="_blank" rel="noreferrer"><span class="module-link-label">进入模块</span><span class="module-link-arrow">↗</span></a>
+          </article>
+        </div>
+      </section>
+
+      <section class="discovery-loop section-wrap" id="discovery-loop">
+        <div class="loop-copy"><span class="eyebrow">MATERIALS DISCOVERY LOOP</span><h2>研究问题，<br><span>可以被持续迭代。</span></h2><p>从属性预测、结构生成，到电子密度预测、热力学计算、逆合成分析与组分 / 工艺优化，PaddleMaterials 覆盖材料发现的多个关键环节。</p><div class="loop-pills"><span>属性预测</span><span>结构生成</span><span>电子密度预测</span><span>热力学计算</span><span>逆合成分析</span><span>组分 / 工艺优化</span><span>谱图分析</span><span>原子分割</span><span class="loop-more">更多能力持续加入</span></div><a class="text-link" href="https://paddlepaddle.github.io/PaddleMaterials/models_overview.html" target="_blank" rel="noreferrer">查看任务模型文档 <span>→</span></a></div>
+        <div class="loop-visual"><div class="loop-visual-top"><span class="mono">DISCOVERY / OPEN ECOSYSTEM</span><span class="loop-status"><i></i> connected</span></div><img src="./materials-discovery-loop.png" alt="PaddleMaterials 可持续扩展的材料发现任务闭环示意图"><div class="loop-caption"><span class="caption-number">∞</span><span>任务能力围绕材料结构与数据持续循环，并可随研究需求不断扩展。</span></div></div>
+      </section>
+
+      <section class="workflow section-wrap" id="workflow">
+        <div class="workflow-copy">
+          <span class="eyebrow">MODEL APPLICATION LIFECYCLE</span>
+          <h2>从训练到推理，<br><span>贯通应用全链条。</span></h2>
+          <p>Trainer 负责训练、微调与实验管理；Predictor 负责加载预训练或自定义权重，完成结构处理、模型推理与结果输出，为后续应用集成和部署提供统一入口。</p>
+          <div class="workflow-products" aria-label="核心工作流组件">
+            <div><span class="product-name">TRAINER</span><strong>训练与微调</strong><small>monitor · checkpoint · log</small></div>
+            <div class="predictor-product"><span class="product-name">PREDICTOR</span><strong>推理与应用</strong><small>load · infer · export</small></div>
+          </div>
+          <div class="workflow-actions">
+            <a class="button button-outline" href="https://paddlepaddle.github.io/PaddleMaterials/trainer_docs.html" target="_blank" rel="noreferrer">Trainer 文档 <span>↗</span></a>
+            <a class="text-link" href="https://github.com/PaddlePaddle/PaddleMaterials/tree/develop/ppmat/predictor" target="_blank" rel="noreferrer">查看 Predictor <span>→</span></a>
+          </div>
+        </div>
+        <div class="workflow-diagram lifecycle-diagram">
+          <div class="flow-line"></div>
+          <div class="flow-step"><div class="flow-marker">01</div><div><span class="mono">INPUT</span><strong>配置任务与输入</strong><small>YAML 配置 · 任务脚本 · 结构/谱图/图像输入</small></div></div>
+          <div class="flow-step"><div class="flow-marker">02</div><div><span class="mono">ASSEMBLE</span><strong>装配数据与模型</strong><small>数据集构建 · 模型构建 · 超参数配置</small></div></div>
+          <div class="flow-step trainer-step"><div class="flow-marker">03</div><div><span class="mono">TRAIN · OPTIONAL</span><strong>训练或微调模型</strong><small>训练与微调 · 检查点管理 · 指标评估</small></div></div>
+          <div class="flow-step active predictor-step"><div class="flow-marker">04</div><div><span class="mono">PREDICT</span><strong>加载权重并执行推理</strong><small>权重加载 · 输入转换 · 任务级推理</small></div></div>
+          <div class="flow-step"><div class="flow-marker">05</div><div><span class="mono">INTEGRATE</span><strong>接入材料计算链路</strong><small>文件读写 · ASE 计算器 · 动力学/结构优化</small></div></div>
+          <div class="flow-step"><div class="flow-marker">06</div><div><span class="mono">OUTPUT</span><strong>输出结果并迭代实验</strong><small>结果导出 · 微调续训 · 迭代实验</small></div></div>
+        </div>
+      </section>
+
+      <section class="quickstart section-wrap" id="quickstart">
+        <div class="quickstart-head"><div><span class="eyebrow">QUICK START</span><h2>一行代码，<br><span>贯通训练与推理。</span></h2></div><p>从安装、训练到加载权重与推理输出，通过统一入口快速运行已有模型，把时间留给真正的材料问题。</p></div>
+        <div class="code-layout"><div class="code-card"><div class="code-bar"><span class="window-dots"><i></i><i></i><i></i></span><div class="code-tabs" role="tablist" aria-label="快速开始命令"><button class="code-tab active" type="button" role="tab" aria-selected="true" data-code-tab="train">训练</button><button class="code-tab" type="button" role="tab" aria-selected="false" data-code-tab="predict">推理</button></div><span class="mono code-file" data-code-file>property_prediction / train.py</span><button class="code-copy" type="button" data-copy="python property_prediction/train.py -c property_prediction/configs/megnet/megnet_mp2018_train_60k_e_form.yaml">复制命令</button></div><pre><code data-code-output><span class="token-purple">python</span> property_prediction/train.py -c property_prediction/configs/megnet/megnet_mp2018_train_60k_e_form.yaml</code></pre><div class="code-status" data-code-status><span class="status-dot"></span> training entry <span class="mono">·</span> GPU / CPU</div></div><div class="install-card"><span class="mono">PIP INSTALL</span><h3>准备好开始了吗？</h3><p>安装 ppmat 后即可运行已有模型与数据集示例。</p><div class="install-command"><span>pip install ppmat</span><button type="button" data-copy="pip install ppmat" aria-label="复制安装命令">⧉</button></div><div class="install-links"><a href="https://github.com/PaddlePaddle/PaddleMaterials" target="_blank" rel="noreferrer">GitHub <span>↗</span></a><a href="https://github.com/PaddlePaddle/PaddleMaterials/blob/develop/Install_cn.md" target="_blank" rel="noreferrer">安装指南 <span>↗</span></a></div></div></div>
+      </section>
+
+      <section class="closing section-wrap"><div class="closing-rule"></div><div class="closing-content"><span class="eyebrow">MATERIALS × INTELLIGENCE</span><h2>下一种材料，<br><em>从这里开始。</em></h2><a class="button button-primary" href="https://github.com/PaddlePaddle/PaddleMaterials" target="_blank" rel="noreferrer">加入开源社区 <span>↗</span></a></div><div class="closing-orbit"><div class="orbit-ring ring-a"></div><div class="orbit-ring ring-b"></div><div class="orbit-core"></div></div></section>
+    </main>
+
+    <footer class="footer section-wrap"><div class="footer-brand"><span class="brand-mark small"><img src="./ppmat_logo_image.png" alt="" aria-hidden="true"></span><div><img class="footer-wordmark" src="./ppmat_logo_character.png" alt="PaddleMaterials"><small>Open-source AI infrastructure for materials science.</small></div></div><div class="footer-links"><a href="https://github.com/PaddlePaddle/PaddleMaterials" target="_blank" rel="noreferrer">GitHub</a><a href="https://paddlepaddle.github.io/PaddleMaterials/models_overview.html" target="_blank" rel="noreferrer">任务模型</a><a href="https://paddlepaddle.github.io/PaddleMaterials/trainer_docs.html" target="_blank" rel="noreferrer">Trainer 文档</a><a href="#top">Back to top ↑</a></div><div class="footer-bottom"><span>PaddleMaterials · Open Source · 2026</span><span>Designed for researchers who build what comes next.</span></div></footer>
+  </div>
+  <script src="./script.js"></script>
+
+
+</body></html>

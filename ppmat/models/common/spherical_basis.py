@@ -88,7 +88,7 @@ class CircularBasisLayer(paddle.nn.Layer):
         cbf = self.cosφ_basis(cosφ_cab)
         if not self.efficient:
             rbf = rbf[id3_ca]
-            out = (rbf[:, None, :] * cbf[:, :, None]).view(
+            out = (rbf[:, None, :] * cbf[:, :, None]).reshape(
                 -1, tuple(rbf.shape)[-1] * tuple(cbf.shape)[-1]
             )
             return (out,)

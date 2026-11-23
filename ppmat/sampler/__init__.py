@@ -11,3 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from ppmat.sampler.molecular_sampler import MolecularSampler
+from ppmat.sampler.structure_sampler import StructureSampler
+
+__all__ = ["MolecularSampler", "StructureSampler"]

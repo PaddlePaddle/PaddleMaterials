@@ -16,4 +16,32 @@ from ppmat.predictor.base import BasePredictor
 
 __all__ = [
     "BasePredictor",
+    "FieldPredictor",
+    "PotentialPredictor",
+    "PropertyPredictor",
+    "SpectrumPredictor",
 ]
+
+
+def __getattr__(name):
+    if name == "FieldPredictor":
+        from ppmat.predictor.field_predictor import FieldPredictor
+
+        predictor_class = FieldPredictor
+    elif name == "PotentialPredictor":
+        from ppmat.predictor.potential_predictor import PotentialPredictor
+
+        predictor_class = PotentialPredictor
+    elif name == "PropertyPredictor":
+        from ppmat.predictor.property_predictor import PropertyPredictor
+
+        predictor_class = PropertyPredictor
+    elif name == "SpectrumPredictor":
+        from ppmat.predictor.spectrum_predictor import SpectrumPredictor
+
+        predictor_class = SpectrumPredictor
+    else:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    globals()[name] = predictor_class
+    return predictor_class

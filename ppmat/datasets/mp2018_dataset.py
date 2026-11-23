@@ -185,9 +185,9 @@ class MP2018Dataset(Dataset):
         self.filter_unvalid = filter_unvalid
 
         self.cache_exists = True if osp.exists(self.cache_path) else False
-        self.row_data, self.num_samples = self.read_data(path)
+        self.raw_data, self.num_samples = self.read_data(path)
         logger.info(f"Load {self.num_samples} samples from {path}")
-        self.property_data = self.read_property_data(self.row_data, self.property_names)
+        self.property_data = self.read_property_data(self.raw_data, self.property_names)
 
         if self.cache_exists and not overwrite:
             logger.warning(
@@ -272,7 +272,7 @@ class MP2018Dataset(Dataset):
                 )
                 # convert strucutes
                 structures = BuildStructure(**build_structure_cfg)(
-                    self.row_data["structure"]
+                    self.raw_data["structure"]
                 )
                 # save structures to cache file
                 os.makedirs(structure_cache_path, exist_ok=True)
@@ -352,7 +352,7 @@ class MP2018Dataset(Dataset):
                     self.property_data[key][i] for i in reserve_idx
                 ]
 
-            self.row_data = [self.row_data[i] for i in reserve_idx]
+            self.raw_data = [self.raw_data[i] for i in reserve_idx]
             self.structures = [self.structures[i] for i in reserve_idx]
             if self.graphs is not None:
                 self.graphs = [self.graphs[i] for i in reserve_idx]
@@ -360,7 +360,7 @@ class MP2018Dataset(Dataset):
                 f"Filter out {len(reserve_idx)} samples with valid properties: "
                 f"{property_name}"
             )
-        self.num_samples = len(self.row_data)
+        self.num_samples = len(self.raw_data)
         logger.warning(f"Remaining {self.num_samples} samples after filtering.")
 
     def read_property_data(self, data: Dict, property_names: list[str]):

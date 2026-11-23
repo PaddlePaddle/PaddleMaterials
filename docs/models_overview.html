@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PaddleMaterials 任务模型 文档</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:'default',flowchart:{htmlLabels:true,curve:'basis',useMaxWidth:false,nodeSpacing:55,rankSpacing:65},themeVariables:{fontSize:'18px'}});</script>
+<style>
+  :root{--fg:#1f2328;--muted:#57606a;--bd:#d0d7de;--bg:#f6f8fa;--accent:#0969da;--code-bg:#eaeef2;--ok:#1a7f37;--warn:#bf3989;--side:#fff;}
+  *{box-sizing:border-box;}
+  body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;color:var(--fg);margin:0;line-height:1.7;background:#fff;}
+  .layout{display:flex;align-items:flex-start;}
+  aside{position:sticky;top:0;height:100vh;width:288px;min-width:288px;overflow-y:auto;border-right:1px solid var(--bd);background:var(--side);padding:22px 14px 40px;font-size:.9rem;}
+  aside .brand{font-weight:700;font-size:1.02rem;padding:0 8px 10px;border-bottom:1px solid var(--bd);margin-bottom:8px;}
+  aside .part{font-weight:700;color:var(--accent);font-size:.82rem;text-transform:uppercase;letter-spacing:.04em;padding:14px 8px 4px;}
+  aside a{display:block;color:var(--muted);text-decoration:none;padding:4px 10px;border-radius:5px;line-height:1.4;}
+  aside a:hover{background:var(--bg);color:var(--fg);}
+  aside a.active{background:#ddf4ff;color:var(--accent);font-weight:600;}
+  main{flex:1;min-width:0;max-width:900px;margin:0 auto;padding:36px 36px 100px;}
+  h1{font-size:1.7rem;margin:0 0 4px;}
+  h2{font-size:1.3rem;margin:44px 0 6px;padding-bottom:6px;border-bottom:1px solid var(--bd);}
+  h3{font-size:1.04rem;margin:24px 0 6px;color:var(--muted);font-weight:600;}
+  .sub{color:var(--muted);font-size:.95rem;margin-bottom:6px;}
+  p{margin:8px 0;}
+  code{background:var(--code-bg);padding:1px 6px;border-radius:4px;font-size:.87em;font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;}
+  pre{background:#0d1117;color:#e6edf3;padding:14px 16px;border-radius:8px;overflow-x:auto;font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;font-size:.83rem;line-height:1.55;}
+  pre code{background:transparent;padding:0;color:inherit;}
+  .note{background:var(--bg);border:1px solid var(--bd);border-left:4px solid var(--accent);padding:10px 14px;border-radius:6px;margin:14px 0;font-size:.92rem;}
+  .tip{background:#dafbe1;border:1px solid #aceebb;border-left:4px solid var(--ok);padding:10px 14px;border-radius:6px;margin:14px 0;font-size:.92rem;}
+  .part-banner{background:linear-gradient(90deg,#0969da11,transparent);border-left:4px solid var(--accent);padding:12px 16px;border-radius:6px;margin:10px 0 20px;}
+  .diagram{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:16px 8px;margin:12px 0;text-align:center;overflow-x:auto;}
+  .mermaid{display:inline-block;}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:.89rem;}
+  th,td{border:1px solid var(--bd);padding:8px 11px;text-align:left;vertical-align:top;}
+  th{background:var(--bg);font-weight:600;white-space:nowrap;}
+  td code{font-size:.84em;}
+  ul{margin:6px 0 6px 22px;}li{margin:3px 0;}
+  .tag{display:inline-block;font-size:.72rem;font-weight:700;color:#fff;border-radius:4px;padding:1px 7px;}
+  .tag.pred{background:var(--accent);}
+  .tag.gen{background:var(--warn);}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;margin:14px 0;}
+  .card{border:1px solid var(--bd);border-radius:8px;padding:14px 16px;background:var(--bg);}
+  .card h4{margin:0 0 6px;font-size:1rem;color:var(--accent);}
+  .card p{margin:4px 0;font-size:.9rem;}
+  .card .entry{font-size:.82rem;color:var(--muted);margin-top:8px;padding-top:8px;border-top:1px dashed var(--bd);line-height:1.8;}
+  .nav-top{position:fixed;right:24px;bottom:24px;background:var(--accent);color:#fff;text-decoration:none;padding:8px 14px;border-radius:20px;font-size:.84rem;box-shadow:0 2px 8px #0002;}
+  @media(max-width:860px){.layout{flex-direction:column;}aside{position:static;height:auto;width:auto;border-right:none;border-bottom:1px solid var(--bd);}main{padding:24px;}}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<aside>
+  <div class="brand">
+    <img src="ppmat_logo_image.png" alt="logo" style="height:28px;vertical-align:middle;margin-right:6px;">
+    <img src="ppmat_logo_character.png" alt="PaddleMaterials" style="height:20px;vertical-align:middle;">
+  </div>
+  <div class="part">任务模型</div>
+  <a href="#ov-table">全任务一览</a>
+  <a href="#ov-predictor">预测式模型</a>
+  <a href="#ov-generative">生成式模型</a>
+  <a href="#ov-shared">共享基础设施</a>
+  <a href="#ov-guide">选型建议</a>
+  <a href="#ov-registry">注册权重</a>
+</aside>
+
+<main>
+
+<div class="part-banner"><h1>PaddleMaterials 任务模型 文档</h1></div>
+
+<h2 id="ov-table">全任务一览</h2>
+<div class="cards">
+  <div class="card">
+    <h4>electronic_structure/</h4>
+    <p>电子密度场预测</p>
+    <p><span class="tag pred">预测式</span> &nbsp; <code>InfGCN</code></p>
+    <div class="entry"><code>train.py</code> → BaseTrainer<br><code>predict.py</code> → FieldPredictor</div>
+  </div>
+  <div class="card">
+    <h4>property_prediction/</h4>
+    <p>材料性质（能量/形成能/Cv 等）</p>
+    <p><span class="tag pred">预测式</span> &nbsp; <code>DimeNetPlusPlus</code> · <code>iComformer</code> · <code>MEGNetPlus</code> · <code>SphereNet</code></p>
+    <div class="entry"><code>train.py</code> → BaseTrainer<br><code>predict.py</code> → PropertyPredictor</div>
+  </div>
+  <div class="card">
+    <h4>interatomic_potentials/</h4>
+    <p>原子间势（能量/力/应力）</p>
+    <p><span class="tag pred">预测式</span> &nbsp; <code>CHGNet</code> · <code>M3GNet</code>（MatterSim） · <code>SphereNet</code></p>
+    <div class="entry"><code>train.py</code> → BaseTrainer<br><code>predict.py</code> → PotentialPredictor</div>
+  </div>
+  <div class="card">
+    <h4>spectrum_enhancement/</h4>
+    <p>STEM 图像增强</p>
+    <p><span class="tag pred">预测式</span> &nbsp; <code>SFIN</code></p>
+    <div class="entry"><code>train.py</code> → BaseTrainer<br><code>predict.py</code> → SpectrumPredictor</div>
+  </div>
+  <div class="card">
+    <h4>spectrum_elucidation/</h4>
+    <p>NMR 谱 → 分子结构</p>
+    <p><span class="tag gen">生成式</span> &nbsp; <code>DiffNMR</code></p>
+    <div class="entry"><code>train.py</code> → BaseTrainer<br><code>sample.py</code> → MolecularSampler</div>
+  </div>
+  <div class="card">
+    <h4>structure_generation/</h4>
+    <p>条件/无条件晶体生成</p>
+    <p><span class="tag gen">生成式</span> &nbsp; <code>DiffCSP</code> · <code>MatterGen</code></p>
+    <div class="entry"><code>train.py</code> → BaseTrainer<br><code>sample.py</code> → StructureSampler</div>
+  </div>
+</div>
+
+<h2 id="ov-predictor">预测式模型</h2>
+<p>8 个预测式模型的 <code>forward</code> <strong>完全一致</strong>：</p>
+<pre><code>class MyModel(paddle.nn.Layer):
+    def forward(self, data, return_loss=True, return_prediction=True):
+        pred = self._forward(data)           # 内部前向（各模型不同）
+        loss_dict, pred_dict = {}, {}
+        if return_loss:                       # 训练时：算 loss
+            loss_dict["loss"] = some_loss(pred, data["label"])
+        if return_prediction:                 # 评估/推理时：返回预测
+            pred_dict["property"] = pred
+        return {"loss_dict": loss_dict, "pred_dict": pred_dict}</code></pre>
+<div class="diagram"><div class="mermaid">
+flowchart LR
+  A(["data (graph/field/image)"]) --> F["forward(data, return_loss, return_prediction)"]
+  F -- "return_loss=True" --> LD["loss_dict:{'loss',...}"] --> T["BaseTrainer 反向传播"]
+  F -- "return_prediction=True" --> PD["pred_dict:{'energy','force',...}"] --> E["BaseTrainer.eval / Predictor"]
+</div></div>
+
+<h3>各预测式模型的输入/输出</h3>
+<table>
+<tr><th>模型</th><th>任务</th><th>输入 <code>data</code></th><th>输出 <code>pred_dict</code></th></tr>
+<tr><td><code>InfGCN</code></td><td>电子密度</td><td>graph + grid_coord</td><td><code>density</code>（体网格密度场）</td></tr>
+<tr><td><code>DimeNetPlusPlus</code></td><td>性质</td><td>graph（分子/晶体）</td><td>标量性质（如形成能）</td></tr>
+<tr><td><code>iComformer</code></td><td>性质</td><td>graph（晶体）</td><td>标量性质</td></tr>
+<tr><td><code>MEGNetPlus</code></td><td>性质</td><td>graph（分子/晶体）</td><td>标量性质（<code>property_name</code>）</td></tr>
+<tr><td><code>SphereNet</code></td><td>性质/势</td><td>graph + triplet indices</td><td>能量 / 力</td></tr>
+<tr><td><code>CHGNet</code></td><td>势</td><td>graph（晶体 + angles）</td><td><code>energy_per_atom</code> · <code>force</code> · <code>stress</code> · <code>magmom</code></td></tr>
+<tr><td><code>M3GNet</code>（MatterSim）</td><td>势</td><td>graph（晶体/分子）</td><td>能量 / 力 / 应力</td></tr>
+<tr><td><code>SFIN</code></td><td>图像增强</td><td>image tensor</td><td>增强后的 <code>target_name</code> 图像</td></tr>
+</table>
+
+<h2 id="ov-generative">生成式模型</h2>
+<p>训练与生成分离：<strong>训练</strong>时 <code>forward</code> 返回扩散 loss（BaseTrainer 优化）；<strong>生成</strong>时调 <code>model.sample()</code>（不经过 Trainer）。</p>
+<pre><code># 训练（BaseTrainer）
+def forward(self, batch):
+    ...  # 扩散前向：加噪 → 预测噪声 → loss
+    return {"loss_dict": {"loss": total_loss, "loss_coord": ..., "loss_atom": ...}}
+
+# 生成（sample.py + Sampler，不经 Trainer）
+def sample(self, batch, num_inference_steps=1000, **kwargs):
+    ...  # 反向扩散采样
+    return generated_structures</code></pre>
+<div class="diagram"><div class="mermaid">
+flowchart TD
+  subgraph TRAIN["训练"]
+    B1(["batch"]) --> F["model.forward(batch)"] --> LD["{loss_dict}"] --> BT["BaseTrainer.train()"]
+  end
+  subgraph GEN2["生成（独立于 Trainer）"]
+    S1(["条件/种子"]) --> MS["model.sample()"] --> SM["MolecularSampler / StructureSampler"] --> OUT(["生成的分子/晶体"])
+  end
+</div></div>
+
+<h3>各生成式模型</h3>
+<table>
+<tr><th>模型</th><th>任务</th><th>生成目标</th><th>采样器</th></tr>
+<tr><td><code>DiffNMR</code></td><td>NMR 谱阐明</td><td>NMR 谱 → 分子图</td><td><code>MolecularSampler</code></td></tr>
+<tr><td><code>DiffCSP</code></td><td>晶体结构生成</td><td>原子类型+坐标+晶格 → 晶体</td><td><code>StructureSampler</code></td></tr>
+<tr><td><code>MatterGen</code> / <code>MatterGenWithCondition</code></td><td>条件晶体生成</td><td>（条件）→ 晶体</td><td><code>StructureSampler</code></td></tr>
+</table>
+
+<h2 id="ov-shared">共享基础设施</h2>
+<table>
+<tr><th>组件</th><th>用途</th><th>使用任务</th></tr>
+<tr><td><code>RadiusGraphConverter</code></td><td>分子/晶体 → PGL 半径图</td><td>性质、势、电子结构、NMR</td></tr>
+<tr><td><code>MolecularGraphConverter</code></td><td>RDKit Mol → PGL 图</td><td>NMR、性质（分子）</td></tr>
+<tr><td><code>CHGNetGraphConverter</code> · <code>M3GNetGraphConvertor</code></td><td>任务专用图构建</td><td>势（CHGNet/M3GNet）</td></tr>
+<tr><td><code>DefaultCollator</code></td><td>通用 batch（ndarray/pgl.Graph/Data）</td><td>全部</td></tr>
+<tr><td><code>RadiusGraphCollator</code></td><td>半径图 batch + triplet 偏移</td><td>性质、势</td></tr>
+<tr><td><code>DensityCollator</code></td><td>体密度场 batch（padding+mask）</td><td>电子结构</td></tr>
+<tr><td><code>MolecularSampler</code> · <code>StructureSampler</code></td><td>扩散采样编排</td><td>NMR、结构生成</td></tr>
+<tr><td><code>BasePredictor</code> → Field/Property/Potential/Spectrum</td><td>推理编排</td><td>预测式任务</td></tr>
+<tr><td><code>build_vocab</code></td><td>原子/键词表（注册+下载）</td><td>按需（电子结构、NMR）</td></tr>
+</table>
+
+<h2 id="ov-guide">选型建议</h2>
+<table>
+<tr><th>你的目标</th><th>推荐模型</th><th>理由</th></tr>
+<tr><td>预测分子/晶体标量性质</td><td><code>SphereNet</code> · <code>MEGNetPlus</code> · <code>DimeNetPlusPlus</code></td><td>成熟的 3D GNN，SE(3) 等变或消息传递</td></tr>
+<tr><td>预测能量/力/应力（势）</td><td><code>CHGNet</code> · <code>M3GNet</code>（MatterSim） · <code>SphereNet</code></td><td>含力/应力输出，适合 MD</td></tr>
+<tr><td>预测电子密度场</td><td><code>InfGCN</code></td><td>连续场算子学习，SE(3) 等变</td></tr>
+<tr><td>图像增强（STEM）</td><td><code>SFIN</code></td><td>专门的频谱图像增强网络</td></tr>
+<tr><td>从 NMR 谱生成分子</td><td><code>DiffNMR</code></td><td>扩散 + CLIP 条件</td></tr>
+<tr><td>生成晶体结构</td><td><code>MatterGen</code>（条件）/ <code>DiffCSP</code></td><td>扩散模型，支持条件生成</td></tr>
+</table>
+
+<h2 id="ov-registry">注册权重</h2>
+<p>以下为 <code>MODEL_REGISTRY</code>（<code>ppmat/models/__init__.py</code>）中已注册的预训练权重，通过 <code>--model_name</code> 自动下载：</p>
+<table>
+<tr><th>任务</th><th>模型</th><th>注册名（<code>--model_name</code>）</th><th>数量</th></tr>
+<tr><td rowspan="4">property_prediction</td><td>iComformer</td><td><code>comformer_mp2018_train_60k_{e_form,band_gap,G,K}</code> · <code>comformer_mp2024_train_130k_e_form</code> · <code>comformer_jarvis_{dft_2d,dft_3d,alex_pbe_2d_all}_e_form</code></td><td>8</td></tr>
+<tr><td>MEGNetPlus</td><td><code>megnet_mp2018_train_60k_{e_form,band_gap,G,K}</code> · <code>megnet_mp2024_train_130k_e_form</code> · <code>megnet_jarvis_{dft_2d,dft_3d,alex_pbe_2d_all}_e_form</code></td><td>8</td></tr>
+<tr><td>DimeNetPlusPlus</td><td><code>dimenetpp_mp2018_train_60k_{e_form,band_gap,G,K}</code> · <code>dimenetpp_qm9_{mu,alpha,homo,lumo,gap,r2,zpve,U0,U,H,G,Cv}</code></td><td>16</td></tr>
+<tr><td>SphereNet</td><td><code>spherenet_qm9_{mu,alpha,homo,lumo,gap,r2,zpve,U0,U,H,G,Cv}</code></td><td>12</td></tr>
+<tr><td rowspan="3">interatomic_potentials</td><td>CHGNet</td><td><code>chgnet_mptrj</code></td><td>1</td></tr>
+<tr><td>M3GNet（MatterSim）</td><td><code>mattersim_{1M,5M}</code></td><td>2</td></tr>
+<tr><td>SphereNet</td><td><code>spherenet_md17_{aspirin,benzene_old,ethanol,malonaldehyde,naphthalene,salicylic,toluene,uracil}</code></td><td>8</td></tr>
+<tr><td>electronic_structure</td><td>InfGCN</td><td><code>infgcn_md17_{benzene,ethane,ethanol,malonaldehyde,phenol,resorcinol}</code> · <code>infgcn_{mp,qm9}</code> · <code>infgcn_omol25_mc_5k_trimmed</code></td><td>9</td></tr>
+<tr><td>spectrum_enhancement</td><td>SFIN</td><td><code>sfin_{haadf,bf}_{enhance,detect}</code></td><td>4</td></tr>
+<tr><td>spectrum_elucidation</td><td>DiffNMR</td><td><code>diffnmr_msdnmr_nless15</code></td><td>1</td></tr>
+<tr><td rowspan="2">structure_generation</td><td>DiffCSP</td><td><code>diffcsp_mp20</code> · <code>diffcsp_mp20_ab_initio</code></td><td>2</td></tr>
+<tr><td>MatterGen</td><td><code>mattergen_{mp20,alex_mp20}_*</code>（含 dft_band_gap / chemical_system / dft_bulk_modulus / dft_mag_density / space_group 等条件变体） · <code>mattergen_mp20_csp</code> · <code>mattergen_ml2ddb{,_chemical_system,_space_group}</code></td><td>17</td></tr>
+</table>
+<div class="note"><code>{a,b,c}</code> 表示该前缀下的多个变体。如 <code>spherenet_qm9_{mu,alpha}</code> = <code>spherenet_qm9_mu</code> + <code>spherenet_qm9_alpha</code>。用法：<code>python &lt;task&gt;/predict.py --model_name &lt;注册名&gt; --weights_name best.pdparams</code>。</div>
+
+<div class="tip">所有模型都注册在 <code>ppmat/models/__init__.py</code>，配置里用 <code>__class_name__</code> 引用。<code>MODEL_REGISTRY</code>（同文件）管理预训练权重的 BCE 下载链接。详见 <a href="trainer_docs.html" style="color:var(--accent);">Trainer 文档 →</a></div>
+
+</main>
+</div>
+
+<a class="nav-top" href="#" onclick="document.documentElement.scrollTop=0;document.body.scrollTop=0;return false;">↑ 顶部</a>
+
+<script>
+const links = [...document.querySelectorAll('aside a')];
+const secs = links.map(a => document.getElementById(a.getAttribute('href').slice(1))).filter(Boolean);
+const byId = {};
+links.forEach((a,i)=>{ const s=secs[i]; if(s) byId[s.id]=a; });
+const io = new IntersectionObserver((entries)=>{
+  entries.forEach(e=>{ if(e.isIntersecting){
+    links.forEach(a=>a.classList.remove('active'));
+    const a = byId[e.target.id]; if(a) a.classList.add('active');
+  }});
+},{rootMargin:'-20% 0px -70% 0px', threshold:0});
+secs.forEach(s=>io.observe(s));
+</script>
+</body>
+</html>

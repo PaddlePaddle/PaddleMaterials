@@ -204,6 +204,26 @@ def to_dense_adj(
     if batch_size is None:
         batch_size = int(batch.max()) + 1 if batch.numel() > 0 else 1
 
+    # ``batch`` still contains the node-to-graph assignment when a graph has no
+    # edges.  Handle that case before indexing ``batch[edge_index[0]]`` below;
+    # Paddle cannot index an empty tensor view in this path.  Keep a feature
+    # channel even when ``edge_attr`` is omitted so the result remains
+    # compatible with ``encode_no_edge`` and the dense graph contract.
+    if edge_index.numel() == 0:
+        if max_num_nodes is None:
+            if batch.numel() == 0:
+                max_num_nodes = 0
+            else:
+                num_nodes = segment_sum(paddle.ones([batch.shape[0]]), batch)
+                max_num_nodes = int(num_nodes.max())
+        feature_shape = list(edge_attr.shape[1:]) if edge_attr is not None else [1]
+        if not feature_shape:
+            feature_shape = [1]
+        return paddle.zeros(
+            [batch_size, max_num_nodes, max_num_nodes] + feature_shape,
+            dtype="float32",
+        )
+
     one = paddle.ones_like(batch, dtype=paddle.float32)
     num_nodes = segment_sum(one, batch)
     cum_nodes = paddle.concat([paddle.zeros([1]), num_nodes.cumsum(0)]).astype(

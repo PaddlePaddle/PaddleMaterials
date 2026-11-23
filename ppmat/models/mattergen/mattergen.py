@@ -4,7 +4,8 @@
 # 双方对本代码及相关成果享有同等权利。
 
 # Copyright (C) 2026 Suzhou National Laboratory and Baidu PaddlePaddle team
-# This code was jointly developed by Suzhou National Laboratory and Baidu PaddlePaddle team.
+# This code was jointly developed by Suzhou National Laboratory and the Baidu
+# PaddlePaddle team.
 # Suzhou National Laboratory provided the design concept for the model framework,
 # and Baidu PaddlePaddle team was responsible for the code implementation.
 # Both parties shall have equal rights to use this code and related work products.
@@ -40,7 +41,10 @@ from tqdm import tqdm
 from ppmat.models.common.activation import ScaledSiLU
 from ppmat.models.common.activation import SiQU
 from ppmat.models.common.initializer import he_orthogonal_init
+from ppmat.models.common.initializer import linear_init_
 from ppmat.models.common.radial_basis import RadialBasis
+from ppmat.models.common.runtime import RuntimeMixin
+from ppmat.models.common.runtime import runtime_boundary
 from ppmat.models.common.spherical_basis import CircularBasisLayer
 from ppmat.models.common.time_embedding import NoiseLevelEncoding
 from ppmat.models.common.time_embedding import UniformTimestepSampler
@@ -88,26 +92,9 @@ def get_max_neighbors_mask(
     """
     num_atoms = natoms.sum()
 
-    # Temporary use of alternative methods, no longer using paddle_scatter
-    # https://github.com/PFCCLab/paddle_scatter/tree/main
-    # ==================================================================================
-    # ones = paddle.ones(shape=[1], dtype=index.dtype).expand_as(y=index)
-    # num_neighbors = segment_coo(ones, index, dim_size=num_atoms)
-
     num_neighbors = paddle.zeros(shape=num_atoms)
     num_neighbors.index_add_(axis=0, index=index, value=paddle.ones(shape=len(index)))
     num_neighbors = num_neighbors.astype(dtype="int64")
-    # ==================================================================================
-
-    # Temporary use of alternative methods, no longer using paddle_scatter
-    # https://github.com/PFCCLab/paddle_scatter/tree/main
-    # ==================================================================================
-    # max_num_neighbors = num_neighbors.max()
-    # num_neighbors_thresholded = num_neighbors.clip(max=max_num_neighbors_threshold)
-    # image_indptr = paddle.zeros(shape=tuple(natoms.shape)[0] + 1, dtype="int64")
-    # image_indptr[1:] = paddle.cumsum(x=natoms, axis=0)
-    # num_neighbors_image = segment_csr(num_neighbors_thresholded, image_indptr)
-
     max_num_neighbors = paddle.max(x=num_neighbors).astype(dtype="int64")
     _max_neighbors = copy.deepcopy(num_neighbors)
     _max_neighbors[
@@ -118,7 +105,6 @@ def get_max_neighbors_mask(
     _num_neighbors[1:] = paddle.cumsum(x=_max_neighbors, axis=0)
     _natoms[1:] = paddle.cumsum(x=natoms, axis=0)
     num_neighbors_image = _num_neighbors[_natoms[1:]] - _num_neighbors[_natoms[:-1]]
-    # ==================================================================================
 
     if (
         max_num_neighbors <= max_num_neighbors_threshold
@@ -291,7 +277,8 @@ def radius_graph_pbc_ocp(
     index1 = paddle.masked_select(x=index1, mask=mask)
     index2 = paddle.masked_select(x=index2, mask=mask)
     cell_offsets = paddle.masked_select(
-        x=cell_offsets_per_atom.view(-1, 3), mask=mask.view(-1, 1).expand(shape=[-1, 3])
+        x=cell_offsets_per_atom.view(-1, 3),
+        mask=mask.view(-1, 1).expand(shape=[-1, 3]),
     )
     cell_offsets = cell_offsets.view(-1, 3)
     atom_distance_squared = paddle.masked_select(x=atom_distance_squared, mask=mask)
@@ -346,13 +333,14 @@ def get_pbc_distances(
         pos = coords
     else:
         lattice_nodes = paddle.repeat_interleave(x=lattice, repeats=num_atoms, axis=0)
-        pos = paddle.einsum("bi,bij->bj", coords, lattice_nodes)
+        pos = paddle.bmm(coords.unsqueeze(1), lattice_nodes).squeeze(1)
     j_index, i_index = edge_index
     distance_vectors = pos[j_index] - pos[i_index]
     lattice_edges = paddle.repeat_interleave(x=lattice, repeats=num_bonds, axis=0)
-    offsets = paddle.einsum(
-        "bi,bij->bj", to_jimages.astype(dtype="float32"), lattice_edges
-    )  # noqa
+    offsets = paddle.bmm(
+        to_jimages.astype(dtype="float32").unsqueeze(1),
+        lattice_edges,
+    ).squeeze(1)
     distance_vectors += offsets
     distances = distance_vectors.norm(axis=-1)
     out = {"edge_index": edge_index, "distances": distances}
@@ -416,6 +404,7 @@ def edge_score_to_lattice_score_frac_symmetric(
     edge_index: paddle.Tensor,
     edge_vectors: paddle.Tensor,
     batch: paddle.Tensor,
+    num_structures: Optional[int] = None,
 ) -> paddle.Tensor:
     """Converts a score per edge into a score for the atom coordinates and/or the
     lattice matrix via the chain rule. This method explicitly takes into account the
@@ -433,21 +422,27 @@ def edge_score_to_lattice_score_frac_symmetric(
             each crystal in num_nodes.
         batch (paddle.Tensor, [num_nodes,]): The pointer indicating for each atom which
             molecule in the batch it belongs to.
+        num_structures (int, optional): Number of crystals in the batch. Defaults to
+            batch.max() + 1, which is read from the device.
 
     Returns:
         paddle.Tensor: The predicted lattice score.
     """
     batch_edge = batch[edge_index[0]]
     unit_edge_vectors_cart = edge_vectors / edge_vectors.norm(axis=-1, keepdim=True)
+    if num_structures is None:
+        num_structures = batch.max() + 1
     score_lattice = scatter(
         score_d[:, None, None]
         * (unit_edge_vectors_cart[:, :, None] @ unit_edge_vectors_cart[:, None, :]),
         batch_edge,
         dim=0,
-        dim_size=batch.max() + 1,
+        dim_size=num_structures,
         reduce="add",
     )
-    score_lattice = score_lattice.transpose([0, -1, -2])
+    # Non-negative axes: CINN's fusion analysis indexes the input axes with the raw
+    # perm entries and crashes on negative ones.
+    score_lattice = score_lattice.transpose([0, 2, 1])
     return score_lattice
 
 
@@ -580,7 +575,9 @@ class AutoScaleFit(AutomaticFit):
         """
         if self._fitted:
             return
-        if AutomaticFit.activeVar == self:
+        # Identity check (what `==` did without a custom __eq__): SOT cannot trace
+        # `None == AutoScaleFit` through object.__eq__.
+        if AutomaticFit.activeVar is self:
             nSamples = tuple(y.shape)[0]
             self.variance_in += (
                 paddle.mean(x=paddle.var(x=x, axis=0)).to(dtype="float32") * nSamples
@@ -595,7 +592,7 @@ class AutoScaleFit(AutomaticFit):
         """
         Fit the scaling factor based on the observed variances.
         """
-        if AutomaticFit.activeVar == self:
+        if AutomaticFit.activeVar is self:
             if self.variance_in == 0:
                 raise ValueError(
                     f"Did not track the variable {self._name}. Add observe calls to "
@@ -739,22 +736,13 @@ class EfficientInteractionDownProjection(paddle.nn.Layer):
         he_orthogonal_init(self.weight)
 
     def forward(self, rbf, sph, id_ca, id_ragged_idx):
-        num_edges = tuple(rbf.shape)[1]
         rbf_W1 = paddle.matmul(x=rbf, y=self.weight)
         rbf_W1 = rbf_W1.transpose(perm=[1, 2, 0])
-        if tuple(sph.shape)[0] == 0:
-            Kmax = 0
-        else:
-            Kmax = max(
-                paddle.max(x=id_ragged_idx + 1),
-                paddle.to_tensor(data=0).to(id_ragged_idx.place),
-            )
-        sph2 = paddle.zeros(
-            shape=[num_edges, Kmax, self.num_spherical], dtype=sph.dtype
-        )
-        sph2[id_ca, id_ragged_idx] = sph
-        sph2 = paddle.transpose(x=sph2, perm=dim2perm(sph2.ndim, 1, 2))
-        return rbf_W1, sph2
+        # Return sph per triplet [T, num_spherical]. Padding it to
+        # [E, num_spherical, Kmax] allocates by the data-dependent Kmax, which has to
+        # be copied to the host (a SOT graph break, or a sync per block in a compiled
+        # program); EfficientInteractionBilinear sums over the triplets instead.
+        return rbf_W1, sph
 
 
 class InteractionBlockTripletsOnly(paddle.nn.Layer):
@@ -885,18 +873,26 @@ class EfficientInteractionBilinear(paddle.nn.Layer):
     def forward(self, basis, m, id_reduce, id_ragged_idx):
         rbf_W1, sph = basis
         nEdges = tuple(rbf_W1.shape)[0]
-        if nEdges == 0:
-            logger.warning(f"Zero graph edges found in {self.__class__}")
-            return paddle.zeros(shape=(0, 0))
-        Kmax = max(
-            paddle.max(x=id_ragged_idx) + 1,
-            paddle.to_tensor(data=0).to(id_ragged_idx.place),
+        # sum_k[e] = sum of outer(sph[t], m[t]) over the triplets t of edge e, the
+        # product of the padded [E, S, Kmax] and [E, Kmax, emb] tensors without the
+        # padding. No early return for nEdges == 0 (a branch on a dynamic dim breaks
+        # the SOT graph); zero edges give an empty [0, units_out] result.
+        sum_k = scatter(
+            sph.unsqueeze(-1) * m.unsqueeze(1),
+            id_reduce,
+            dim=0,
+            dim_size=nEdges,
+            reduce="sum",
         )
-        m2 = paddle.zeros(shape=[nEdges, Kmax, self.emb_size], dtype=m.dtype)
-        m2[id_reduce, id_ragged_idx] = m
-        sum_k = paddle.matmul(x=sph, y=m2)
-        rbf_W1_sum_k = paddle.matmul(x=rbf_W1, y=sum_k)
-        m_ca = paddle.matmul(x=rbf_W1_sum_k.transpose(perm=[2, 0, 1]), y=self.weight)
+        # Transposed product (rbf_W1 @ sum_k)^T = sum_k^T @ rbf_W1^T. rbf_W1 is shared
+        # by all interaction blocks; as a plain first operand, CINN's
+        # fuse_parallel_matmul_pass merges these matmuls across blocks although each
+        # block depends on the previous one, which leaves a cycle in the program and
+        # aborts compilation.
+        rbf_W1_sum_k_t = paddle.matmul(
+            x=sum_k, y=rbf_W1, transpose_x=True, transpose_y=True
+        )
+        m_ca = paddle.matmul(x=rbf_W1_sum_k_t.transpose(perm=[1, 0, 2]), y=self.weight)
         m_ca = paddle.sum(x=m_ca, axis=0)
         return m_ca
 
@@ -1201,11 +1197,17 @@ class RBFBasedLatticeUpdateBlockFrac(RBFBasedLatticeUpdateBlock):
         normalize_score: bool = True,
     ) -> paddle.Tensor:
         edge_scores = self.compute_score_per_edge(edge_emb=edge_emb, rbf=rbf)
+        # Static structure count: the per-structure sums below need no device read.
+        num_structures = lattice.shape[0]
         if normalize_score:
+            batch_edge = batch[edge_index[0]]
             num_edges = scatter(
-                paddle.ones_like(x=distance_vec[:, 0]), batch[edge_index[0]]
+                paddle.ones_like(x=distance_vec[:, 0]),
+                batch_edge,
+                dim=0,
+                dim_size=num_structures,
             )
-            edge_scores /= num_edges[batch[edge_index[0]], None]
+            edge_scores /= num_edges[batch_edge].unsqueeze(axis=-1)
         outs = []
         for i in range(self.num_out):
             lattice_update = edge_score_to_lattice_score_frac_symmetric(
@@ -1213,6 +1215,7 @@ class RBFBasedLatticeUpdateBlockFrac(RBFBasedLatticeUpdateBlock):
                 edge_index=edge_index,
                 edge_vectors=distance_vec,
                 batch=batch,
+                num_structures=num_structures,
             )
             outs.append(lattice_update)
         outs = paddle.stack(x=outs, axis=-1).sum(axis=-1)
@@ -1317,6 +1320,8 @@ class GemNetT(paddle.nn.Layer):
             paddle.nn.ReLU(),
             paddle.nn.Linear(in_features=emb_size_edge, out_features=emb_size_edge),
         )
+        linear_init_(self.angle_edge_emb[0])
+        linear_init_(self.angle_edge_emb[2])
         AutomaticFit.reset()
         self.radial_basis = RadialBasis(
             num_radial=num_radial, cutoff=cutoff, rbf=rbf, envelope=envelope
@@ -1348,6 +1353,7 @@ class GemNetT(paddle.nn.Layer):
         self.atom_latent_emb = paddle.nn.Linear(
             in_features=emb_dim_atomic_number + latent_dim, out_features=emb_size_atom
         )
+        linear_init_(self.atom_latent_emb)
         self.edge_emb = EdgeEmbedding(
             emb_size_atom, num_radial, emb_size_edge, activation=activation
         )
@@ -1596,6 +1602,7 @@ class GemNetT(paddle.nn.Layer):
         num_atoms: paddle.Tensor,
         batch: paddle.Tensor,
         lattice: Optional[paddle.Tensor] = None,
+        interaction_graph=None,
     ):
         """
         args:
@@ -1609,10 +1616,17 @@ class GemNetT(paddle.nn.Layer):
         """
         assert lattice is not None
         distorted_lattice = lattice
-        pos = frac_to_cart_coords_with_lattice(
-            frac_coords, num_atoms, lattice=distorted_lattice
-        )
         atomic_numbers = atom_types.cast(dtype="int64")
+        if interaction_graph is None:
+            # pos is only needed to build the graph.
+            pos = frac_to_cart_coords_with_lattice(
+                frac_coords, num_atoms, lattice=distorted_lattice
+            )
+            interaction_graph = self.generate_interaction_graph(
+                pos,
+                distorted_lattice,
+                num_atoms,
+            )
         (
             edge_index,
             neighbors,
@@ -1623,11 +1637,7 @@ class GemNetT(paddle.nn.Layer):
             id3_ca,
             id3_ragged_idx,
             to_jimages,
-        ) = self.generate_interaction_graph(
-            pos,
-            distorted_lattice,
-            num_atoms,
-        )
+        ) = interaction_graph
 
         idx_s, idx_t = edge_index
         cosφ_cab = inner_product_normalized(V_st[id3_ca], V_st[id3_ba])
@@ -1693,7 +1703,10 @@ class GemNetT(paddle.nn.Layer):
         # nMolecules = paddle.max(x=batch) + 1
         # E_t = scatter(E_t, batch, dim=0, dim_size=nMolecules, reduce="sum")
         F_st_vec = F_st[:, :, None] * V_st[:, None, :]
-        F_t = scatter(F_st_vec, idx_t, dim=0, dim_size=num_atoms.sum(), reduce="add")
+        # Static atom count; num_atoms.sum() would be read from the device.
+        F_t = scatter(
+            F_st_vec, idx_t, dim=0, dim_size=frac_coords.shape[0], reduce="add"
+        )
         F_t = F_t.squeeze(axis=1)
 
         return h, F_t, lattice_update
@@ -1747,13 +1760,21 @@ class GemNetTCtrl(GemNetT):
         lattice: paddle.Tensor,
         cond_adapt: Optional[Dict[str, paddle.Tensor]] = None,
         cond_adapt_mask: Optional[Dict[str, paddle.Tensor]] = None,
+        interaction_graph=None,
     ):
         assert lattice is not None
         distorted_lattice = lattice
-        pos = frac_to_cart_coords_with_lattice(
-            frac_coords, num_atoms, lattice=distorted_lattice
-        )
         atomic_numbers = atom_types.cast(dtype="int64")
+        if interaction_graph is None:
+            # pos is only needed to build the graph.
+            pos = frac_to_cart_coords_with_lattice(
+                frac_coords, num_atoms, lattice=distorted_lattice
+            )
+            interaction_graph = self.generate_interaction_graph(
+                pos,
+                distorted_lattice,
+                num_atoms,
+            )
         (
             edge_index,
             neighbors,
@@ -1764,7 +1785,7 @@ class GemNetTCtrl(GemNetT):
             id3_ca,
             id3_ragged_idx,
             to_jimages,
-        ) = self.generate_interaction_graph(pos, distorted_lattice, num_atoms)
+        ) = interaction_graph
         idx_s, idx_t = edge_index
         cosφ_cab = inner_product_normalized(V_st[id3_ca], V_st[id3_ba])
         rad_cbf3, cbf3 = self.cbf_basis3(D_st, cosφ_cab, id3_ca)
@@ -1842,7 +1863,10 @@ class GemNetTCtrl(GemNetT):
                 normalize_score=True,
             )
         F_st_vec = F_st[:, :, None] * V_st[:, None, :]
-        F_t = scatter(F_st_vec, idx_t, dim=0, dim_size=num_atoms.sum(), reduce="add")
+        # Static atom count; num_atoms.sum() would be read from the device.
+        F_t = scatter(
+            F_st_vec, idx_t, dim=0, dim_size=frac_coords.shape[0], reduce="add"
+        )
         F_t = F_t.squeeze(axis=1)
         return h, F_t, lattice_update
 
@@ -1961,6 +1985,7 @@ class GemNetTDenoiser(paddle.nn.Layer):
         self.fc_atom = paddle.nn.Linear(
             in_features=hidden_dim, out_features=MAX_ATOMIC_NUM + int(with_mask_type)
         )
+        linear_init_(self.fc_atom)
         self.property_embeddings_adapt_cfg = property_embeddings_adapt_cfg
         if property_embeddings_adapt_cfg is not None:
             self.property_embeddings_adapt = paddle.nn.LayerDict()
@@ -1971,7 +1996,22 @@ class GemNetTDenoiser(paddle.nn.Layer):
             self.property_embeddings_adapt = None
         # self.element_mask_func = element_mask_func
 
-    def forward(self, x, t: paddle.Tensor):
+    def build_interaction_graph(self, x):
+        """Build the dynamic periodic topology outside the CINN boundary."""
+
+        lattice = x["lattice"]
+        cart_coords = frac_to_cart_coords_with_lattice(
+            x["frac_coords"],
+            x["num_atoms"],
+            lattice=lattice,
+        )
+        return self.gemnet.generate_interaction_graph(
+            cart_coords,
+            lattice,
+            x["num_atoms"],
+        )
+
+    def forward(self, x, t: paddle.Tensor, interaction_graph=None):
         """
         args:
             x: tuple containing:
@@ -1997,10 +2037,10 @@ class GemNetTDenoiser(paddle.nn.Layer):
         )
         t_enc = self.noise_level_encoding(t)
         z_per_crystal = t_enc
-        property_embedding_values = get_property_embeddings(
-            batch=x, property_embeddings=self.property_embeddings
-        )
-        if len(property_embedding_values) > 0:
+        if len(self.property_embeddings) > 0:
+            property_embedding_values = get_property_embeddings(
+                batch=x, property_embeddings=self.property_embeddings
+            )
             z_per_crystal = paddle.concat(
                 x=[z_per_crystal, property_embedding_values], axis=-1
             )
@@ -2028,6 +2068,7 @@ class GemNetTDenoiser(paddle.nn.Layer):
                 lattice=lattice,
                 cond_adapt=conditions_adapt_dict,
                 cond_adapt_mask=conditions_adapt_mask_dict,
+                interaction_graph=interaction_graph,
             )
 
         else:
@@ -2038,6 +2079,7 @@ class GemNetTDenoiser(paddle.nn.Layer):
                 num_atoms=num_atoms,
                 batch=batch,
                 lattice=lattice,
+                interaction_graph=interaction_graph,
             )
 
         pred_atom_types = self.fc_atom(node_embeddings)
@@ -2179,7 +2221,7 @@ def wrapped_normal_loss(
     return aggregate_per_sample(losses, batch_idx, reduce=reduce, batch_size=batch_size)
 
 
-class MatterGen(paddle.nn.Layer):
+class MatterGen(RuntimeMixin, paddle.nn.Layer):
     """MatterGen: A generative model for inorganic materials design.
     https://www.nature.com/articles/s41586-025-08628-5
 
@@ -2187,7 +2229,11 @@ class MatterGen(paddle.nn.Layer):
         decoder_cfg (dict): Decoder configuration.
         lattice_noise_scheduler_cfg (dict): Lattice noise scheduler configuration.
         coord_noise_scheduler_cfg (dict): Coordinate noise scheduler configuration.
-        atom_noise_scheduler_cfg (dict): Atom type noise scheduler configuration.
+        atom_noise_scheduler_cfg (dict, optional): Atom type noise scheduler
+            configuration. If None, the model runs in crystal structure prediction
+            (CSP) mode: atom types are never corrupted and are not part of the loss,
+            and sampling keeps the atom types and atom counts given in the input
+            batch. Defaults to None.
         num_train_timesteps (int, optional): Number of training steps for diffusion.
             Defaults to 1000.
         max_t (float, optional): Maximum diffusion time. Defaults to 1.0.
@@ -2203,7 +2249,7 @@ class MatterGen(paddle.nn.Layer):
         decoder_cfg: dict,
         lattice_noise_scheduler_cfg: dict,
         coord_noise_scheduler_cfg: dict,
-        atom_noise_scheduler_cfg: dict,
+        atom_noise_scheduler_cfg: Optional[dict] = None,
         num_train_timesteps: int = 1000,
         max_t: float = 1.0,
         time_dim: int = 256,
@@ -2211,8 +2257,11 @@ class MatterGen(paddle.nn.Layer):
         coord_loss_weight: float = 0.1,
         atom_loss_weight: float = 1.0,
         d3pm_hybrid_lambda: float = 0.01,
+        execution_backend: str = "eager",
+        runtime_options: dict | None = None,
     ) -> None:
         super().__init__()
+        self._init_runtime(execution_backend, runtime_options)
         self.model = GemNetTDenoiser(**decoder_cfg)
 
         self.lattice_scheduler = build_scheduler(lattice_noise_scheduler_cfg)
@@ -2228,6 +2277,19 @@ class MatterGen(paddle.nn.Layer):
         self.d3pm_hybrid_lambda = d3pm_hybrid_lambda
 
         self.timestep_sampler = UniformTimestepSampler(min_t=1e-05, max_t=max_t)
+
+    @property
+    def supports_num_atoms_sampling(self):
+        # In CSP mode the atom types must be given, the number of atoms is not enough.
+        return self.atom_scheduler is not None
+
+    def _denoise(self, structure_array, times):
+        interaction_graph = self.model.build_interaction_graph(structure_array)
+        return self._runtime_denoise(structure_array, times, interaction_graph)
+
+    @runtime_boundary("denoise_step")
+    def _runtime_denoise(self, structure_array, times, interaction_graph):
+        return self.model(structure_array, times, interaction_graph)
 
     def forward(self, batch) -> Any:
         structure_array = batch["structure_array"]
@@ -2272,12 +2334,16 @@ class MatterGen(paddle.nn.Layer):
         atom_type = structure_array["atom_types"]
         atom_type_zero_based = atom_type - 1
 
-        input_atom_type_zero_based = self.atom_scheduler.add_noise(
-            atom_type_zero_based,
-            timesteps=times,
-            batch_idx=batch_idx,
-        )
-        input_atom_type = input_atom_type_zero_based + 1
+        if self.atom_scheduler is None:
+            # CSP mode: atom types are never corrupted
+            input_atom_type = atom_type
+        else:
+            input_atom_type_zero_based = self.atom_scheduler.add_noise(
+                atom_type_zero_based,
+                timesteps=times,
+                batch_idx=batch_idx,
+            )
+            input_atom_type = input_atom_type_zero_based + 1
 
         noise_batch = {
             "frac_coords": input_frac_coords,
@@ -2287,7 +2353,7 @@ class MatterGen(paddle.nn.Layer):
             "batch": batch_idx,
         }
 
-        score_model_output = self.model(noise_batch, times)
+        score_model_output = self._denoise(noise_batch, times)
 
         # coord loss
         loss_coord = wrapped_normal_loss(
@@ -2305,6 +2371,22 @@ class MatterGen(paddle.nn.Layer):
         # lattice loss
         loss_lattice = (score_model_output["lattice"] + rand_l).square()
         loss_lattice = loss_lattice.mean(axis=[1, 2])
+
+        if self.atom_scheduler is None:
+            # CSP mode: atom types are not part of the loss
+            loss_coord = loss_coord.mean()
+            loss_lattice = loss_lattice.mean()
+            loss = (
+                self.coord_loss_weight * loss_coord
+                + self.lattice_loss_weight * loss_lattice
+            )
+            return {
+                "loss_dict": {
+                    "loss": loss,
+                    "loss_coord": loss_coord,
+                    "loss_lattice": loss_lattice,
+                }
+            }
 
         # atom type loss
         (
@@ -2367,10 +2449,15 @@ class MatterGen(paddle.nn.Layer):
         frac_coords = self.coord_scheduler.prior_sampling(
             shape=(num_atoms.sum(), 3), num_atoms=num_atoms, batch_idx=batch_idx
         )
-        atom_types_zero_based = self.atom_scheduler.prior_sampling(
-            shape=(num_atoms.sum(),)
-        )
-        atom_types = atom_types_zero_based + 1
+        if self.atom_scheduler is None:
+            # CSP mode: keep the given atom types
+            assert "atom_types" in structure_array, "CSP mode needs atom_types."
+            atom_types = structure_array["atom_types"]
+        else:
+            atom_types_zero_based = self.atom_scheduler.prior_sampling(
+                shape=(num_atoms.sum(),)
+            )
+            atom_types = atom_types_zero_based + 1
 
         # update the structure_array with the initial noise
         structure_array.update(
@@ -2388,7 +2475,7 @@ class MatterGen(paddle.nn.Layer):
         for i in tqdm(range(num_inference_steps), desc="Sampling..."):
             t = paddle.full(shape=(batch_size,), fill_value=timesteps[i])
             for _ in range(n_step_corrector):
-                score_out = self.model(structure_array, t)
+                score_out = self._denoise(structure_array, t)
 
                 if record:
                     recorded_samples.append(structure_array)
@@ -2427,7 +2514,7 @@ class MatterGen(paddle.nn.Layer):
                         "lattice": cell,
                     }
                 )
-            score_out = self.model(structure_array, t)
+            score_out = self._denoise(structure_array, t)
 
             if record:
                 recorded_samples.append(structure_array)
@@ -2465,14 +2552,17 @@ class MatterGen(paddle.nn.Layer):
                 score=score_out["lattice"],
                 num_atoms=num_atoms,
             )
-            atom_type, atom_type_mean = self.atom_scheduler.step(
-                x=structure_array["atom_types"] - 1,
-                t=t,
-                batch_idx=batch_idx,
-                score=score_out["atom_types"],
-            )
-            atom_type += 1
-            atom_type_mean += 1
+            if self.atom_scheduler is None:
+                atom_type = atom_type_mean = structure_array["atom_types"]
+            else:
+                atom_type, atom_type_mean = self.atom_scheduler.step(
+                    x=structure_array["atom_types"] - 1,
+                    t=t,
+                    batch_idx=batch_idx,
+                    score=score_out["atom_types"],
+                )
+                atom_type += 1
+                atom_type_mean += 1
 
             structure_array.update(
                 {"frac_coords": frac_coords, "lattice": cell, "atom_types": atom_type}
@@ -2518,7 +2608,7 @@ class MatterGen(paddle.nn.Layer):
         return {"result": result}
 
 
-class MatterGenWithCondition(paddle.nn.Layer):
+class MatterGenWithCondition(RuntimeMixin, paddle.nn.Layer):
     """MatterGenWithCondition: A generative model for inorganic materials design.
     https://www.nature.com/articles/s41586-025-08628-5
 
@@ -2554,8 +2644,11 @@ class MatterGenWithCondition(paddle.nn.Layer):
         coord_loss_weight: float = 0.1,
         atom_loss_weight: float = 1.0,
         d3pm_hybrid_lambda: float = 0.01,
+        execution_backend: str = "eager",
+        runtime_options: dict | None = None,
     ) -> None:
         super().__init__()
+        self._init_runtime(execution_backend, runtime_options)
         self.set_embedding_type_cfg = set_embedding_type_cfg
         self.condition_names = condition_names
 
@@ -2576,6 +2669,14 @@ class MatterGenWithCondition(paddle.nn.Layer):
         self.d3pm_hybrid_lambda = d3pm_hybrid_lambda
 
         self.timestep_sampler = UniformTimestepSampler(min_t=1e-05, max_t=max_t)
+
+    def _denoise(self, structure_array, times):
+        interaction_graph = self.model.build_interaction_graph(structure_array)
+        return self._runtime_denoise(structure_array, times, interaction_graph)
+
+    @runtime_boundary("denoise_step")
+    def _runtime_denoise(self, structure_array, times, interaction_graph):
+        return self.model(structure_array, times, interaction_graph)
 
     def before_train(self, trainer):
         # This function serves as a pre-training hook, designed to execute
@@ -2653,7 +2754,7 @@ class MatterGenWithCondition(paddle.nn.Layer):
         for condition_name in self.condition_names:
             noise_batch[condition_name] = batch[condition_name]
 
-        score_model_output = self.model(noise_batch, times)
+        score_model_output = self._denoise(noise_batch, times)
 
         # coord loss
         loss_coord = wrapped_normal_loss(
@@ -2732,7 +2833,7 @@ class MatterGenWithCondition(paddle.nn.Layer):
         )
 
         structure_array[_USE_UNCONDITIONAL_EMBEDDING] = conditional_embedding
-        score_out_cond = self.model(structure_array, t)
+        score_out_cond = self._denoise(structure_array, t)
 
         score_out_cond["frac_coords"] = (
             score_out_cond["frac_coords"]
@@ -2751,7 +2852,7 @@ class MatterGenWithCondition(paddle.nn.Layer):
         )
 
         structure_array[_USE_UNCONDITIONAL_EMBEDDING] = uunconditional_embedding
-        score_out_uncond = self.model(structure_array, t)
+        score_out_uncond = self._denoise(structure_array, t)
 
         score_out_uncond["frac_coords"] = (
             score_out_uncond["frac_coords"]

@@ -18,6 +18,8 @@ from ppmat.models.diffnmr.utils import diffgraphformer_utils
 
 
 class ExtraMolecularFeatures:
+    output_dims = {"X": 2, "E": 0, "y": 1}
+
     def __init__(self, dataset_infos):
         """
         dataset_infos:

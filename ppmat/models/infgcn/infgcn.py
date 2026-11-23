@@ -13,19 +13,15 @@
 # limitations under the License.
 
 import paddle
-from paddle_scatter import scatter
 
+from ppmat.models.common.activation import NormActivation
+from ppmat.models.common.activation import ScalarActivation
 from ppmat.models.common.e3nn import o3
 from ppmat.models.common.e3nn.math import soft_one_hot_linspace
-from ppmat.models.common.e3nn.nn import Activation
-from ppmat.models.common.e3nn.nn import Extract
 from ppmat.models.common.e3nn.nn import FullyConnectedNet
 from ppmat.models.common.orbital import GaussianOrbital
-from ppmat.models.common.activation import ScalarActivation
-from ppmat.models.common.activation import NormActivation
-
-from ppmat.datasets.graph_utils.infgcn_graph_utils import radius
-from ppmat.datasets.graph_utils.infgcn_graph_utils import radius_graph
+from ppmat.models.infgcn.graph_converter import AtomGridRadiusGraphConverter
+from ppmat.utils.scatter import scatter_sum_first_order
 
 
 class GCNLayer(paddle.nn.Layer):
@@ -54,8 +50,9 @@ class GCNLayer(paddle.nn.Layer):
         .. math::
             z_u=x_u\\otimes \\sum_v w_{uv}y_v=w_u (x_u\\otimes y)
 
-        Here, uvw are radial (channel) indices of the first input, second input, and output, respectively.
-        Notice that in our model, the second input is always the spherical harmonics of the edge vector,
+        Here, uvw are radial (channel) indices of the first input, second input,
+        and output, respectively. Notice that in our model, the second input is
+        always the spherical harmonics of the edge vector,
         so the index v can be safely ignored.
 
         :param irreps_in: irreducible representations of input node features
@@ -66,10 +63,12 @@ class GCNLayer(paddle.nn.Layer):
         :param radial_hidden_size: hidden size of the radial network
         :param is_fc: whether to use fully connected tensor product
         :param use_sc: whether to use self-connection
-        :param irrep_normalization: representation normalization passed to the `o3.FullyConnectedTensorProduct`
-        :param path_normalization: path normalization passed to the `o3.FullyConnectedTensorProduct`
+        :param irrep_normalization: representation normalization passed to the
+            `o3.FullyConnectedTensorProduct`
+        :param path_normalization: path normalization passed to the
+            `o3.FullyConnectedTensorProduct`
         """
-        super(GCNLayer, self).__init__()
+        super().__init__()
         self.irreps_in = o3.Irreps(irreps_in)
         self.irreps_out = o3.Irreps(irreps_out)
         self.irreps_edge = o3.Irreps(irreps_edge)
@@ -107,7 +106,8 @@ class GCNLayer(paddle.nn.Layer):
                 irrep_normalization=irrep_normalization,
                 path_normalization=path_normalization,
             )
-        self.fc = FullyConnectedNet( # activation function , it will be automatically normalized by a scaling factor
+        # The activation is automatically normalized by a scaling factor.
+        self.fc = FullyConnectedNet(
             [radial_embed_size]
             + num_radial_layer * [radial_hidden_size]
             + [self.tp.weight_numel],
@@ -119,71 +119,74 @@ class GCNLayer(paddle.nn.Layer):
 
     def forward(self, edge_index, node_feat, edge_feat, edge_embed, dim_size=None):
         src, dst = edge_index
-        weight = self.fc(edge_embed) # FFN
-        out = self.tp(node_feat[src], edge_feat, weight=weight) # Tensor Product [num_edges, tp.irreps_out.dim]
-        
-        out = scatter(out, dst, dim=0, dim_size=dim_size, reduce="sum") # message aggregation
-        
+        weight = self.fc(edge_embed)  # FFN
+        out = self.tp(
+            node_feat[src], edge_feat, weight=weight
+        )  # Tensor Product [num_edges, tp.irreps_out.dim]
+
+        out = scatter_sum_first_order(out, dst, dim_size)  # message aggregation
+
         if self.use_sc:
             out = out + self.sc(node_feat)
         return out
 
 
-def pbc_vec(vec, cell):
-    """
-    Apply periodic boundary condition to the vector
-    :param vec: original vector of (N, K, 3)
-    :param cell: cell frame of (N, 3, 3)
-    :return: shortest vector of (N, K, 3)
-    """
-    coord = vec @ paddle.linalg.inv(x=cell)
-    coord = coord - paddle.round(coord)
-    pbc_vec = coord @ cell
-    return pbc_vec.detach()
-
-
 class InfGCN(paddle.nn.Layer):
     def __init__(
         self,
-        n_atom_type,
+        vocab,
         num_radial,
         num_spherical,
         radial_embed_size,
         radial_hidden_size,
         num_radial_layer=2,
         num_gcn_layer=3,
-        cutoff=3.0,
-        grid_cutoff=3.0,
+        atom_graph_cutoff=3.0,
+        atom_grid_cutoff=None,
         is_fc=True,
         gauss_start=0.5,
         gauss_end=5.0,
         activation="norm",
         residual=True,
-        pbc=False,
+        periodic_mode="none",
+        inference_grid_point_budget=None,
         target_name="density",
         loss_eps=1e-8,
         **kwargs,
     ):
         """
         Implement the InfGCN model for electron density estimation
-        :param n_atom_type: number of atom types
+        :param vocab: vocabularies used by the model
         :param num_radial: number of radial basis
-        :param num_spherical: maximum number of spherical harmonics for each radial basis,
+        :param num_spherical: maximum number of spherical harmonics for each
+            radial basis,
                 number of spherical basis will be (num_spherical + 1)^2
         :param radial_embed_size: embedding size of the edge length
         :param radial_hidden_size: hidden size of the radial network
         :param num_radial_layer: number of hidden layers in the radial network
         :param num_gcn_layer: number of InfGCN layers
-        :param cutoff: cutoff distance for building the molecular graph
-        :param grid_cutoff: cutoff distance for building the grid-atom graph
-        :param is_fc: whether the InfGCN layer should use fully connected tensor product
+        :param atom_graph_cutoff: cutoff used by the prebuilt atom graph and its
+            radial basis expansion
+        :param atom_grid_cutoff: cutoff for the residual atom-grid bipartite graph;
+            required only when ``residual`` is enabled
+        :param is_fc: whether the InfGCN layer should use fully connected
+            tensor product
         :param gauss_start: start coefficient of the Gaussian radial basis
         :param gauss_end: end coefficient of the Gaussian radial basis
-        :param activation: activation type for the InfGCN layer, can be ['scalar', 'norm']
+        :param activation: activation type for the InfGCN layer, can be
+            ['scalar', 'norm']
         :param residual: whether to use the residue prediction layer
-        :param pbc: whether the data satisfy the periodic boundary condition
+        :param periodic_mode: ``"none"`` for molecular data or
+            ``"minimum_image"`` for periodic orbital minimum-image vectors
+        :param inference_grid_point_budget: optional maximum total number of grid
+            points decoded by one evaluation chunk across the whole batch. Only
+            affects ``trainer.eval()``; ``predict.py`` is controlled by
+            ``grid_batch_size`` instead. Bounds peak decoder memory regardless
+            of batch size (peak ≈ avg_atoms × budget × orbital_dims).
         """
-        super(InfGCN, self).__init__()
+        super().__init__()
+        self.vocab = vocab
+        n_atom_type = vocab["atom"]["num_embeddings"]
         self.n_atom_type = n_atom_type
         self.num_radial = num_radial
         self.num_spherical = num_spherical
@@ -191,14 +194,27 @@ class InfGCN(paddle.nn.Layer):
         self.radial_hidden_size = radial_hidden_size
         self.num_radial_layer = num_radial_layer
         self.num_gcn_layer = num_gcn_layer
-        self.cutoff = cutoff
-        self.grid_cutoff = grid_cutoff
+        self.atom_graph_cutoff = float(atom_graph_cutoff)
+        if residual and atom_grid_cutoff is None:
+            raise ValueError("atom_grid_cutoff is required when residual=True.")
+        self.atom_grid_cutoff = (
+            None if atom_grid_cutoff is None else float(atom_grid_cutoff)
+        )
         self.is_fc = is_fc
         self.gauss_start = gauss_start
         self.gauss_end = gauss_end
         self.activation = activation
         self.residual = residual
-        self.pbc = pbc
+        if periodic_mode not in {"none", "minimum_image"}:
+            raise ValueError("periodic_mode must be 'none' or 'minimum_image'.")
+        if periodic_mode == "minimum_image" and residual:
+            raise ValueError(
+                "The minimum-image periodic configuration requires residual=False."
+            )
+        self.periodic_mode = periodic_mode
+        self.inference_grid_point_budget = self._validate_optional_positive_int(
+            inference_grid_point_budget, "inference_grid_point_budget"
+        )
         self.target_name = target_name
         self.loss_eps = loss_eps
         assert activation in ["scalar", "norm"]
@@ -232,7 +248,12 @@ class InfGCN(paddle.nn.Layer):
         else:
             self.act = NormActivation(self.irreps_feat)
         self.residue = None
+        self.atom_grid_graph_converter = None
         if self.residual:
+            self.atom_grid_graph_converter = AtomGridRadiusGraphConverter(
+                cutoff=self.atom_grid_cutoff,
+                max_num_neighbors=32,
+            )
             self.residue = GCNLayer(
                 self.irreps_feat,
                 "0e",
@@ -243,58 +264,83 @@ class InfGCN(paddle.nn.Layer):
                 is_fc=True,
                 use_sc=False,
                 **kwargs,
-        )
+            )
         self.orbital = GaussianOrbital(
             gauss_start, gauss_end, num_radial, num_spherical
         )
         self._criterion = paddle.nn.MSELoss(reduction="mean")
 
-    def forward(self, batch):
-        """
-        Expect a dict batch containing:
-            - density: electronic density true labels [BS, Grids]
-            - density_mask: optional mask for sampled grid points
-            - grid_coord: [B, G, 3] grid coordinates: BS, Grids, Coord
-            - graph: PGL Batch graph with batch/pos/ptr/x
-             - batch: map node to graph, number infer to index of batch
-             - pos: coord of atom [n, 3]
-             - ptr: refer to start ptr for index of batch in total atom numbers
-             - x: node feat represent to atom type
-            - infos: list of dicts, length list = BS, dict:
-             - cell: lattice vector [3*3]
-             - shape: grid shape, 3 dimension
-             - file_name: orginal file name
-        """
+    def _forward(self, data):
+        grid = data["grid_coord"]
+        info = data.get("info")
 
-        # 1.prepare dataset
-        density = batch["density"] # true label
-        mask = batch["density_mask"]
-        grid = batch["grid_coord"].astype("float32")
-        graph = batch["graph"] # input of model
-        infos = batch.get("infos", None)
+        # PGL graphs travel through the DataLoader untouched, so the graph
+        # fields are converted here. ``tensor()`` is in-place and short-circuits
+        # when the graph already holds tensors.
+        graph = data["graph"].tensor()
+        atom_types = graph.node_feat["x"]
+        atom_coord = graph.node_feat["cart_coords"]
+        atom_edges = graph.edges.transpose([1, 0])
+        graph_batch = graph.graph_node_id.astype("int64")
+        cell = self._prepare_cell(info)
 
-        # 2. preprocess for devices location
-        device = paddle.get_device()
-        graph = graph.to(device)
-        grid = grid.astype("float32").to(device)
-        if density is not None:
-            density = density.astype("float32").to(device)
-        if mask is not None:
-            mask = mask.astype("float32").to(device)
-        prepared_infos = self._prepare_infos(infos, device)
+        # Predict the field independently of target availability.
+        atom_features = self._encode_atoms(
+            atom_types,
+            atom_coord,
+            atom_edges,
+        )
+        chunk_size = data.get("grid_batch_size")
+        if chunk_size is None:
+            chunk_size = self._inference_chunk_size(grid.shape[0], grid.shape[1])
+        if not self.training and chunk_size and grid.shape[1] > chunk_size:
+            pred = paddle.concat(
+                [
+                    self._decode_grid_chunk(
+                        atom_features,
+                        atom_coord,
+                        grid[:, start : start + chunk_size],
+                        graph_batch,
+                        cell,
+                    )
+                    for start in range(0, grid.shape[1], chunk_size)
+                ],
+                axis=1,
+            )
+        else:
+            pred = self._decode_grid_chunk(
+                atom_features,
+                atom_coord,
+                grid,
+                graph_batch,
+                cell,
+            )
 
-        # 3. forward
-        pred = self._forward_density(graph.x, graph.pos, grid, graph.batch, prepared_infos)
+        return pred
 
-        # 4. mask pred
-        loss_dict = {}
+    def forward(self, data, return_loss=True, return_prediction=True):
+        """Run field prediction through the PaddleMaterials model protocol."""
+
+        assert (
+            return_loss or return_prediction
+        ), "At least one of return_loss or return_prediction must be True."
+
+        pred = self._forward(data)
+        mask = data.get("density_mask")
         masked_pred = pred
         if mask is not None:
             mask = mask.astype(pred.dtype)
             masked_pred = pred * mask
 
-        # 5.calculate loss and NMAE
-        if density is not None:
+        # Calculate loss and NMAE only when requested.
+        loss_dict = {}
+        if return_loss:
+            density = data[self.target_name]
+            if density is None:
+                raise ValueError(
+                    f"data[{self.target_name!r}] must not be None when "
+                    "return_loss is True."
+                )
             if mask is not None:
                 label_masked = density * mask
                 denom = paddle.sum(mask) + self.loss_eps
@@ -302,85 +348,128 @@ class InfGCN(paddle.nn.Layer):
                 # Normalized MAE (original InfGCN):
                 #   mae = sum(|pred - density|) / sum(density)
                 mae = paddle.sum(paddle.abs(masked_pred - label_masked)) / (
-                    paddle.sum(label_masked) + self.loss_eps
+                    paddle.sum(paddle.abs(label_masked)) + self.loss_eps
                 )
             else:
                 label_masked = density
                 loss = self._criterion(pred, label_masked)
                 mae = paddle.sum(paddle.abs(pred - label_masked)) / (
-                    paddle.sum(label_masked) + self.loss_eps
+                    paddle.sum(paddle.abs(label_masked)) + self.loss_eps
                 )
             loss_dict["loss"] = loss
             loss_dict["mae"] = mae
 
-        pred_dict = {self.target_name: masked_pred}
+        pred_dict = {}
+        if return_prediction:
+            pred_dict[self.target_name] = masked_pred
         return {"loss_dict": loss_dict, "pred_dict": pred_dict}
 
-    def _prepare_infos(self, infos, device):
-        if infos is None:
-            return None
-        prepared_infos = []
-        for info in infos:
-            cur = dict(info) if isinstance(info, dict) else info
-            if isinstance(cur, dict) and "cell" in cur and hasattr(cur["cell"], "to"):
-                cur["cell"] = cur["cell"].to(device)
-            prepared_infos.append(cur)
-        return prepared_infos
+    @paddle.no_grad()
+    def predict(self, samples):
+        is_list = isinstance(samples, list)
+        samples = samples if is_list else [samples]
 
-    def _forward_density(self, atom_types, atom_coord, grid, batch, infos):
-        """
-        Network forward with memory optimization
+        results = []
+        for sample in samples:
+            sample = dict(sample)
+            grid = sample.pop("grid", None)
+            if grid is not None:
+                sample["grid_coord"] = paddle.to_tensor(
+                    grid.cartesian_coordinates(),
+                    dtype="float32",
+                ).reshape([1, -1, 3])
+                sample["info"] = {
+                    "cell": paddle.to_tensor(grid.cell_vectors, dtype="float32")
+                }
+            result = self._forward(sample).reshape([-1]).detach().cpu()
+            results.append({self.target_name: result})
+
+        return results if is_list else results[0]
+
+    def _prepare_cell(self, info):
+        if self.periodic_mode == "none":
+            return None
+        cell = info["cell"]
+        return cell.unsqueeze(0) if cell.ndim == 2 else cell
+
+    @staticmethod
+    def _validate_optional_positive_int(value, name):
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+        ):
+            raise ValueError(f"{name} must be a positive integer or None.")
+        return value
+
+    def _inference_chunk_size(self, batch_size, num_grid_points):
+        if self.training or self.inference_grid_point_budget is None:
+            return None
+        chunk_size = max(1, self.inference_grid_point_budget // int(batch_size))
+        return min(chunk_size, int(num_grid_points))
+
+    def _encode_atoms(self, atom_types, atom_coord, atom_edges):
+        """Encode the atom graph once for reuse by every grid chunk.
+
         :param atom_types: atom types of (N,)
         :param atom_coord: atom coordinates of (N, 3)
-        :param grid: coordinates at grid points of (G, K, 3)
-        :param batch: batch index for each node of (N,)
-        :param infos: list of dictionary containing additional information
-        :return: predicted value at each grid point of (G, K)
+        :param atom_edges: candidate atom edges of (2, E)
+        :return: encoded atom features of (N, irreps_feat.dim)
         """
-
-        # cell = None
-        # if infos is not None and len(infos) > 0 and "cell" in infos[0]:
-        #     cell = paddle.stack(x=[info["cell"] for info in infos], axis=0).to(batch.place)
-        cell = paddle.stack(x=[info["cell"] for info in infos], axis=0).to(batch.place) #[BS, 3, 3]
         feat = self.embedding(atom_types)
-        
-        edge_index = radius_graph(atom_coord, self.cutoff, batch, loop=False)
+
+        # Graph topology, including max_num_neighbors, belongs to the converter.
+        edge_index = atom_edges
         src, dst = edge_index
-        edge_vec = atom_coord[src] - atom_coord[dst] # coord vector
-        edge_len = edge_vec.norm(axis=-1) + 1e-08 # L2 norm, equal to distance
-        
-        edge_feat = o3.spherical_harmonics( # angular features(directional), [D_edge_index, 2l+1]
-            list(range(self.num_spherical + 1)), # degree of the spherical harmonics
-            edge_vec / edge_len[..., None], # e.g. edge vector
-            normalize=False, # whether to normalize the x to unit vectors that lie on the sphere for input
-            normalization="integral", # normalization of the output tensors
+        edge_vec = atom_coord[src] - atom_coord[dst]  # coord vector
+        edge_len = edge_vec.norm(axis=-1) + 1e-08  # L2 norm, equal to distance
+
+        # Angular features have shape [num_edges, 2 * degree + 1].
+        edge_feat = o3.spherical_harmonics(
+            list(range(self.num_spherical + 1)),  # degree of the spherical harmonics
+            edge_vec / edge_len[..., None],  # e.g. edge vector
+            normalize=False,  # Input vectors are already normalized.
+            normalization="integral",  # normalization of the output tensors
         )
 
-        edge_embed = soft_one_hot_linspace( # radial features, [D_edge_index, radial_embed_size]
-            edge_len,
-            start=0.0,
-            end=self.cutoff,
-            number=self.radial_embed_size, # The number of radial basis functions.
-            basis="gaussian", # Uses Gaussian functions as the radial basis.
-            cutoff=False,# Disables the cutoff/smoothing function at the boundary.
-        ) * (self.radial_embed_size**0.5) # enhance signal feature due to normalization of output
-        
+        edge_embed = (
+            soft_one_hot_linspace(  # radial features, [D_edge_index, radial_embed_size]
+                edge_len,
+                start=0.0,
+                end=self.atom_graph_cutoff,
+                number=self.radial_embed_size,  # The number of radial basis functions.
+                basis="gaussian",  # Uses Gaussian functions as the radial basis.
+                cutoff=False,  # Disables the cutoff/smoothing function at the boundary.
+            )
+            * (self.radial_embed_size**0.5)
+        )  # enhance signal feature due to normalization of output
+
         for i, gcn in enumerate(self.gcns):
             feat = gcn(
                 edge_index, feat, edge_feat, edge_embed, dim_size=atom_types.shape[0]
             )
             if i != self.num_gcn_layer - 1:
                 feat = self.act(feat)
-        
+
+        return feat
+
+    def _decode_grid_chunk(self, feat, atom_coord, grid, batch, cell):
+        """Decode one grid chunk from shared atom features."""
+
         n_graph, n_sample = grid.shape[0], grid.shape[1]
         if self.residual:
-            grid_flat = grid.view(-1, 3)
+            # Grid chunks are sliced along the point axis and may be
+            # non-contiguous. ``reshape`` supports both contiguous full grids
+            # and these evaluation-only slices.
+            grid_flat = grid.reshape([-1, 3])
             grid_batch = paddle.arange(end=n_graph).repeat_interleave(repeats=n_sample)
-            grid_dst, node_src = radius(
-                atom_coord, grid_flat, self.grid_cutoff, batch, grid_batch
+            atom_grid_edges = self.atom_grid_graph_converter(
+                atom_coord,
+                grid_flat,
+                batch,
+                grid_batch,
             )
-            grid_edge = grid_flat[grid_dst] - atom_coord[node_src]
-            if grid_edge.shape[0] != 0:
+            if atom_grid_edges.shape[0] != 0:
+                node_src, grid_dst = atom_grid_edges.transpose([1, 0])
+                grid_edge = grid_flat[grid_dst] - atom_coord[node_src]
                 grid_len = paddle.linalg.norm(x=grid_edge, axis=-1) + 1e-08
                 grid_edge_feat = o3.spherical_harmonics(
                     list(range(self.num_spherical + 1)),
@@ -391,12 +480,12 @@ class InfGCN(paddle.nn.Layer):
                 grid_edge_embed = soft_one_hot_linspace(
                     grid_len,
                     start=0.0,
-                    end=self.grid_cutoff,
+                    end=self.atom_grid_cutoff,
                     number=self.radial_embed_size,
                     basis="gaussian",
                     cutoff=False,
                 ) * (self.radial_embed_size**0.5)
-                
+
                 residue = self.residue(
                     (node_src, grid_dst),
                     feat,
@@ -408,16 +497,26 @@ class InfGCN(paddle.nn.Layer):
                 residue = paddle.zeros([grid_flat.shape[0], 1], dtype=feat.dtype)
         else:
             residue = 0.0
-        
-        sample_vec = grid[batch] - atom_coord.unsqueeze(axis=-2) # The displacement (relative position) vectors from each atom to each sampled grid point. [N_atom, N_grid, 3]
-        if self.pbc and cell is not None:
-            sample_vec = pbc_vec(sample_vec, cell)
-        
-        orbital = self.orbital(sample_vec) # Map the displacement vector at each grid point to a set of Gaussian-type orbital (GTO) basis function values, i.e., a discrete basis expansion of (\psi_{n\ell m}(\mathbf{r})). [N_atom, N_grid,batch, (lmax+1)^2 * num_gauss]
-        density = (orbital * feat.unsqueeze(axis=1)).sum(axis=-1) # linear combination [n_atom, n_grid]
-        density = scatter(density, batch, dim=0, reduce="sum") # molecular/cell density
-        
+
+        # Displacement vectors from each atom to each sampled grid point have
+        # shape [num_atoms, num_grid_points, 3].
+        sample_vec = grid[batch] - atom_coord.unsqueeze(axis=-2)
+        if cell is not None:
+            cell = cell[batch]
+            sample_vec = sample_vec @ paddle.linalg.inv(cell)
+            sample_vec = (sample_vec - paddle.round(sample_vec)) @ cell
+
+        # Expand displacement vectors in the Gaussian-type orbital basis:
+        # [num_atoms, num_grid_points, (lmax + 1)^2 * num_gaussians].
+        orbital = self.orbital(sample_vec)
+        density = (orbital * feat.unsqueeze(axis=1)).sum(
+            axis=-1
+        )  # linear combination [n_atom, n_grid]
+        density = scatter_sum_first_order(
+            density, batch, n_graph
+        )  # molecular/cell density
+
         if self.residual:
             density = density + residue.view(*tuple(density.shape))
-            
+
         return density

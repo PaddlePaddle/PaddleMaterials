@@ -33,4 +33,4 @@ The structure generation (SG) task tackles the inverse-design challenge of creat
 | &emsp;ALEX MP20                     | -                                          | ✅                                             |
 | **ML2DDB🌟**                        | -                                          | ✅                                             |
 
-**Notice**:🌟 represent originate research work published from paddlematerials toolkit
+**Legend:** ✅ Verified · 🧪 Implemented, pending validation · 🚧 In development · `-` Not supported · 🌟 Original Work

@@ -15,6 +15,7 @@ import copy
 
 import numpy as np
 import paddle
+from pymatgen.core.periodic_table import Element
 
 from ppmat.utils import paddle_aux  # noqa: F401
 from ppmat.utils.paddle_aux import dim2perm
@@ -48,6 +49,29 @@ OFFSET_LIST = [
     [1, 1, 0],
     [1, 1, 1],
 ]
+
+
+def normalize_coordinate_unit(coordinate_unit: str) -> str:
+    """Validate and normalize a supported coordinate unit."""
+
+    if not isinstance(coordinate_unit, str):
+        raise TypeError("coordinate_unit must be a string.")
+    coordinate_unit = coordinate_unit.strip().lower()
+    if coordinate_unit not in {"angstrom", "bohr"}:
+        raise ValueError(
+            "coordinate_unit must be either 'angstrom' or 'bohr', but got "
+            f"{coordinate_unit!r}."
+        )
+    return coordinate_unit
+
+
+def atomic_number_from_symbol(symbol: str) -> int:
+    """Return the atomic number, accepting cvve CUBE ``X{n}`` placeholders."""
+
+    symbol = str(symbol)
+    if symbol.startswith("X") and symbol[1:].isdigit():
+        return int(symbol[1:])
+    return int(Element(symbol).Z)
 
 
 def lattice_params_to_matrix_paddle(lengths, angles):
@@ -183,13 +207,13 @@ def get_pbc_distances(
         pos = coords
     else:
         lattice_nodes = paddle.repeat_interleave(x=lattice, repeats=num_atoms, axis=0)
-        pos = paddle.einsum("bi,bij->bj", coords, lattice_nodes)
+        pos = paddle.bmm(coords.unsqueeze(1), lattice_nodes).squeeze(1)
     j_index, i_index = edge_index
     distance_vectors = pos[j_index] - pos[i_index]
     lattice_edges = paddle.repeat_interleave(x=lattice, repeats=num_bonds, axis=0)
-    offsets = paddle.einsum(
-        "bi,bij->bj", to_jimages.astype(dtype="float32"), lattice_edges
-    )
+    offsets = paddle.bmm(
+        to_jimages.astype(dtype="float32").unsqueeze(1), lattice_edges
+    ).squeeze(1)
     distance_vectors += offsets
     distances = distance_vectors.norm(axis=-1)
     out = {"edge_index": edge_index, "distances": distances}
@@ -381,7 +405,7 @@ def frac_to_cart_coords(
     if lattices is None:
         lattices = lattice_params_to_matrix_paddle(lengths, angles)
     lattice_nodes = paddle.repeat_interleave(x=lattices, repeats=num_atoms, axis=0)
-    pos = paddle.einsum("bi,bij->bj", frac_coords, lattice_nodes)
+    pos = paddle.bmm(frac_coords.unsqueeze(1), lattice_nodes).squeeze(1)
     return pos
 
 
@@ -389,7 +413,7 @@ def frac_to_cart_coords_with_lattice(
     frac_coords: paddle.Tensor, num_atoms: paddle.Tensor, lattice: paddle.Tensor
 ) -> paddle.Tensor:
     lattice_nodes = paddle.repeat_interleave(x=lattice, repeats=num_atoms, axis=0)
-    pos = paddle.einsum("bi,bij->bj", frac_coords, lattice_nodes)
+    pos = paddle.bmm(frac_coords.unsqueeze(1), lattice_nodes).squeeze(1)
     return pos
 
 
@@ -403,7 +427,7 @@ def cart_to_frac_coords(
     inv_lattice_nodes = paddle.repeat_interleave(
         x=inv_lattice, repeats=num_atoms, axis=0
     )
-    frac_coords = paddle.einsum("bi,bij->bj", cart_coords, inv_lattice_nodes)
+    frac_coords = paddle.bmm(cart_coords.unsqueeze(1), inv_lattice_nodes).squeeze(1)
     return frac_coords % 1.0
 
 

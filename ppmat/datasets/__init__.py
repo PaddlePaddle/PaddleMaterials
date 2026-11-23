@@ -30,9 +30,16 @@ from paddle.io import DataLoader
 from paddle.io import DistributedBatchSampler  # noqa
 
 from ppmat.datasets import collate_fn
+from ppmat.datasets.density_dataset import DensityDataset
+from ppmat.datasets.density_dataset import MD17DensityDataset
+from ppmat.datasets.density_dataset import MPCubicDensityDataset
+from ppmat.datasets.density_dataset import OMol25MC5kDensityDataset
+from ppmat.datasets.density_dataset import OMol25MC5kTrimmedDensityDataset
+from ppmat.datasets.density_dataset import QM9DensityDataset
 from ppmat.datasets.high_level_water_dataset import HighLevelWaterDataset
 from ppmat.datasets.jarvis_dataset import JarvisDataset
 from ppmat.datasets.matbench_dataset import MatbenchDataset
+from ppmat.datasets.md17_dataset import MD17Dataset  # noqa
 from ppmat.datasets.mp20_dataset import AlexMP20MatterGenDataset
 from ppmat.datasets.mp20_dataset import MP20Dataset
 from ppmat.datasets.mp20_dataset import MP20MatterGenDataset
@@ -41,12 +48,11 @@ from ppmat.datasets.mp2024_dataset import MP2024Dataset
 from ppmat.datasets.mptrj_dataset import MPTrjDataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrDataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrinfos
-from ppmat.datasets.density_dataset import DensityDataset
-from ppmat.datasets.small_density_dataset import SmallDensityDataset 
 from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
 from ppmat.datasets.oc20_s2ef_dataset import OC20S2EFDataset  # noqa
-from ppmat.datasets.qm9_dataset import QM9Dataset # noqa
 from ppmat.datasets.omol25_dataset import OMol25Dataset
+from ppmat.datasets.qm9_dataset import QM9Dataset  # noqa
+from ppmat.datasets.sfin_dataset import SFINDataset
 from ppmat.datasets.split_mptrj_data import none_to_zero
 from ppmat.datasets.transform import build_transforms
 from ppmat.utils import logger
@@ -64,9 +70,15 @@ __all__ = [
     "HighLevelWaterDataset",
     "MSDnmrDataset",
     "MatbenchDataset",
-    "DensityDataset", 
-    "SmallDensityDataset",
+    "DensityDataset",
+    "QM9DensityDataset",
+    "MPCubicDensityDataset",
+    "OMol25MC5kDensityDataset",
+    "OMol25MC5kTrimmedDensityDataset",
+    "MD17DensityDataset",
+    "SFINDataset",
     "OMol25Dataset",
+    "MD17Dataset",
 ]
 
 INFO_CLASS_REGISTRY: Dict[str, type] = {
@@ -98,6 +110,7 @@ def term_mp(sig_num, frame):
     print("main proc {} exit, kill process group " "{}".format(pid, pgid))
     os.killpg(pgid, signal.SIGKILL)
 
+
 def set_signal_handlers():
     """
     Set up signal handlers for safe process group termination.
@@ -107,7 +120,7 @@ def set_signal_handlers():
     2. The current process is the process group leader
 
     This allows safe termination of the entire process group via:
-    - Ctrl+C (SIGINT) 
+    - Ctrl+C (SIGINT)
     - Termination signals (SIGTERM)
 
     Safety Notes:
@@ -135,7 +148,7 @@ def set_signal_handlers():
             signal.signal(signal.SIGTERM, term_mp)
 
 
-def build_dataloader(cfg: Dict):
+def build_dataloader(cfg: Dict, vocab=None):
     """Build dataloader from config.
 
     Args:
@@ -157,6 +170,8 @@ def build_dataloader(cfg: Dict):
     if "transforms" in init_params:
         init_params["transforms"] = build_transforms(init_params.pop("transforms"))
 
+    if vocab is not None:
+        init_params["vocab"] = vocab
     dataset = eval(cls_name)(**init_params)
 
     loader_config = cfg.get("loader")
@@ -293,6 +308,7 @@ def build_dataset_infos(
     cfg: Dict,
     dataloaders=None,
     *,
+    vocab=None,
     recompute_statistics: bool = False,
     cache_dir: Optional[str | Path] = None,
     force_refresh: bool = False,
@@ -345,6 +361,7 @@ def build_dataset_infos(
     infos = info_cls(
         dataloaders=dataloaders,
         cfg=init_params,
+        vocab=vocab,
         recompute_statistics=recompute_statistics,
     )
 

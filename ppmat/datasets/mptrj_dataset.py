@@ -438,12 +438,45 @@ class MPTrjDataset(Dataset):
                 if isinstance(value, str):
                     data[property_name] = value
                 elif property_name in ["force", "stress", "magmom"]:
-                    num_atoms = (
-                        data["graph"].node_feat["num_atoms"]
-                        if "graph" in data.keys()
-                        else data["structure_array"]["num_atoms"].data
+                    if "graph" in data.keys():
+                        graph = data["graph"]
+
+                        # PGL-style graph converters expose num_atoms through
+                        # node_feat, while PaddleMaterials geometric Data
+                        # converters can expose it directly.
+                        if (
+                            hasattr(graph, "node_feat")
+                            and graph.node_feat is not None
+                            and "num_atoms" in graph.node_feat
+                        ):
+                            num_atoms = graph.node_feat["num_atoms"]
+
+                        elif (
+                            hasattr(graph, "num_atoms")
+                            and graph.num_atoms is not None
+                        ):
+                            num_atoms = graph.num_atoms
+
+                        elif getattr(graph, "num_nodes", None) is not None:
+                            num_atoms = graph.num_nodes
+
+                        else:
+                            raise ValueError(
+                                "Cannot determine num_atoms from graph."
+                            )
+
+                    else:
+                        num_atoms = data[
+                            "structure_array"
+                        ]["num_atoms"].data
+
+                    if hasattr(num_atoms, "numpy"):
+                        num_atoms = num_atoms.numpy()
+
+                    num_atoms = int(
+                        np.asarray(num_atoms)
+                        .reshape(-1)[0]
                     )
-                    num_atoms = num_atoms[0]
                     if value is None:
                         if property_name == "force":
                             value = np.full((num_atoms, 3), np.nan)

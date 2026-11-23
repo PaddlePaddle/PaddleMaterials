@@ -37,6 +37,7 @@ __all__ = [
     "normal_",
     "trunc_normal_",
     "glorot_normal_",
+    "glorot_orthogonal_",
     "constant_",
     "ones_",
     "zeros_",
@@ -454,7 +455,7 @@ def _standardize(kernel):
     if len(tuple(kernel.shape)) == 3:
         axis = 0, 1
     else:
-        axis = 1
+        axis = 0
     var, mean = tuple(
         [
             paddle.var(kernel, axis=axis, unbiased=True, keepdim=True),
@@ -489,4 +490,26 @@ def he_orthogonal_init(tensor):
         tensor.data = _standardize(tensor.data)
         tensor.data *= (1 / fan_in) ** 0.5
     tensor.stop_gradient = stop_gradient
+    return tensor
+
+
+def glorot_orthogonal_(tensor: paddle.Tensor, scale: float = 1.0) -> paddle.Tensor:
+    """PyG-compatible Glorot orthogonal initialization.
+
+    Args:
+        tensor: Paddle Tensor or Parameter.
+        scale: Target variance scale.
+
+    Returns:
+        paddle.Tensor: The initialised tensor (same object, modified in-place).
+    """
+    init_orth = paddle.nn.initializer.Orthogonal()
+    init_orth(tensor)
+    with paddle.no_grad():
+        variance = paddle.var(tensor)
+        factor = paddle.sqrt(
+            paddle.to_tensor(scale, dtype=tensor.dtype)
+            / ((tensor.shape[-2] + tensor.shape[-1]) * variance)
+        )
+        tensor.set_value(tensor * factor)
     return tensor

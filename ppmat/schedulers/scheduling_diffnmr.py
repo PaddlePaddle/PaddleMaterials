@@ -17,8 +17,6 @@ import math
 import numpy as np
 import paddle
 import paddle.nn.functional as F
-import rdkit
-from rdkit import Chem
 
 from ppmat.models.diffnmr.utils import diffgraphformer_utils
 
@@ -521,6 +519,17 @@ def sample_discrete_feature_noise(limit_dist, node_mask):
     return ph.mask(node_mask)
 
 
+def _encode_spectrum_condition(model, condition):
+    """Encode the four-branch NMR condition through the declared interface."""
+
+    if model.flag_onlyH:
+        embedding, _ = model.run_encoder(condition)
+        return embedding, None
+
+    embedding, (token_encoding, _) = model.run_encoder(condition)
+    return embedding, token_encoding
+
+
 @paddle.no_grad()
 def step(
     model, s, t, X_t, E_t, y_t, node_mask, conditionVec, batch_X, batch_E, batch_y
@@ -564,16 +573,21 @@ def step(
         [noisy_data["y_t"].astype("float32"), extra_data.y.astype(dtype="float32")]
     )
 
-    from ppmat.models.diffnmr.diffnmr import DiffNMR
-
-    if isinstance(model, DiffNMR):
-        if model.flag_onlyH is True:
-            global_H, _ = model.encoder(conditionVec)
-            embeddings_spectrum = global_H
-        else:
-            embeddings_spectrum, (spectrum_encoding, _) = model.encoder(conditionVec)
+    if getattr(model, "conditioning_mode", None) == "spectrum":
+        embeddings_spectrum, spectrum_encoding = _encode_spectrum_condition(
+            model, conditionVec
+        )
         if model.connector_flag is True:
-            embeddings_spectrum = model.connector.sample(embeddings_spectrum, spectrum_encoding)
+            # DiffPrior treats a missing token sequence as an empty optional
+            # conditioning branch, which is the declared behavior for H-only
+            # encoders.  Keep the connector batch aligned with the graph batch:
+            # its public default generates multiple candidates, while a
+            # reverse-diffusion step needs exactly one embedding per spectrum.
+            embeddings_spectrum = model.connector.sample(
+                embeddings_spectrum,
+                spectrum_encodings=spectrum_encoding,
+                num_samples_per_batch=1,
+            )
         input_y = paddle.concat([input_y, embeddings_spectrum], axis=1).astype(
             "float32"
         )
@@ -581,7 +595,7 @@ def step(
         # 4. Decoder forward
         # Convention: pred.X and pred.E are logits with shapes [B, n, Cx] and
         # [B, n, n, Ce]
-        pred = model.decoder(input_X, input_E, input_y, node_mask)
+        pred = model.run_decoder(input_X, input_E, input_y, node_mask)
     else:
         # prepare the extra feature for encoder input without noisy
         batch_values = (
@@ -610,14 +624,14 @@ def step(
             x=(batch_values.y.astype("float32"), extra_data_pure.y)
         ).astype(dtype="float32")
         # obtain the condition vector from output of encoder
-        conditionVec = model.encoder(
+        conditionVec = model.run_encoder(
             input_X_pure, input_E_pure, input_y_pure, node_mask
         )
         # complete input_y for decoder
         input_y = paddle.hstack(x=(input_y, conditionVec)).astype(dtype="float32")
 
         # forward of decoder with encoder output as condition vector of input of decoder
-        pred = model.decoder(input_X, input_E, input_y, node_mask)
+        pred = model.run_decoder(input_X, input_E, input_y, node_mask)
 
     pred_X = F.softmax(pred.X, axis=-1)
     pred_E = F.softmax(pred.E, axis=-1)
@@ -664,7 +678,7 @@ def step(
     X_s = F.one_hot(sampled_s.X, num_classes=model.Xdim_output)
     E_s = F.one_hot(sampled_s.E, num_classes=model.Edim_output)
 
-    assert (E_s == paddle.transpose(E_s, [0, 1, 2])).all()
+    assert paddle.all(E_s == paddle.transpose(E_s, perm=[0, 2, 1, 3]))
     assert (X_t.shape == X_s.shape) and (E_t.shape == E_s.shape)
 
     out_one_hot = diffgraphformer_utils.PlaceHolder(
@@ -1006,14 +1020,8 @@ def reconstruction_logp(model, t, X, E, node_mask, condition_Spectrum):
     )
 
     ###########################################################
-    from ppmat.models.diffnmr.diffnmr import DiffNMR
-
-    if model.__class__ is DiffNMR:
-        if model.flag_onlyH is True:
-            global_H, _ = model.encoder(condition_Spectrum)
-            embeddings_spectrum = global_H
-        else:
-            embeddings_spectrum = model.encoder(condition_Spectrum)
+    if getattr(model, "conditioning_mode", None) == "spectrum":
+        embeddings_spectrum, _ = _encode_spectrum_condition(model, condition_Spectrum)
         input_y = paddle.concat([input_y, embeddings_spectrum], axis=1).astype(
             "float32"
         )
@@ -1021,7 +1029,7 @@ def reconstruction_logp(model, t, X, E, node_mask, condition_Spectrum):
         # 4. Decoder forward
         # Convention: pred.X and pred.E are logits with shapes [B, n, Cx] and
         # [B, n, n, Ce]
-        pred0 = model.decoder(input_X, input_E, input_y, node_mask)
+        pred0 = model.run_decoder(input_X, input_E, input_y, node_mask)
     else:
         # prepare the extra feature for encoder input without noisy
         z_t = (
@@ -1045,14 +1053,14 @@ def reconstruction_logp(model, t, X, E, node_mask, condition_Spectrum):
             x=(z_t.y.astype("float32"), extra_data_pure.y)
         ).astype(dtype="float32")
         # obtain the condition vector from output of encoder
-        conditionVec = model.encoder(
+        conditionVec = model.run_encoder(
             input_X_pure, input_E_pure, input_y_pure, node_mask
         )
         # complete input_y for decoder
         input_y = paddle.hstack(x=(input_y, conditionVec)).astype(dtype="float32")
 
         # forward of decoder with encoder output as condition vector of input of decoder
-        pred0 = model.decoder(input_X, input_E, input_y, node_mask)  # TODO: uniform
+        pred0 = model.run_decoder(input_X, input_E, input_y, node_mask)
     ############################################################
 
     probX0 = F.softmax(pred0.X, axis=-1)
@@ -1080,44 +1088,6 @@ def reconstruction_logp(model, t, X, E, node_mask, condition_Spectrum):
 # -----------------------
 # molecule visualization/comparision
 # -----------------------
-def mol_from_graphs(atom_decoder, node_list, adjacency_matrix):
-    """
-    Convert discrete graph (atom indices, adjacency) to rdkit Mol
-    """
-    mol = Chem.RWMol()
-
-    node_to_idx = {}
-    for i, nd in enumerate(node_list):
-        if nd == -1:
-            continue
-        a = Chem.Atom(atom_decoder[int(nd)])
-        molIdx = mol.AddAtom(a)
-        node_to_idx[i] = molIdx
-
-    for ix, row in enumerate(adjacency_matrix):
-        for iy, bond in enumerate(row):
-            if iy <= ix:
-                continue
-            if bond == 1:
-                bond_type = Chem.rdchem.BondType.SINGLE
-            elif bond == 2:
-                bond_type = Chem.rdchem.BondType.DOUBLE
-            elif bond == 3:
-                bond_type = Chem.rdchem.BondType.TRIPLE
-            elif bond == 4:
-                bond_type = Chem.rdchem.BondType.AROMATIC
-            else:
-                continue
-            mol.AddBond(node_to_idx[ix], node_to_idx[iy], bond_type)
-
-    try:
-        mol = mol.GetMol()
-    except rdkit.Chem.KekulizeException:
-        print("Can't kekulize molecule")
-        mol = None
-    return mol
-
-
 def _safe_log(p: paddle.Tensor, eps: float = 1e-10) -> paddle.Tensor:
     # Avoid log(0)
     return paddle.log(paddle.clip(p, eps, 1.0))

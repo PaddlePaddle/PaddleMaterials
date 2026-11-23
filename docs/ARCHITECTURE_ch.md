@@ -202,7 +202,7 @@ defaults:
 ### 性质预测
 
 ```bash
-python property_prediction/predict.py \n    --model_name='megnet_mp2018_train_60k_e_form' \n    --weights_name='best.pdparams' \n    --cif_file_path='./property_prediction/example_data/cifs/'
+python property_prediction/predict.py \n    --model_name='megnet_mp2018_train_60k_e_form' \n    --weights_name='best.pdparams' \n    --input_format=cif --input_path='./property_prediction/example_data/cifs/'
 ```
 
 ### 多GPU训练

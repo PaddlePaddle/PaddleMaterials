@@ -14,72 +14,14 @@
 
 from __future__ import annotations
 
-import copy
-import importlib
 from typing import Any
 from typing import Dict
 from typing import List
-from typing import Optional
 from typing import Sequence
 from typing import Union
 
 import numpy as np
 from p_tqdm import p_map
-
-from ppmat.utils import logger
-
-
-def build_spectrum_converter(
-    cfg: Dict,
-    *,
-    vocabs: Optional[Dict[str, Dict[str, int]]] = None,
-    strict: bool = True,
-):
-    """Build spectrum converter.
-    If 'vocabs' is provided (e.g., {'peakshape': {...}, 'intensity': {...}}),
-    inject/merge it into __init_params__['vocabs'].
-
-    Args:
-        cfg (Dict): Spectrum converter config.
-    """
-    if cfg is None:
-        return None
-    cfg = copy.deepcopy(cfg)
-
-    class_name = cfg.pop("__class_name__")
-    if not class_name:
-        raise ValueError(
-            "Spectrum converter class name is not specified in the configuration."
-        )
-
-    init_params = cfg.pop("__init_params__")
-    if vocabs:
-        init_params["vocabs"] = {**(init_params.get("vocabs") or {}), **vocabs}
-
-    cls = _locate_class(class_name)
-
-    # Optional strict check: ensure required vocabs exist and contain unk_token
-    if strict and hasattr(cls, "REQUIRED_VOCABS"):
-        req = set(cls.REQUIRED_VOCABS)
-        got = set((init_params.get("vocabs") or {}).keys())
-        miss = req - got
-        if miss:
-            raise ValueError(
-                f"{class_name} is missing required vocabularies: {sorted(miss)}"
-            )
-
-        unk = str(init_params.get("unk_token", "<unk>"))
-
-        for name, vb in (init_params.get("vocabs") or {}).items():
-            if unk not in vb:
-                raise ValueError(
-                    f"Vocabulary '{name}' must include the unknown token '{unk}'"
-                )
-
-    spectrum_converter = eval(class_name)(**init_params)
-    logger.debug(str(spectrum_converter))
-
-    return spectrum_converter
 
 
 class BuildSpectrumNMR:
@@ -106,69 +48,49 @@ class BuildSpectrumNMR:
         }
 
     Notes:
-        - Unknown tokens map to vocab["<unk>"] (you must include it).
+        - Unknown tokens map to the ``<unk>`` entry of their vocabulary.
         - Peaks beyond the sequence length are truncated; missing slots are zero-padded.
-        - Integral like "3H" is parsed as 3; you can add a constant offset if that
-            matches your training setup.
     """
-
-    REQUIRED_VOCABS = ("peakwidth", "split")
 
     def __init__(
         self,
-        vocabs: Dict[str, int],
+        vocab: Dict[str, Dict[str, Any]],
         seq_len_H1: int,
         seq_len_C13: int,
         *,
         j_len: int = 6,
-        integral_offset: int = 1,
-        unk_token: str = "<unk>",
         dtype: str = "float32",
         num_cpus: int = 1,
     ) -> None:
-        self.vocab_peakwidth = dict(vocabs["peakwidth"])
-        self.vocab_split = dict(vocabs["split"])
+        self.vocab_peakwidth = vocab["peakwidth"]["token_to_id"]
+        self.vocab_split = vocab["split"]["token_to_id"]
+        self.vocab_integral = vocab["integral"]["token_to_id"]
         self.seq_len_H1 = int(seq_len_H1)
         self.seq_len_C13 = int(seq_len_C13)
         self.j_len = int(j_len)
-        self.integral_offset = int(integral_offset)
-        self.unk_token = unk_token
         self.dtype = np.dtype(dtype)
         self.num_cpus = int(num_cpus)
 
-        if (
-            self.unk_token not in self.vocab_peakwidth
-            or self.unk_token not in self.vocab_split
-        ):
-            raise ValueError(
-                f"Both vocabs must contain the unknown token '{self.unk_token}'."
-            )
-
     @staticmethod
-    def _parse_integral(h_str: Union[str, int, float], offset: int) -> int:
-        # Accept "3H" or 3; treat NaN/None as 0
+    def _parse_integral(h_str: Union[str, int, float]) -> str:
+        # Accept "3H" or 3 and normalize to the vocabulary token.
         if h_str is None:
-            val = 0
-        elif isinstance(h_str, (int, float)):
-            val = int(h_str)
-        else:
-            s = str(h_str).upper().replace("H", "").strip()
-            try:
-                val = int(float(s))
-            except Exception:
-                val = 0
-        return max(0, val + offset)
+            return "<unk>"
+        value = str(h_str).upper().replace("H", "").strip()
+        try:
+            return f"{int(float(value))}H"
+        except (TypeError, ValueError, OverflowError):
+            return "<unk>"
 
     @staticmethod
     def build_one(
         nmrdata: Dict[str, Any],
         vocab_peakwidth: Dict[str, int],
         vocab_split: Dict[str, int],
+        vocab_integral: Dict[str, int],
         seq_len_H1: int,
         seq_len_C13: int,
         j_len: int,
-        integral_offset: int,
-        unk_token: str,
         dtype: np.dtype,
     ) -> Dict[str, Any]:
         # ----- 1H NMR -----
@@ -193,13 +115,12 @@ class BuildSpectrumNMR:
                 peak[4] if len(peak) > 4 and isinstance(peak[4], (list, tuple)) else []
             )
 
-            peakwidth_id = vocab_peakwidth.get(
-                peakwidth_tok, vocab_peakwidth[unk_token]
-            )
-            split_id = vocab_split.get(split_tok, vocab_split[unk_token])
-            integral = BuildSpectrumNMR._parse_integral(integral_str, integral_offset)
+            peakwidth_id = vocab_peakwidth.get(peakwidth_tok, vocab_peakwidth["<unk>"])
+            split_id = vocab_split.get(split_tok, vocab_split["<unk>"])
+            integral_token = BuildSpectrumNMR._parse_integral(integral_str)
+            integral_id = vocab_integral.get(integral_token, vocab_integral["<unk>"])
 
-            row = [chem_shift, float(peakwidth_id), float(split_id), float(integral)]
+            row = [chem_shift, float(peakwidth_id), float(split_id), float(integral_id)]
             if len(j_list) >= j_len:
                 row += [float(x) for x in j_list[:j_len]]
             else:
@@ -234,11 +155,10 @@ class BuildSpectrumNMR:
                 nmr_list,
                 [self.vocab_peakwidth] * len(nmr_list),
                 [self.vocab_split] * len(nmr_list),
+                [self.vocab_integral] * len(nmr_list),
                 [self.seq_len_H1] * len(nmr_list),
                 [self.seq_len_C13] * len(nmr_list),
                 [self.j_len] * len(nmr_list),
-                [self.integral_offset] * len(nmr_list),
-                [self.unk_token] * len(nmr_list),
                 [self.dtype] * len(nmr_list),
                 num_cpus=self.num_cpus,
                 desc="Building spectrums",
@@ -250,18 +170,9 @@ class BuildSpectrumNMR:
             nmr_list,
             self.vocab_peakwidth,
             self.vocab_split,
+            self.vocab_integral,
             self.seq_len_H1,
             self.seq_len_C13,
             self.j_len,
-            self.integral_offset,
-            self.unk_token,
             self.dtype,
         )
-
-
-def _locate_class(class_name: str):
-    """Resolve 'pkg.mod.Class' or a bare class name in the current globals()."""
-    if "." in class_name:
-        mod, cls = class_name.rsplit(".", 1)
-        return getattr(importlib.import_module(mod), cls)
-    return globals()[class_name]

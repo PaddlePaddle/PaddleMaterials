@@ -1,0 +1,113 @@
+name: Publish Python package
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+
+      - name: Install build tools
+        run: python -m pip install --upgrade build twine
+
+      - name: Build source distribution
+        run: python -m build --sdist
+
+      - name: Build manylinux wheel
+        uses: pypa/cibuildwheel@v4.1.0
+        env:
+          CIBW_BUILD: cp310-manylinux_x86_64
+          CIBW_MANYLINUX_X86_64_IMAGE: manylinux2014
+
+      - name: Collect wheel
+        run: cp wheelhouse/*.whl dist/
+
+      - name: Validate distributions
+        run: python -m twine check --strict dist/*
+
+      - name: Validate runtime metadata
+        run: |
+          python - <<'PY'
+          import glob
+          import tarfile
+          import zipfile
+          from pathlib import Path
+
+          wheel_path, = glob.glob("dist/*.whl")
+          sdist_path, = glob.glob("dist/*.tar.gz")
+          assert "manylinux" in wheel_path
+          with zipfile.ZipFile(wheel_path) as wheel:
+              wheel_files = set(wheel.namelist())
+              metadata_path, = (
+                  name for name in wheel_files if name.endswith(".dist-info/METADATA")
+              )
+              metadata = wheel.read(metadata_path).decode()
+
+          with tarfile.open(sdist_path) as sdist:
+              sdist_files = {
+                  name.split("/", 1)[1]
+                  for name in sdist.getnames()
+                  if "/" in name
+              }
+
+          source_json = {
+              path.as_posix() for path in Path("ppmat").rglob("*.json")
+          }
+          missing_wheel_json = source_json - wheel_files
+          missing_sdist_json = source_json - sdist_files
+
+          assert "Requires-Dist: setuptools==68.2.2" in metadata
+          assert "https://raw.githubusercontent.com/PaddlePaddle/PaddleMaterials/" in metadata
+          assert 'src="docs/' not in metadata
+          assert not missing_wheel_json, (
+              f"JSON files missing from wheel: {sorted(missing_wheel_json)}"
+          )
+          assert not missing_sdist_json, (
+              f"JSON files missing from sdist: {sorted(missing_sdist_json)}"
+          )
+          PY
+
+      - name: Store distributions
+        uses: actions/upload-artifact@v5
+        with:
+          name: python-package-distributions
+          path: dist/
+          retention-days: 1
+
+  publish:
+    name: Publish distribution to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ppmat/
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@v6
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish distributions
+        uses: pypa/gh-action-pypi-publish@release/v1

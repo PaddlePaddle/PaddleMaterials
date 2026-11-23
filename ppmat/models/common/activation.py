@@ -15,6 +15,12 @@ import paddle
 from ppmat.models.common.e3nn import o3
 
 
+def swish(x: paddle.Tensor) -> paddle.Tensor:
+    """Apply unscaled Swish using its explicit, unfused expression."""
+
+    return x * paddle.nn.functional.sigmoid(x)
+
+
 class ScaledSiLU(paddle.nn.Layer):
     def __init__(self):
         super().__init__()

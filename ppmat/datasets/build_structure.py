@@ -49,7 +49,13 @@ class BuildStructure:
     def __init__(
         self,
         format: Literal[
-            "cif_str", "array", "cif_file", "dict", "cif_str_by_CifParser", "jarvis"
+            "cif_str",
+            "array",
+            "cif_file",
+            "dict",
+            "cif_str_by_CifParser",
+            "jarvis",
+            "ase_atoms",
         ],
         primitive: bool = False,
         niggli: bool = True,
@@ -139,5 +145,4 @@ class BuildStructure:
                 self.primitive,
                 self.niggli,
                 self.canocial,
-                num_cpus=self.num_cpus,
             )

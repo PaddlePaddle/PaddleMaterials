@@ -109,7 +109,7 @@ unzip retrival_database.zip
 cd pretrained
 wget https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/spectrum_elucidation/diffnmr/DiffNMR_nless15_best.pdparams
 cd ..
-python spectrum_elucidation/sample.py --config_path='spectrum_elucidation/configs/diffnmr/DiffNMR.yaml' --weights_name='DiffNMR_nless15_best.pdparams' --save_path='result_diffnmr_nless15/' --checkpoint_path="pretrained"
+python spectrum_elucidation/sample.py --config_path='spectrum_elucidation/configs/diffnmr/DiffNMR.yaml' --weights_name='DiffNMR_nless15_best.pdparams' --output_path='result_diffnmr_nless15/' --checkpoint_path="pretrained"
 ```
 
 ### 3. Generate molecular structures with Retrieval-initializion/Similarity Filtering/Formula:
@@ -152,4 +152,3 @@ This repository is released under the Apache-2.0 license (unless otherwise state
 Supported by the National Science and Technology Major Project (2023ZD0120702) and Basic Research Program of Jiangsu (BK20231215). We thank contributors of PaddlePaddle & PaddleMaterials
 
 ---
-

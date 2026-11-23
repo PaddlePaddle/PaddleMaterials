@@ -45,4 +45,4 @@ Spectrum Elucidation（SE） focuses on automatically (or semi‑automatically) 
 | **TEMImageNet**                              |                      -                       |                       -                          |
 
 
-**Notice**:🌟 represent originate research work published from paddlematerial toolkit
+**Legend:** ✅ Verified · 🧪 Implemented, pending validation · 🚧 In development · `-` Not supported · 🌟 Original Work

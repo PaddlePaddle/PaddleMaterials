@@ -1,7 +1,6 @@
 import logging
 import math
 from typing import Dict
-from typing import List
 from typing import Optional
 from typing import Union
 
@@ -14,6 +13,8 @@ from sklearn.gaussian_process.kernels import DotProduct
 from sklearn.gaussian_process.kernels import Hyperparameter
 from sklearn.gaussian_process.kernels import Kernel
 
+from ppmat.models.common.runtime import RuntimeMixin
+from ppmat.models.common.runtime import runtime_boundary
 from ppmat.utils.paddle_aux import dim2perm
 from ppmat.utils.scatter import scatter
 from ppmat.utils.scatter import scatter_mean
@@ -631,6 +632,13 @@ class ThreeDInteraction(paddle.nn.Layer):
         num_edges,
         num_triple_ij,
     ):
+        num_triplets = three_body_index.shape[0]
+        # Eager and static-shape capture see an int and keep the early return.
+        # With a dynamic triplet axis (compiled MD inference) the size is a
+        # tensor; branching on it would trace a cond whose backward breaks the
+        # forces, so the update is masked further down instead.
+        if isinstance(num_triplets, int) and num_triplets == 0:
+            return edge_attr
         atom_mask = (
             self.atom_mlp(atom_attr)[edge_index[0][three_body_index[:, 1]]]
             * polynomial(edge_length[three_body_index[:, 0]], self.threebody_cutoff)
@@ -650,7 +658,12 @@ class ThreeDInteraction(paddle.nn.Layer):
             reduce="sum",
             dim_size=paddle.sum(x=num_edges).item(),
         )
-        edge_attr_prime = edge_attr + self.edge_gate_mlp(e_ij_tuda)
+        update = self.edge_gate_mlp(e_ij_tuda)
+        if not isinstance(num_triplets, int):
+            # Without triplets e_ij_tuda is zero, but the gated MLP has biases:
+            # zero the update so the result equals the eager early return.
+            update = update * (num_triplets > 0).astype(update.dtype)
+        edge_attr_prime = edge_attr + update
         return edge_attr_prime
 
 
@@ -745,7 +758,7 @@ class MainBlock(paddle.nn.Layer):
             three_body_index,
             edge_length,
             num_edges,
-            num_triple_ij.view(-1),
+            num_triple_ij.reshape([-1]),
         )
         # update bond feature
         feat = paddle.concat(
@@ -1062,7 +1075,7 @@ class SphericalBasisLayer(paddle.nn.Layer):
         return rbfs * cbfs
 
 
-class M3GNet(paddle.nn.Layer):
+class M3GNet(RuntimeMixin, paddle.nn.Layer):
     """
     M3GNet
     """
@@ -1082,9 +1095,12 @@ class M3GNet(paddle.nn.Layer):
         loss_type: str = "smooth_l1_loss",
         huber_loss_delta: float = 0.1,
         loss_weights_dict: dict | None = None,
+        execution_backend: str = "eager",
+        runtime_options: dict | None = None,
         **kwargs,
     ):
         super().__init__()
+        self._init_runtime(execution_backend, runtime_options)
         self.energy_key = energy_key
         self.force_key = force_key
         self.stress_key = stress_key
@@ -1139,41 +1155,71 @@ class M3GNet(paddle.nn.Layer):
         batch_data["graph"] = batch_data["graph"].tensor()
         graph = batch_data["graph"]
 
-        pos = graph.node_feat["cart_coords"]
-        cell = graph.node_feat["lattice"]
-        pbc_offsets = graph.edge_feat["pbc_offset"].astype(dtype="float32")
         atom_attr = (
             graph.node_feat["atom_types"].astype(dtype="float32").reshape([-1, 1])
         )
-        edge_index = graph.edges.astype(dtype="int64").transpose([1, 0]).contiguous()
-        three_body_indices = graph.edge_feat["three_body_indices"].astype(dtype="int64")
-        num_three_body = graph.edge_feat["num_three_body"]
+        return self._runtime_forward(
+            pos=graph.node_feat["cart_coords"],
+            cell=graph.node_feat["lattice"],
+            pbc_offsets=graph.edge_feat["pbc_offset"].astype(dtype="float32"),
+            atom_attr=atom_attr,
+            edge_index=(
+                graph.edges.astype(dtype="int64").transpose([1, 0]).contiguous()
+            ),
+            three_body_indices=graph.edge_feat["three_body_indices"].astype(
+                dtype="int64"
+            ),
+            num_three_body=graph.edge_feat["num_three_body"],
+            num_bonds=graph.edge_feat["num_edges"],
+            num_triple_ij=graph.edge_feat["num_triple_ij"],
+            num_atoms=graph.node_feat["num_atoms"],
+            num_graphs=graph.num_graph,
+            batch=graph.graph_node_id,
+        )
 
-        num_bonds = graph.edge_feat["num_edges"]
-        num_triple_ij = graph.edge_feat["num_triple_ij"]
-        num_atoms = graph.node_feat["num_atoms"]
-        num_graphs = graph.num_graph
-        batch = graph.graph_node_id
-
+    @runtime_boundary(
+        "forward",
+        # Edge and triplet counts change at every MD step; atom and graph
+        # counts stay static.
+        dynamic_dims={
+            "pbc_offsets": 0,
+            "edge_index": 1,
+            "three_body_indices": 0,
+            "num_triple_ij": 0,
+        },
+    )
+    def _runtime_forward(
+        self,
+        pos,
+        cell,
+        pbc_offsets,
+        atom_attr,
+        edge_index,
+        three_body_indices,
+        num_three_body,
+        num_bonds,
+        num_triple_ij,
+        num_atoms,
+        num_graphs,
+        batch,
+    ):
         if self.force_key is not None:
             pos.stop_gradient = False
 
+        strain = None
+        volume = None
         if self.stress_key is not None:
-            strain = paddle.zeros_like(x=input["cell"])
-            volume = paddle.linalg.det(x=input["cell"])
+            strain = paddle.zeros_like(x=cell)
             strain.stop_gradient = False
-            input["cell"] = paddle.matmul(
-                x=input["cell"], y=paddle.eye(num_rows=3)[None, ...] + strain
-            )
+            cell = paddle.matmul(x=cell, y=paddle.eye(num_rows=3)[None, ...] + strain)
             strain_augment = paddle.repeat_interleave(
-                x=strain, repeats=input["num_atoms"], axis=0
+                x=strain, repeats=num_atoms, axis=0
             )
-            pos = paddle.einsum(
-                "bi, bij -> bj",
-                pos,
+            pos = paddle.bmm(
+                pos.unsqueeze(1),
                 paddle.eye(num_rows=3)[None, ...] + strain_augment,
-            )
-            volume = paddle.linalg.det(x=input["cell"])
+            ).squeeze(1)
+            volume = paddle.linalg.det(x=cell)
 
         # -------------------------------------------------------------#
         cumsum = paddle.cumsum(x=num_bonds, axis=0) - num_bonds
@@ -1191,7 +1237,7 @@ class M3GNet(paddle.nn.Layer):
         edge_batch = atoms_batch[edge_index[0]]
         edge_vector = pos[edge_index[0]] - (
             pos[edge_index[1]]
-            + paddle.einsum("bi, bij->bj", pbc_offsets, cell[edge_batch])
+            + paddle.bmm(pbc_offsets.unsqueeze(1), cell[edge_batch]).squeeze(1)
         )
         edge_length = paddle.linalg.norm(x=edge_vector, axis=1)
         vij = edge_vector[three_body_indices[:, 0].clone()]
@@ -1201,19 +1247,19 @@ class M3GNet(paddle.nn.Layer):
         cos_jik = paddle.sum(x=vij * vik, axis=1) / (rij * rik)
         # eps = 1e-7 avoid nan in paddle.acos function
         cos_jik = paddle.clip(x=cos_jik, min=-1.0 + 1e-07, max=1.0 - 1e-07)
-        triple_edge_length = rik.view(-1)
+        triple_edge_length = rik.reshape([-1])
         edge_length = edge_length.unsqueeze(axis=-1)
         atomic_numbers = atom_attr.squeeze(axis=1).astype(dtype="int64")
 
         # featurize
         atom_attr = self.atom_embedding(self.one_hot_atoms(atomic_numbers))
-        edge_attr = self.rbf(edge_length.view(-1))
+        edge_attr = self.rbf(edge_length.reshape([-1]))
         edge_attr_zero = edge_attr  # e_ij^0
         edge_attr = self.edge_encoder(edge_attr)
         three_basis = self.sbf(triple_edge_length, paddle.acos(x=cos_jik))
 
         # Main Loop
-        for idx, conv in enumerate(self.graph_conv):
+        for conv in self.graph_conv:
             atom_attr, edge_attr = conv(
                 atom_attr,
                 edge_attr,
@@ -1226,7 +1272,7 @@ class M3GNet(paddle.nn.Layer):
                 num_triple_ij,
                 num_atoms,
             )
-        energies_i = self.final(atom_attr).view(-1)  # [batch_size*num_atoms]
+        energies_i = self.final(atom_attr).reshape([-1])
         energies_i = self.normalizer(energies_i, atomic_numbers)
         energies = scatter(energies_i, batch, dim=0, dim_size=num_graphs)
         energies = energies.unsqueeze(-1)
@@ -1234,45 +1280,28 @@ class M3GNet(paddle.nn.Layer):
         forces = None
         stresses = None
         if self.force_key is not None and self.stress_key is None:
-
-            grad_outputs: List[Optional[paddle.Tensor]] = [paddle.ones_like(x=energies)]
-            grad = paddle.grad(
+            force_grad = paddle.grad(
                 outputs=[energies],
                 inputs=[pos],
-                grad_outputs=grad_outputs,
+                grad_outputs=[paddle.ones_like(x=energies)],
                 create_graph=self.training,
-            )
-
-            # Dump out gradient for forces
-            force_grad = grad[0]
+            )[0]
             if force_grad is not None:
                 forces = paddle.neg(x=force_grad)
         if self.force_key is not None and self.stress_key is not None:
-
-            grad_outputs: List[Optional[paddle.Tensor]] = [paddle.ones_like(x=energies)]
-
-            grad = paddle.grad(
+            force_grad, stress_grad = paddle.grad(
                 outputs=[energies],
                 inputs=[pos, strain],
-                grad_outputs=grad_outputs,
+                grad_outputs=[paddle.ones_like(x=energies)],
                 create_graph=self.training,
                 retain_graph=True,
             )
-
-            # Dump out gradient for forces and stresses
-            force_grad = grad[0]
-            stress_grad = grad[1]
-
             if force_grad is not None:
                 forces = paddle.neg(x=force_grad)
-
             if stress_grad is not None:
-                stresses = (
-                    1 / volume[:, None, None] * stress_grad / GPa
-                )  # 1/GPa = 160.21766208
-        energies = energies / graph.node_feat["num_atoms"].unsqueeze(-1).astype(
-            dtype="float32"
-        )
+                stresses = 1 / volume[:, None, None] * stress_grad / GPa
+
+        energies = energies / num_atoms.unsqueeze(-1).astype(dtype="float32")
         return energies, forces, stresses
 
     def forward(self, data, return_loss=True, return_prediction=True):
@@ -1335,34 +1364,21 @@ class M3GNet(paddle.nn.Layer):
                 prediction[key] = prediction[key][0]
         return prediction
 
-    def predict(self, graphs):
-        if isinstance(graphs, list):
-            results = []
-            for graph in graphs:
-                result = self.forward(
-                    {
-                        "graph": graph,
-                    },
-                    return_loss=False,
-                    return_prediction=True,
-                )
-                prediction = result["pred_dict"]
-                prediction = self._prediction_to_numpy(prediction)
-                results.append(prediction)
-            return results
+    def predict(self, samples):
+        is_list = isinstance(samples, list)
+        samples = samples if is_list else [samples]
 
-        else:
-            data = {
-                "graph": graphs,
-            }
+        results = []
+        for sample in samples:
             result = self.forward(
-                data,
+                {"graph": sample},
                 return_loss=False,
                 return_prediction=True,
             )
             prediction = result["pred_dict"]
             prediction = self._prediction_to_numpy(prediction)
-            return prediction
+            results.append(prediction)
+        return results if is_list else results[0]
 
     def init_weights(self, m):
         if isinstance(m, paddle.nn.Linear):

@@ -78,18 +78,11 @@ $$
 
 ## Dataset Description
 
-### Recommended data fields
-- `atomic_numbers`: length-$N$ atomic numbers
-- `pos`: $N \times 3$ Cartesian coordinates (Angstroms)
-- `density`: 3D array (voxel grid), for example $n \times n \times n$
-- `grid_meta` (optional): origin, spacing, and box vectors to define $x_i$
-- Optional tags: `mol_id`, `frame_id`, normalization/scaling factors
-
 ### Datasets
-- **QM9_EC**: Electron densities stored as `*.CHGCAR.lz4` in `dataset_ES/data_qm9` (train 123,835 / val 50 / test 10,000). [Data](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/QM9_ES/qm9_es.tar), [Atom dictionary](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/QM9_ES/qm9.json), [Split file](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/QM9_ES/qm9_data_split.json).
-- **MP_EC (cubic)**: Materials Project-style crystals serialized as `.json.xz` under `dataset_ES/data_cubic` (train 14,421 / val 1,000 / test 1,000). [Data](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MP_ES/mp_es.tar), [Atom dictionary](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MP_ES/crystal.json), [Split file](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MP_ES/crystal_data_split.json).
-- **OMol25_EC**: Organic molecule cubes expected under `/home/liuxuwei01/processed_output` (train 16 / val 2 / test 2). [Data](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/OMol25_ES/MC_5k/omol25_mc_5k.tar), [Atom dictionary](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/OMol25_ES/MC_5k/omol25.json), [Split file](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/OMol25_ES/MC_5k/omol25_data_split.json).
-- **MD17_EC**: Small molecules (for example, ethanol, benzene, phenol, resorcinol) from the MD17 electron-density release in `dataset_ES/data_md`; default config trains on ethanol. [Data](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MD17_ES/md17_es.tar.gz).
+- **QM9_ES**: Electron densities stored as `*.CHGCAR.lz4` under the configured `./data/data_qm9` path (train 123,835 / val 50 / test 10,000).
+- **MP_ES (cubic)**: Materials Project-style crystals serialized as `.json.xz` under the configured `./data/data_cubic` path (train 14,421 / val 1,000 / test 1,000).
+- **OMol25_ES**: Metal-complex cubes stored under `data/dataset_OMol25_MC_5k` (full release: train 3,943 / val 493 / test 493). The InfGCN config uses the filtered split (train 3,933 / val 491 / test 491).
+- **MD17_ES**: Small molecules (for example, ethanol, benzene, phenol, resorcinol) from the MD17 electron-density release under `./data/data_md`; each config points directly to its molecule/split directory. The default config trains on ethanol, and its validation split uses the published test samples.
 
 ---
 
@@ -111,74 +104,74 @@ $$
         <tr>
             <td nowrap="nowrap">infgcn_md17_benzene</td>
             <td nowrap="nowrap">MD17_EC_Benzene</td>
-            <td nowrap="nowrap">21.2614%</td>
+            <td nowrap="nowrap">3.5418%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">59min</td>
+            <td nowrap="nowrap">35min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_benzene.yaml">infgcn_md17_benzene</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_benzene_t_20260104_083255_s_42.zip">checkpoint | log</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_benzene.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_ethane</td>
             <td nowrap="nowrap">MD17_EC_Ethane</td>
-            <td nowrap="nowrap">6.9443%</td>
+            <td nowrap="nowrap">4.0910%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">1hour17min</td>
+            <td nowrap="nowrap">27min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_ethane.yaml">infgcn_md17_ethane</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_ethane_t_20260105_035402_s_42.zip">checkpoint | log</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_ethane.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_ethanol</td>
             <td nowrap="nowrap">MD17_EC_Ethanol</td>
-            <td nowrap="nowrap">64.5951%</td>
+            <td nowrap="nowrap">4.4674%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">7min</td>
+            <td nowrap="nowrap">41min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_ethanol.yaml">infgcn_md17_ethanol</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_ethanol_t_20260105_051323_s_42.zip">checkpoint | log</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_ethanol.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_malonaldehyde</td>
             <td nowrap="nowrap">MD17_EC_Malonaldehyde</td>
-            <td nowrap="nowrap">17.7947%</td>
+            <td nowrap="nowrap">6.2800%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">1hour29min</td>
+            <td nowrap="nowrap">33min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_malonaldehyde.yaml">infgcn_md17_malonaldehyde</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_malonaldehyde_t_20260105_052204_s_42.zip">checkpoint | log</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_malonaldehyde.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_phenol</td>
             <td nowrap="nowrap">MD17_EC_Phenol</td>
-            <td nowrap="nowrap">20.2144%</td>
+            <td nowrap="nowrap">3.5976%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">1hour17min</td>
+            <td nowrap="nowrap">54min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_phenol.yaml">infgcn_md17_phenol</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_phenol_t_20260107_041611_s_42.zip">checkpoint | log</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_phenol.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_md17_resorcinol</td>
             <td nowrap="nowrap">MD17_EC_Resorcinol</td>
-            <td nowrap="nowrap">15.8850%</td>
+            <td nowrap="nowrap">3.4942%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">1hour23min</td>
+            <td nowrap="nowrap">43min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_md17_resorcinol.yaml">infgcn_md17_resorcinol</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_resorcinol_t_20260104_083255_s_42.zip">checkpoint | log</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_md17_resorcinol.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_qm9</td>
             <td nowrap="nowrap">QM9_EC</td>
-            <td nowrap="nowrap">1.7542%</td>
+            <td nowrap="nowrap">0.9315%</td>
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">75hour41min</td>
             <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_qm9.yaml">infgcn_qm9</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_qm9_t_20260107_113954_s_42.zip">checkpoint | log</td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_qm9.zip">checkpoint</td>
         </tr>
         <tr>
-            <td nowrap="nowrap">infgcn_cubic</td>
+            <td nowrap="nowrap">infgcn_mp</td>
             <td nowrap="nowrap">MP_EC (cubic)</td>
-            <td nowrap="nowrap">47.3829%</td>
+            <td nowrap="nowrap">7.7784%</td>
             <td nowrap="nowrap">1</td>
-            <td nowrap="nowrap">12hour6min</td>
-            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_cubic.yaml">infgcn_cubic</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_mp_t_20260108_024145_s_42.zip">checkpoint | log</td>
+            <td nowrap="nowrap">61hour26min</td>
+            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_mp.yaml">infgcn_mp</a></td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_mp.zip">checkpoint</td>
         </tr>
         <tr>
             <td nowrap="nowrap">infgcn_omol25_mc_5k</td>
@@ -186,13 +179,11 @@ $$
             <td nowrap="nowrap">12.6260%</td>
             <td nowrap="nowrap">4</td>
             <td nowrap="nowrap">66hour28min</td>
-            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_omol25_trimmed.yaml">infgcn_omol25</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_omol25_s1_trimmed_t_20260118_183549_s_42.zip">checkpoint | log</td>
+            <td nowrap="nowrap"><a href="../../../electronic_structure/configs/infgcn/infgcn_omol25_MC_5k_trimmed.yaml">infgcn_omol25</a></td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_omol25_mc_5k_trimmed.zip">checkpoint</td>
         </tr>
     </tbody>
 </table>
-
-**Note**: Benchmarks are being regenerated in Paddle; metrics and downloadable checkpoints will be published once validation completes. Pretrained QM9 weights: [infgcn_qm9](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_qm9.pdparams)
 
 ---
 
@@ -220,55 +211,96 @@ python electronic_structure/train.py -c electronic_structure/configs/infgcn/infg
 
 ### Prediction
 ```bash
-# 1) Dataset-sample inference (uses dataset paths from the YAML unless overridden).
+# 1) One-click inference with a registered pretrained model and bundled molecule.
 python electronic_structure/predict.py \
-  --config electronic_structure/configs/infgcn/infgcn_qm9.yaml \
-  --checkpoint output/infgcn_qm9_best/infgcn_qm9.pdparams \
-  --split validation \
-  --index 0 \
-  --grid_batch_size 20000 \
-  --output_dir output/infgcn_qm9_best/vis_val0 \
-  --save_pred_cube \
-  --save_true_cube \
-  --cube_dir output/infgcn_qm9_best/cubes
+  --model_name infgcn_qm9 \
+  --weights_name best.pdparams \
+  --input_format=mol --input_path electronic_structure/example_data/methane.mol \
+  --grid_shape 8 \
+  --grid_batch_size 4096 \
+  --output_path output/infgcn_qm9/methane \
+  --save_html
 
 # 2) MOL-file inference (single file or directory).
-# This mode predicts electron density from molecular structure files (*.mol),
-# and can export predicted cube + html visualization.
-CUDA_VISIBLE_DEVICES=4 conda run -n ppmat python electronic_structure/predict.py \
-  --config output/infgcn_omol25_s1_trimmed_t_20260118_183549_s_42/infgcn_omol25_trimmed.yaml \
-  --checkpoint output/infgcn_omol25_s1_trimmed_t_20260118_183549_s_42/checkpoints/latest.pdparams \
-  --mol_input mols/Baidu_infGCN_Example_20260206 \
-  --atom_file /home/liuxuwei01/processed_output/omol25.json \
-  --output_dir output/infgcn_omol25_s1_trimmed_t_20260118_183549_s_42/mol_predict_latest_gpu4 \
-  --cube_dir output/infgcn_omol25_s1_trimmed_t_20260118_183549_s_42/mol_predict_latest_gpu4/cubes \
-  --save_pred_cube \
-  --save_html \
-  --grid_batch_size 4096
+# This mode predicts electron density from molecular structure files (*.mol).
+python electronic_structure/predict.py \
+  --config_path electronic_structure/configs/infgcn/infgcn_omol25_MC_5k_trimmed.yaml \
+  --checkpoint_path path/to/infgcn_omol25.pdparams \
+  --input_format=mol --input_path path/to/mols_or_mol_file \
+  --output_path output/infgcn_mol
 
-# 3) MOL-file inference with reference (true) cube files.
-# If --mol_true_cube_dir provides matching files (<name>.cube or <name>_true.cube),
-# the script additionally writes true cube and true/diff html.
-CUDA_VISIBLE_DEVICES=4 conda run -n ppmat python electronic_structure/predict.py \
-  --config output/infgcn_omol25_s1_trimmed_t_20260118_183549_s_42/infgcn_omol25_trimmed.yaml \
-  --checkpoint output/infgcn_omol25_s1_trimmed_t_20260118_183549_s_42/checkpoints/latest.pdparams \
-  --mol_input mols/Baidu_infGCN_Example_20260206 \
-  --mol_true_cube_dir /path/to/true_cubes \
-  --atom_file /home/liuxuwei01/processed_output/omol25.json \
-  --output_dir output/infgcn_omol25_s1_trimmed_t_20260118_183549_s_42/mol_predict_latest_gpu4 \
-  --cube_dir output/infgcn_omol25_s1_trimmed_t_20260118_183549_s_42/mol_predict_latest_gpu4/cubes \
-  --save_true_cube \
-  --save_pred_cube \
-  --save_html \
-  --grid_batch_size 4096
+# 3) XYZ-file inference on a molecular bounding-box grid.
+python electronic_structure/predict.py \
+  --model_name infgcn_omol25_mc_5k_trimmed \
+  --weights_name best.pdparams \
+  --input_format=xyz --input_path property_prediction/example_data/molecules/isoguvacine.xyz \
+  --grid_shape 80 \
+  --output_path output/infgcn_omol25/xyz
+
+# 4) Predict a periodic crystal field from CIF on a full-cell grid.
+python electronic_structure/predict.py \
+  --model_name infgcn_mp \
+  --weights_name best.pdparams \
+  --input_format=cif --input_path property_prediction/example_data/cifs/mp-18767-LiMnO2.cif \
+  --grid_shape 80 \
+  --output_path output/infgcn_mp/cif
+
+# 5) Reuse the structure and native grid from a QM9 CHGCAR test sample.
+python electronic_structure/predict.py \
+  --model_name infgcn_qm9 \
+  --weights_name best.pdparams \
+  --input_format=chgcar --input_path electronic_structure/example_data/ammonia.CHGCAR.lz4 \
+  --output_path output/infgcn_qm9/chgcar
+
+# 6) Reuse the structure and periodic grid from an MP density JSON test sample.
+python electronic_structure/predict.py \
+  --model_name infgcn_mp \
+  --weights_name best.pdparams \
+  --input_format=json --input_path electronic_structure/example_data/mg3dy_mp-1546.json.xz \
+  --output_path output/infgcn_mp/json
+
+# 7) Reuse the structure and native grid from an OMol25 CUBE test sample.
+python electronic_structure/predict.py \
+  --model_name infgcn_omol25_mc_5k_trimmed \
+  --weights_name best.pdparams \
+  --input_format=cube --input_path electronic_structure/example_data/c38h40eun9op.cube.lz4 \
+  --output_path output/infgcn_omol25/cube
 ```
 
 Notes:
-- `--mol_input` supports either one `.mol` file or a directory of `.mol` files.
-- Optional grid controls for MOL mode: `--mol_grid_shape` (default `80,80,80`) and `--mol_grid_padding` (default `6.0` Angstrom).
-- If true/reference cube is not provided, only predicted outputs are available (`*_pred.cube`, `*_pred_density.html`).
-- If kaleido/Chrome is unavailable, the script writes interactive `.html` instead of `.png`.
-- If your datasets live elsewhere, create a symlink to the data root (for example, `ln -s /path/to/dataset_ES dataset_ES`).
+- Replace `path/to/*.pdparams` with a downloaded pretrained checkpoint or a checkpoint produced by training.
+- Model configs keep the recommended `grid_batch_size` and share the configured
+  field builder between Dataset and Predict. Input selection, output
+  paths, CUBE export, and MOL grid settings are runtime command-line options.
+- `--input_path` with `--input_format=mol` supports either one `.mol` file or a directory of `.mol`
+  files. The atom vocabulary declared by `Vocabulary` is downloaded and used
+  automatically.
+- `--input_path` with `--input_format=xyz` supports one `.xyz` file or a directory and uses the same
+  molecular bounding-box grid controls as MOL input.
+- `--input_path` with `--input_format=cif` supports one `.cif` file or a directory and builds a periodic
+  `GridSpec` spanning the complete unit cell.
+- `--input_path` with `--input_format=cube`, `chgcar`, or `json` also accepts
+  one file or a directory. These paths reuse the source structure and exact
+  `GridSpec`; the reference density values are parsed but are not model inputs.
+- `--output_path` is an output directory and always receives the predicted CUBE.
+- The task-level `predict.py` supports `--visualize` for PNG, `--save_html` for
+  interactive HTML, and `--show_plot` for an interactive Plotly window. It invokes
+  the reusable `ppmat.visualization` package after prediction, while
+  `FieldPredictor` remains independent of visualization.
+- Static PNG export uses Plotly Kaleido and requires Chrome; run
+  `plotly_get_chrome` once if Chrome is not already available.
+- `--grid_shape` controls MOL, XYZ, and CIF grids (default `80,80,80`), while
+  `--grid_padding` applies to molecular bounding-box grids (default `6.0` Angstrom).
+- MOL/XYZ input coordinates and `--grid_padding` are interpreted in Angstrom.
+- File and directory inputs both return a list of prediction dictionaries.
+
+The bundled field examples are the first entries of their published test splits:
+
+| Dataset | Test entry | Bundled input |
+|---|---:|---|
+| QM9 ES | `1` → `000002` | `ammonia.CHGCAR.lz4` |
+| MP ES cubic | `mp-1546` | `mg3dy_mp-1546.json.xz` |
+| OMol25 MC 5k | `4437` | `c38h40eun9op.cube.lz4` |
 
 ---
 

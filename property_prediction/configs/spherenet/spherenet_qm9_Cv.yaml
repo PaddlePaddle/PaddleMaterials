@@ -1,0 +1,152 @@
+Global:
+  label_names:
+    - Cv
+  do_train: true
+  do_eval: true
+  do_test: true
+
+  build_molecule_cfg:
+    format: xyz_block
+    sanitize: false
+    add_hs: false
+    remove_hs: false
+    kekulize: false
+    num_cpus: 10
+
+  graph_converter:
+    __class_name__: RadiusGraphConverter
+    __init_params__:
+      cutoff: 5.0
+      max_num_neighbors: 32
+      return_triplet_indices: true
+      num_cpus: 10
+
+Trainer:
+  # Max epochs to train
+  max_epochs: 1000
+  # Random seed
+  seed: 42
+  # Save path for checkpoints and logs
+  output_dir: ./output/spherenet_qm9_Cv
+  # Save frequency above max_epochs avoids periodic snapshots
+  save_freq: 1001
+  # Logging frequency [step]
+  log_freq: 100
+  # Start evaluation epoch
+  start_eval_epoch: 1
+  # Evaluation frequency [epoch]; set 0 to disable evaluation
+  eval_freq: 1
+  # Whether to use automatic mixed precision
+  use_amp: false
+  # Whether to run evaluation with no_grad (saves memory)
+  eval_with_no_grad: true
+  # Gradient accumulation steps
+  gradient_accumulation_steps: 1
+  # Best metric indicator: "train_loss", "eval_loss", "train_metric", "eval_metric"
+  best_metric_indicator: eval_metric
+  # Name of the best metric for checkpoint selection
+  name_for_best_metric: Cv
+  # Whether a greater metric value is better
+  greater_is_better: false
+  # Compute metric during training
+  compute_metric_during_train: false
+  # Metric computation strategy during eval: "step" or "epoch"
+  metric_strategy_during_eval: step
+  # Pretrained model path; null means no pretrained model
+  pretrained_model_path:
+Model:
+  __class_name__: SphereNet
+  __init_params__:
+    cutoff: 5.0
+    num_layers: 4
+    hidden_channels: 128
+    out_channels: 1
+    int_emb_size: 64
+    basis_emb_size_dist: 8
+    basis_emb_size_angle: 8
+    basis_emb_size_torsion: 8
+    out_emb_channels: 256
+    num_spherical: 3
+    num_radial: 6
+    envelope_exponent: 5
+    num_before_skip: 1
+    num_after_skip: 2
+    num_output_layers: 3
+    output_init: glorot_orthogonal
+    property_name: Cv
+
+Metric:
+  Cv:
+    __class_name__: paddle.nn.L1Loss
+    __init_params__: {}
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr:
+      __class_name__: Step
+      __init_params__:
+        learning_rate: 0.0005
+        step_size: 150
+        gamma: 0.5
+        by_epoch: true
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: QM9Dataset
+      __init_params__:
+        path: ./data/qm9/train.csv
+        property_names: [Cv]
+        build_molecule_cfg: ${Global.build_molecule_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+    loader:
+      num_workers: 4
+      use_shared_memory: false
+      collate_fn: RadiusGraphCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 32
+        shuffle: true
+        drop_last: true
+  val:
+    dataset:
+      __class_name__: QM9Dataset
+      __init_params__:
+        path: ./data/qm9/val.csv
+        property_names: [Cv]
+        build_molecule_cfg: ${Global.build_molecule_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+    loader:
+      num_workers: 4
+      use_shared_memory: false
+      collate_fn: RadiusGraphCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 32
+        shuffle: false
+        drop_last: false
+  test:
+    dataset:
+      __class_name__: QM9Dataset
+      __init_params__:
+        path: ./data/qm9/test.csv
+        property_names: [Cv]
+        build_molecule_cfg: ${Global.build_molecule_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+    loader:
+      num_workers: 4
+      use_shared_memory: false
+      collate_fn: RadiusGraphCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 32
+        shuffle: false
+        drop_last: false
+
+Predict:
+  graph_converter: ${Global.graph_converter}

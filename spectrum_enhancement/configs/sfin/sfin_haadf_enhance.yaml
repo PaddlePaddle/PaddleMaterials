@@ -1,0 +1,114 @@
+Global:
+  do_train: True
+  do_eval: True
+  do_test: False
+  prim_eager_enabled: False
+  build_image_cfg:
+    format: image_file
+    mode: L
+    dtype: float32
+    num_cpus: 1
+
+Trainer:
+  max_epochs: 500
+  seed: 42
+  output_dir: ./output/sfin_haadf_enhance
+  save_freq: 100
+  log_freq: 100
+  start_eval_epoch: 1
+  eval_freq: 1
+  pretrained_model_path: null
+  pretrained_weight_name: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: "O1"
+  eval_with_no_grad: True
+  gradient_accumulation_steps: 1
+
+  best_metric_indicator: null
+  name_for_best_metric: null
+  greater_is_better: True
+
+  compute_metric_during_train: True
+  metric_strategy_during_eval: "epoch"
+
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: SFIN
+  __init_params__:
+    in_channels: 1
+    base_channels: 64
+    num_blocks: 8
+    input_name: "noisy"
+    target_name: "gt_enhance"
+    loss_type: "l1"
+    loss_weight: 1.0
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    lr:
+      __class_name__: MultiStepDecay
+      __init_params__:
+        learning_rate: 2.0e-4
+        milestones: [250, 400, 425, 450, 475]
+        gamma: 0.5
+        by_epoch: True
+    beta1: 0.9
+    beta2: 0.999
+    epsilon: 1.0e-8
+    weight_decay: 0.0
+
+Metric:
+  __class_name__: SFINStreamingAdapter
+  __init_params__:
+    target_name: "gt_enhance"
+    data_range: 255.0
+
+Predict:
+  eval_with_no_grad: True
+  checkpoint_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/spectrum_enhancement/sfin/sfin_haadf_enhance.zip
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: SFINDataset
+      __init_params__:
+        path: "./sfin_haadf"
+        split: "train"
+        target_subdir: "gt_enhance"
+        build_image_cfg: ${Global.build_image_cfg}
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 8
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+
+  val:
+    dataset:
+      __class_name__: SFINDataset
+      __init_params__:
+        path: "./sfin_haadf"
+        split: "val"
+        target_subdir: "gt_enhance"
+        build_image_cfg: ${Global.build_image_cfg}
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 1
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+
+  test: ${Dataset.val}

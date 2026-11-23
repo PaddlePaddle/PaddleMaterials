@@ -24,7 +24,6 @@ from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Tuple
-from typing import Union
 
 import numpy as np
 import paddle
@@ -34,10 +33,9 @@ import pgl
 from paddle.io import Dataset
 from rdkit import Chem
 from rdkit import RDLogger
-from rdkit.Chem.rdchem import BondType as BT
 
 from ppmat.datasets.build_molecule import BuildMolecule
-from ppmat.datasets.build_spectrum import build_spectrum_converter
+from ppmat.datasets.build_spectrum import BuildSpectrumNMR
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.models import build_graph_converter
 from ppmat.models.diffnmr.utils import diffgraphformer_utils as utils
@@ -47,6 +45,27 @@ from ppmat.utils.ext_rdkit import build_molecule_with_partial_charges
 from ppmat.utils.ext_rdkit import compute_molecular_metrics
 from ppmat.utils.ext_rdkit import mol2smiles
 from ppmat.utils.misc import is_equal
+
+# Molecular weight used to normalize the weight feature, per subset and per
+# ``remove_h``. Unlike the histograms these are release constants rather than
+# data statistics, so they stay in code.
+MSD_NMR_MAX_WEIGHT = {
+    "n<15": {False: 390, True: 564},
+    "n<20": {False: 390, True: 631},
+    "n<25": {False: 390, True: 998},
+    "n<35": {False: 390, True: 1094},
+}
+
+TRAIN_SMILES_REGISTRY = {
+    ("n<15", True): {
+        "name": "msd_nmr_nless15_train_smiles_no_h",
+        "url": (
+            "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/"
+            "MSD_nmr/msd_nmr_nless15_train_smiles_no_h.npy"
+        ),
+        "md5": "a0047cd89ed46b98a79a607641231d04",
+    },
+}
 
 
 class MSDnmrDataset(Dataset):
@@ -112,34 +131,24 @@ class MSDnmrDataset(Dataset):
     ```
 
     Args:
-            path (str or List[str]): Path to a CSV file (or list of CSV files)
-                containing the raw dataset. Each file should have columns such
-                as 'smiles', 'tokenized_input' and 'atom_count'. If multiple
-                files are provided, they will be concatenated.
-            vocab_peakwidth_path (str): Path to a CSV file defining the
-                vocabulary for NMR peak widths. The file should have a column
-                named 'Value' whose unique entries are mapped to integer IDs.
-            vocab_split_path (str): Path to a CSV file defining the vocabulary
-                for NMR splitting types. The file should have a column named
-                'Type' whose unique entries are mapped to integer IDs.
-            remove_h (bool): Whether to remove hydrogen atoms from the graph
-                representation. When ``True``, hydrogens are stripped and the
-                remaining node features are shifted accordingly.
-            seq_len_H1 (int): Maximum sequence length for ¹H NMR tokens. 1H
-                spectra shorter than this will be padded; longer sequences are
-                truncated.
-            seq_len_C13 (int): Maximum sequence length for ¹³C NMR tokens.
-            cache (bool, optional): If ``True``, processed graphs will be cached
-                to a ``*.pkl`` file next to the input CSV. Subsequent runs
-                reuse the cache when the file exists, speeding up initialization.
-                Defaults to ``True``.
-            **kwargs: Additional keyword arguments to configure dataset behaviour.
-                Recognised keys include:
-                  - ``guidance_target`` (str): one of {'mu','homo','both'}, used
-                    when training a regressor to select which target(s) to return.
-                  - ``regressor``: boolean or object indicating whether a
-                    regression model is being trained, which affects the
-                    transform applied to the labels.
+        path: CSV file or list of CSV files containing ``smiles``,
+            ``tokenized_input``, and ``atom_count`` columns.
+        data_flag: Dataset subset identifier.
+        max_atoms: Maximum number of atoms represented by the model.
+        vocab: Registered atom, bond, peak-width, split, and integral
+            vocabularies.
+        build_molecule_cfg: Keyword arguments passed to ``BuildMolecule``.
+        build_graph_cfg: Registered graph converter configuration.
+        build_spectrum_cfg: Keyword arguments passed to ``BuildSpectrumNMR``.
+            The registered vocabulary is injected at runtime.
+        transforms: Optional per-sample transform.
+        cache_path: Directory containing converted molecule, graph, and
+            spectrum caches.
+        statistics_cache_path: Optional statistics cache override. Relative
+            paths are resolved from the current working directory.
+        overwrite: Whether to rebuild an existing cache.
+        filter_unvalid: Whether to remove invalid molecular samples.
+        **kwargs: Additional dataset options.
 
     """
 
@@ -149,42 +158,37 @@ class MSDnmrDataset(Dataset):
 
     def __init__(
         self,
-        path: Union[str, List[str]],
-        vocab_peakwidth_path: str,
-        vocab_split_path: str,
+        path: str,
         data_flag: str,
         max_atoms: int,
+        vocab: Dict[str, Dict[str, Any]],
         build_molecule_cfg: Optional[Dict[str, Any]] = None,
         build_graph_cfg: Optional[Dict[str, Any]] = None,
         build_spectrum_cfg: Optional[Dict[str, Any]] = None,
         transforms: Optional[Any] = None,
         cache_path: Optional[str] = None,
+        statistics_cache_path: Optional[str] = None,
         overwrite: bool = False,
         filter_unvalid: bool = True,
         **kwargs: Any,
     ) -> None:
         super().__init__()
 
-        # Download the dataset if the provided path does not exist
         if not osp.exists(path):
             logger.message("The dataset is not found. Will download it now.")
             root_path = download.get_datasets_path_from_url(self.url, self.md5)
-            if data_flag == "n<15":
-                subdataset_name = "msd_nmr_nless15"
-            elif data_flag == "n<20":
-                subdataset_name = "msd_nmr_nless20"
-            elif data_flag == "n<30":
-                subdataset_name = "msd_nmr_nless30"
-            elif data_flag == "n<35":
-                subdataset_name = "msd_nmr_nless35"
-            else:
-                raise ValueError(
-                    f"Unknown data_flag: {data_flag}. "
-                    "Expected one of {'n<15', 'n<20', 'n<30', 'n<35'}."
-                )
-            path = osp.join(root_path, self.name, subdataset_name, osp.basename(path))
+            path = osp.join(
+                root_path,
+                self.name,
+                _get_msd_nmr_subdataset_name(data_flag),
+                osp.basename(path),
+            )
 
         self.path = path
+        self.data_flag = data_flag
+        self.max_atoms = max_atoms
+        self.filter_unvalid = filter_unvalid
+        self.vocab = vocab
 
         # Config dicts controlling molecule and graph construction
         if build_molecule_cfg is None:
@@ -203,23 +207,13 @@ class MSDnmrDataset(Dataset):
 
         if build_graph_cfg is None:
             build_graph_cfg = {
-                "atom_vocab": {
-                    "H": 0,
-                    "C": 1,
-                    "N": 2,
-                    "O": 3,
-                    "F": 4,
-                    "P": 5,
-                    "S": 6,
-                    "Cl": 7,
-                    "Br": 8,
-                    "I": 9,
+                "__class_name__": "MolecularGraphConverter",
+                "__init_params__": {
+                    "remove_h": False,
+                    "add_self_loops": False,
+                    "edge_mode": "bidirectional",
+                    "num_cpus": 1,
                 },
-                "bond_vocab": {"SINGLE": 0, "DOUBLE": 1, "TRIPLE": 2, "AROMATIC": 3},
-                "remove_h": False,
-                "add_self_loops": False,
-                "edge_mode": "bidirectional",
-                "num_cpus": 1,
             }
             logger.message(
                 "The build_graph_cfg is not set, will use the default "
@@ -229,35 +223,44 @@ class MSDnmrDataset(Dataset):
 
         if build_spectrum_cfg is None:
             build_spectrum_cfg = {
-                "__class_name__": "BuildSpectrumNMR",  # 指定要实例化的类名
-                "__init_params__": {  # 类初始化参数
-                    "seq_len_H1": 32,  # 1H谱序列长度
-                    "seq_len_C13": 32,  # 13C谱序列长度
-                    "j_len": 6,  # 耦合常数维度
-                    "unk_token": "<unk>",  # 未知token
-                    "integral_offset": 1,  # 积分偏移量
-                    "num_cpus": 1,  # 并行线程数
-                },
+                "seq_len_H1": 32,
+                "seq_len_C13": 32,
+                "j_len": 6,
+                "num_cpus": 1,
             }
             logger.message(
                 "The build_spectrum_cfg is not set, will use the default "
                 f"configs: {build_spectrum_cfg}"
             )
         self.build_spectrum_cfg = build_spectrum_cfg
+        graph_vocab = {
+            "atom": vocab["atom"],
+            "bond": vocab["bond"],
+        }
+        spectrum_vocab = {
+            "peakwidth": vocab["peakwidth"],
+            "split": vocab["split"],
+            "integral": vocab["integral"],
+        }
 
         self.transforms = transforms
-        self.vocabs = self._build_vocab(vocab_peakwidth_path, vocab_split_path)
 
         if cache_path is not None:
             self.cache_path = cache_path
         else:
             self.cache_path = osp.join(
-                osp.split(path)[0] + "_cache", osp.splitext(osp.basename(path))[0]
+                osp.dirname(path) + "_cache", osp.splitext(osp.basename(path))[0]
             )
         logger.info(f"Cache path: {self.cache_path}")
 
+        suffix = "no_h" if build_graph_cfg["__init_params__"]["remove_h"] else "h"
+        self.statistics_cache_path = (
+            osp.abspath(os.fspath(statistics_cache_path))
+            if statistics_cache_path is not None
+            else osp.join(osp.dirname(self.cache_path), f"statistics_{suffix}.pdparams")
+        )
+
         self.overwrite = overwrite
-        self.filter_unvalid = filter_unvalid
 
         self.cache_exists = True if osp.exists(self.cache_path) else False
         self.raw_data, self.num_samples = self.read_data(path)
@@ -277,12 +280,12 @@ class MSDnmrDataset(Dataset):
                     logger.info(
                         "The cached build_molecule_cfg configuration matches "
                         "the current settings. Reusing previously generated"
-                        " structural data to optimize performance."
+                        " moelcular data to optimize performance."
                     )
                 else:
                     logger.warning(
                         "build_molecule_cfg is different from "
-                        "build_molecule_cfgg_cache. Will rebuild the molecules and "
+                        "build_molecule_cfg_cache. Will rebuild the molecules and "
                         "graphs."
                     )
                     logger.warning(
@@ -303,16 +306,21 @@ class MSDnmrDataset(Dataset):
                     build_graph_cfg_cache = self.load_from_cache(
                         osp.join(self.cache_path, "build_graph_cfg.pkl")
                     )
-                    if is_equal(build_graph_cfg_cache, build_graph_cfg):
+                    graph_vocab_cache = self.load_from_cache(
+                        osp.join(self.cache_path, "graph_vocab.pkl")
+                    )
+                    if is_equal(build_graph_cfg_cache, build_graph_cfg) and is_equal(
+                        graph_vocab_cache, graph_vocab
+                    ):
                         logger.info(
-                            "The cached build_molecule_cfg configuration "
-                            "matches the current settings. Reusing previously "
+                            "The cached graph configuration and vocabulary "
+                            "match the current settings. Reusing previously "
                             "generated molecular data to optimize performance."
                         )
                     else:
                         logger.warning(
-                            "build_graph_cfg is different from build_graph_cfg_cache"
-                            ". Will rebuild the graphs."
+                            "Graph configuration or vocabulary differs from the "
+                            "cache. Will rebuild the graphs."
                         )
                         logger.warning(
                             "If you want to use the cached molecules and graphs, "
@@ -334,16 +342,21 @@ class MSDnmrDataset(Dataset):
                     build_spectrum_cfg_cache = self.load_from_cache(
                         osp.join(self.cache_path, "build_spectrum_cfg.pkl")
                     )
-                    if is_equal(build_spectrum_cfg_cache, build_spectrum_cfg):
+                    spectrum_vocab_cache = self.load_from_cache(
+                        osp.join(self.cache_path, "spectrum_vocab.pkl")
+                    )
+                    if is_equal(
+                        build_spectrum_cfg_cache, build_spectrum_cfg
+                    ) and is_equal(spectrum_vocab_cache, spectrum_vocab):
                         logger.info(
-                            "The cached build_spectrum_cfg configuration "
-                            "matches the current settings. Reusing previously "
+                            "The cached spectrum configuration and vocabulary "
+                            "match the current settings. Reusing previously "
                             "generated spectrum data to optimize performance."
                         )
                     else:
                         logger.warning(
-                            "build_spectrum_cfg is different from "
-                            "build_spectrum_cfg_cache. Will rebuild the spectrums."
+                            "Spectrum configuration or vocabulary differs from the "
+                            "cache. Will rebuild the spectrums."
                         )
                         logger.warning(
                             "If you want to use the cached spectrums, "
@@ -355,7 +368,7 @@ class MSDnmrDataset(Dataset):
                 except Exception as e:
                     logger.warning(e)
                     logger.warning(
-                        "Failed to load builded_spectrum_cfg.pkl from cache. "
+                        "Failed to load build_spectrum_cfg.pkl from cache. "
                         "Will rebuild the spectrums."
                     )
                     overwrite = True
@@ -365,13 +378,8 @@ class MSDnmrDataset(Dataset):
         spectrum_cache_path = osp.join(self.cache_path, "spectrums")
 
         if overwrite or not self.cache_exists:
-            # convert strucutes and graphs
-            # only rank 0 process do the conversion
             if dist.get_rank() == 0:
-                # save build_molecule_cfg and build_graph_cfg and build_spechtrum_cfg
-                # to cache file
                 os.makedirs(self.cache_path, exist_ok=True)
-
                 self.save_to_cache(
                     osp.join(self.cache_path, "build_molecule_cfg.pkl"),
                     build_molecule_cfg,
@@ -379,51 +387,56 @@ class MSDnmrDataset(Dataset):
                 self.save_to_cache(
                     osp.join(self.cache_path, "build_graph_cfg.pkl"), build_graph_cfg
                 )
+                if build_graph_cfg is not None:
+                    self.save_to_cache(
+                        osp.join(self.cache_path, "graph_vocab.pkl"), graph_vocab
+                    )
                 self.save_to_cache(
                     osp.join(self.cache_path, "build_spectrum_cfg.pkl"),
                     build_spectrum_cfg,
                 )
-
-                # convert strucutes
-                molecules = BuildMolecule(**build_molecule_cfg)(self.raw_data["smiles"])
-                # save molecules to cache file
-                os.makedirs(molecule_cache_path, exist_ok=True)
-                for i in range(self.num_samples):
+                if build_spectrum_cfg is not None:
                     self.save_to_cache(
-                        osp.join(molecule_cache_path, f"{i:010d}.pkl"),
-                        molecules[i],
+                        osp.join(self.cache_path, "spectrum_vocab.pkl"),
+                        spectrum_vocab,
+                    )
+
+                molecules = BuildMolecule(**build_molecule_cfg)(self.raw_data["smiles"])
+                os.makedirs(molecule_cache_path, exist_ok=True)
+                for index, molecule in enumerate(molecules):
+                    self.save_to_cache(
+                        osp.join(molecule_cache_path, f"{index:010d}.pkl"), molecule
                     )
                 logger.info(
                     f"Save {self.num_samples} molecules to {molecule_cache_path}"
                 )
-                # convert graphs
+
                 if build_graph_cfg is not None:
-                    converter = build_graph_converter(build_graph_cfg)
+                    converter = build_graph_converter(build_graph_cfg, vocab=vocab)
                     graphs = converter(molecules)
-                    # save graphs to cache file
                     os.makedirs(graph_cache_path, exist_ok=True)
-                    for i in range(self.num_samples):
+                    for index, graph in enumerate(graphs):
                         self.save_to_cache(
-                            osp.join(graph_cache_path, f"{i:010d}.pkl"), graphs[i]
+                            osp.join(graph_cache_path, f"{index:010d}.pkl"), graph
                         )
                     logger.info(f"Save {self.num_samples} graphs to {graph_cache_path}")
-                # convert spectrums
+
                 if build_spectrum_cfg is not None:
-                    converter = build_spectrum_converter(
-                        build_spectrum_cfg, vocabs=self.vocabs, strict=True
+                    converter = BuildSpectrumNMR(
+                        vocab=vocab,
+                        **build_spectrum_cfg,
                     )
                     spectrums = converter(self.raw_data["tokenized_nmr"])
-                    # save spectrums to cache file
                     os.makedirs(spectrum_cache_path, exist_ok=True)
-                    for i in range(self.num_samples):
+                    for index, spectrum in enumerate(spectrums):
                         self.save_to_cache(
-                            osp.join(spectrum_cache_path, f"{i:010d}.pkl"), spectrums[i]
+                            osp.join(spectrum_cache_path, f"{index:010d}.pkl"),
+                            spectrum,
                         )
                     logger.info(
                         f"Save {self.num_samples} spectrums to {spectrum_cache_path}"
                     )
 
-            # sync all processes
             if dist.is_initialized():
                 dist.barrier()
         self.molecules = [
@@ -473,7 +486,7 @@ class MSDnmrDataset(Dataset):
                 molecule = self.load_from_cache(molecule)
             data["molecule_array"] = self.get_molecule_array(molecule)
 
-        # get spectrum
+        # Keep the public sample key expected by DiffNMR.
         if self.spectrums is not None:
             spectrum = self.spectrums[idx]
             if isinstance(spectrum, str):
@@ -498,121 +511,26 @@ class MSDnmrDataset(Dataset):
     def __len__(self) -> int:
         return self.num_samples
 
-    def read_data(
-        self, csv_path: Union[str, List[str]]
-    ) -> Tuple[List[str], List[dict], List[int], int]:
-        """Read MSD-NMR raw CSV file(s) and return parsed columns.
+    def read_data(self, csv_path: str) -> Tuple[Dict[str, List[Any]], int]:
+        """Read the prepared MSD-NMR CSV schema."""
 
-        Expected CSV schema (3 columns in order):
-            1) smiles                      (str)
-            2) tokenized_input (JSON str)  (e.g., '{"1HNMR":[...], "13CNMR":[...]}')
-            3) atom_count                  (int)
-
-        Args:
-            csv_path (str | List[str]): Path to a CSV file, a directory containing CSVs,
-                or a list of CSV file paths.
-
-        Returns:
-            raw_data (dict): {
-                "smiles":         List[str],
-                "tokenized_nmr":  List[dict|list],   # parsed from tokenized_input
-                "atom_count":     List[int],
-            }
-            num_samples (int)
-        """
-        # 1) Collect CSV files
-        if isinstance(csv_path, (list, tuple)):
-            file_list = list(csv_path)
-        elif osp.isdir(csv_path):
-            file_list = [
-                osp.join(csv_path, f)
-                for f in os.listdir(csv_path)
-                if f.endswith(".csv")
-            ]
-            file_list.sort()
-        else:
-            file_list = [csv_path]
-
-        if len(file_list) == 0:
-            return [], [], [], 0
-
-        # 2) Read and concatenate
-        frames = []
-        for p in file_list:
-            df = pd.read_csv(p)
-            frames.append(df)
-        df = pd.concat(frames, ignore_index=True)
-
-        # 3) Normalize/rename columns if needed
-        # Preferred canonical names: 'smiles', 'tokenized_input', 'atom_count'
-        cols = [c.lower().strip() for c in df.columns.tolist()]
-        rename_map = {}
-        # Attempt to map by known names; fall back to position
-        # (0: smiles, 1: tokenized_input, 2: atom_count)
-        if "smiles" not in cols:
-            rename_map[df.columns[0]] = "smiles"
-        else:
-            # Make sure exact canonical name
-            rename_map[df.columns[cols.index("smiles")]] = "smiles"
-
-        if "tokenized_input" not in cols:
-            # If user used a different header, assume second column
-            rename_map[df.columns[1]] = "tokenized_input"
-        else:
-            rename_map[df.columns[cols.index("tokenized_input")]] = "tokenized_input"
-
-        if "atom_count" not in cols:
-            rename_map[df.columns[2]] = "atom_count"
-        else:
-            rename_map[df.columns[cols.index("atom_count")]] = "atom_count"
-
-        df = df.rename(columns=rename_map)
-
-        # 4) Parse tokenized_input JSON (if it's a string)
-        if "tokenized_input" not in df.columns:
-            raise ValueError("Column 'tokenized_input' not found after normalization.")
-
-        def _parse_json(x):
-            if isinstance(x, (dict, list)):
-                return x
-            if pd.isna(x):
-                return None
-            # ensure it's a JSON string
-            if not isinstance(x, str):
-                x = str(x)
-            return json.loads(x)
-
-        df["tokenized_input"] = df["tokenized_input"].apply(_parse_json)
-
-        # 5) Ensure atom_count is integer
-        if "atom_count" not in df.columns:
-            raise ValueError("Column 'atom_count' not found after normalization.")
-
-        df["atom_count"] = pd.to_numeric(df["atom_count"], errors="coerce").astype(
-            "Int64"
-        )
-
-        # 6) Drop invalid rows (any of the three columns invalid)
-        valid_mask = (
-            df["smiles"].astype(str).str.len().gt(0)
-            & df["tokenized_input"].notna()
-            & df["atom_count"].notna()
-        )
-        df = df.loc[valid_mask].reset_index(drop=True)
-
-        # 7) Build outputs
-        raw_data: Dict[str, List[Any]] = {
-            "smiles": df["smiles"].astype(str).tolist(),
-            "tokenized_nmr": df["tokenized_input"].tolist(),
-            "atom_count": [int(v) for v in df["atom_count"].tolist()],
+        frame = pd.read_csv(csv_path)
+        required = {"smiles", "tokenized_input", "atom_count"}
+        missing = required.difference(frame.columns)
+        if missing:
+            raise ValueError(f"Missing MSD-NMR columns: {sorted(missing)}")
+        raw_data = {
+            "smiles": frame["smiles"].astype(str).tolist(),
+            "tokenized_nmr": [
+                json.loads(value) for value in frame["tokenized_input"].tolist()
+            ],
+            "atom_count": frame["atom_count"].astype(int).tolist(),
         }
-        num_samples = len(df)
-
-        return raw_data, num_samples
+        return raw_data, len(frame)
 
     def save_to_cache(self, cache_path: str, data: Any):
-        with open(cache_path, "wb") as f:
-            pickle.dump(data, f)
+        with open(cache_path, "wb") as handle:
+            pickle.dump(data, handle)
 
     def load_from_cache(self, cache_path: str):
         if osp.exists(cache_path):
@@ -676,26 +594,37 @@ class MSDnmrDataset(Dataset):
             return reserve_idx
 
         # 3) Slice all containers that are aligned to raw_data length
-        def _slice_list(lst):
-            return [lst[i] for i in reserve_idx]
+        def _slice_aligned(values):
+            if isinstance(values, np.ndarray):
+                return values[np.asarray(reserve_idx, dtype=np.int64)]
+            if isinstance(values, tuple):
+                return tuple(values[i] for i in reserve_idx)
+            return [values[i] for i in reserve_idx]
 
         # 3.1 raw_data: slice list-like values with length n
         for k, v in list(self.raw_data.items()):
-            if isinstance(v, list) and len(v) == n:
-                self.raw_data[k] = _slice_list(v)
+            if isinstance(v, (list, tuple, np.ndarray)) and len(v) == n:
+                self.raw_data[k] = _slice_aligned(v)
 
         # 3.2 property_data: slice when aligned
         if hasattr(self, "property_data") and isinstance(self.property_data, dict):
             for k, v in list(self.property_data.items()):
-                if isinstance(v, list) and len(v) == n:
-                    self.property_data[k] = _slice_list(v)
+                if isinstance(v, (list, tuple, np.ndarray)) and len(v) == n:
+                    self.property_data[k] = _slice_aligned(v)
 
         # 3.3 other parallel containers (if present and aligned)
-        for attr in ("raw_data", "molecules", "graphs", "metas"):
+        for attr in (
+            "molecules",
+            "graphs",
+            "spectrums",
+            "properties",
+            "metas",
+            "sample_indices",
+        ):
             if hasattr(self, attr):
                 seq = getattr(self, attr)
-                if isinstance(seq, list) and len(seq) == n:
-                    setattr(self, attr, _slice_list(seq))
+                if isinstance(seq, (list, tuple, np.ndarray)) and len(seq) == n:
+                    setattr(self, attr, _slice_aligned(seq))
 
         # 4) Update dataset size and log
         if hasattr(self, "num_samples"):
@@ -724,32 +653,21 @@ class MSDnmrDataset(Dataset):
         Return graph-ready arrays (not a pgl.Graph):
         - num_nodes: [1] int64
         - edges:     [E, 2] int64 (sorted)
-        - node_feat: [N, A] float32  (A = len(atom_vocab))
-        - edge_feat: [E, K] float32  (K = len(bond_vocab) + 1, 0 reserved)
+        - node_feat: [N, A] float32
+        - edge_feat: [E, K] float32
         """
-        # ---- config / defaults (reuse same knobs as MolecularGraphConverter) ----
-        atom_vocab = getattr(
-            self,
-            "atom_vocab",
-            {
-                "H": 0,
-                "C": 1,
-                "N": 2,
-                "O": 3,
-                "F": 4,
-                "P": 5,
-                "S": 6,
-                "Cl": 7,
-                "Br": 8,
-                "I": 9,
-            },
-        )
-        bond_vocab = getattr(
-            self, "bond_vocab", (BT.SINGLE, BT.DOUBLE, BT.TRIPLE, BT.AROMATIC)
-        )
-        remove_h = bool(getattr(self, "remove_h", False))
-        add_self = bool(getattr(self, "add_self_loops", False))
-        edge_mode = getattr(self, "edge_mode", "bidirectional")
+        atom_vocab = self.vocab["atom"]
+        atom_token_to_id = atom_vocab["token_to_id"]
+        num_atom_embeddings = int(atom_vocab["num_embeddings"])
+        bond_vocab = self.vocab["bond"]
+        bond_token_to_id = bond_vocab["token_to_id"]
+        num_bond_embeddings = int(bond_vocab["num_embeddings"])
+        no_bond_id = bond_token_to_id["NO_BOND"]
+
+        graph_cfg = self.build_graph_cfg["__init_params__"]
+        remove_h = bool(graph_cfg.get("remove_h", True))
+        add_self = bool(graph_cfg.get("add_self_loops", False))
+        edge_mode = graph_cfg.get("edge_mode", "bidirectional")
 
         # ---- RDKit Mol ----
         mol = Chem.MolFromSmiles(molecule) if isinstance(molecule, str) else molecule
@@ -764,26 +682,25 @@ class MSDnmrDataset(Dataset):
                 "num_nodes": ConcatData(np.asarray([0], dtype=np.int64)),
                 "edges": ConcatData(np.zeros((0, 2), dtype=np.int64)),
                 "node_feat": ConcatData(
-                    np.zeros((0, len(atom_vocab)), dtype=np.float32)
+                    np.zeros((0, num_atom_embeddings), dtype=np.float32)
                 ),
                 "edge_feat": ConcatData(
-                    np.zeros((0, len(bond_vocab) + 1), dtype=np.float32)
+                    np.zeros((0, num_bond_embeddings), dtype=np.float32)
                 ),
             }
 
-        # ---- node_feat (one-hot over atom_vocab) ----
+        # ---- node_feat (one-hot over the registered atom vocabulary) ----
         idxs = []
         for atom in mol.GetAtoms():
             sym = atom.GetSymbol()
-            if sym not in atom_vocab:
-                raise ValueError(f"Unknown atom symbol '{sym}' not in atom_vocab")
-            idxs.append(atom_vocab[sym])
+            if sym not in atom_token_to_id:
+                raise ValueError(f"Unknown atom symbol '{sym}' in atom vocabulary")
+            idxs.append(atom_token_to_id[sym])
         idxs = np.asarray(idxs, dtype=np.int64)  # [N]
-        node_feat = np.eye(len(atom_vocab), dtype=np.float32)[idxs]  # [N, A]
+        node_feat = np.eye(num_atom_embeddings, dtype=np.float32)[idxs]
 
-        # ---- edges & edge_feat (bond one-hot over bond_vocab + 0) ----
+        # ---- edges & edge_feat (one-hot over the registered bond vocabulary) ----
         rows, cols, etypes = [], [], []
-        bt2id = {bt: i + 1 for i, bt in enumerate(bond_vocab)}  # 0 reserved
 
         def push(u, v, et):
             rows.append(u)
@@ -792,7 +709,8 @@ class MSDnmrDataset(Dataset):
 
         for b in mol.GetBonds():
             u, v = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
-            et = bt2id.get(b.GetBondType(), 0)
+            bond_type = str(b.GetBondType()).split(".")[-1]
+            et = bond_token_to_id.get(bond_type, no_bond_id)
 
             if edge_mode == "directed":
                 push(u, v, et)
@@ -818,7 +736,7 @@ class MSDnmrDataset(Dataset):
             for i in range(N):
                 rows.append(i)
                 cols.append(i)
-                etypes.append(0)
+                etypes.append(no_bond_id)
 
         if rows:
             row_np = np.asarray(rows, dtype=np.int64)
@@ -828,10 +746,10 @@ class MSDnmrDataset(Dataset):
             order = np.argsort(row_np * N + col_np, kind="mergesort")
             row_np, col_np, et_np = row_np[order], col_np[order], et_np[order]
             edges = np.stack([row_np, col_np], axis=1).astype(np.int64)  # [E,2]
-            edge_feat = np.eye(len(bond_vocab) + 1, dtype=np.float32)[et_np]  # [E,K]
+            edge_feat = np.eye(num_bond_embeddings, dtype=np.float32)[et_np]
         else:
             edges = np.zeros((0, 2), dtype=np.int64)
-            edge_feat = np.zeros((0, len(bond_vocab) + 1), dtype=np.float32)
+            edge_feat = np.zeros((0, num_bond_embeddings), dtype=np.float32)
 
         # ---- pack arrays (mirrors the 4 graph arguments) ----
         molecule_array = {
@@ -842,68 +760,35 @@ class MSDnmrDataset(Dataset):
         }
         return molecule_array
 
-    # ------------------------------------------------------------------
-    # Internal data preparation methods
-    # These mirror the functionality previously provided by ``MMSnmrData`` and
-    # are kept private within the dataset class to simplify usage.
-
-    def _build_vocab(self, peakwidth_path: str, split_path: str):
-        """
-        Populate the peak width and split vocabularies from CSV files.
-        Return {'peakwidth': {...}, 'split': {...}} vocab dicts from CSVs.
-        """
-
-        def uniq_keep_order(xs):
-            seen, out = set(), []
-            for x in xs:
-                if x is None:
-                    continue
-                s = str(x).strip()
-                if s and s not in seen:
-                    seen.add(s)
-                    out.append(s)
-            return out
-
-        df_pw = pd.read_csv(peakwidth_path)
-        df_sp = pd.read_csv(split_path)
-
-        pw_tokens = uniq_keep_order(df_pw["Value"].tolist())
-        sp_tokens = uniq_keep_order(df_sp["Type"].tolist())
-
-        vocab_peakwidth = {"<pad>": 0, "<unk>": 1}
-        vocab_peakwidth.update({t: i + 2 for i, t in enumerate(pw_tokens)})
-
-        vocab_split = {"<pad>": 0, "<unk>": 1}
-        vocab_split.update({t: i + 2 for i, t in enumerate(sp_tokens)})
-
-        return {"peakwidth": vocab_peakwidth, "split": vocab_split}
-
 
 class MSDnmrinfos:
-    def __init__(self, dataloaders, cfg, recompute_statistics=False):
+    def __init__(self, dataloaders, cfg, vocab, recompute_statistics=False):
+        if isinstance(dataloaders, dict):
+            dataloaders = DataLoaderCollection(
+                dataloaders.get("train"),
+                dataloaders.get("val"),
+                dataloaders.get("test"),
+            )
+
+        self._cfg = cfg
+        self._train_dataloader = (
+            dataloaders.train_dataloader if dataloaders is not None else None
+        )
         self.remove_h = cfg["build_graph_cfg"]["__init_params__"]["remove_h"]
         self.dataflag = cfg["data_flag"]
-        self.need_to_strip = (
-            False  # to indicate whether we need to ignore one output from the model
-        )
+        self.vocab = vocab
+        spectrum_cfg = cfg["build_spectrum_cfg"]
+        self.seq_len_H1 = int(spectrum_cfg["seq_len_H1"])
+        self.seq_len_C13 = int(spectrum_cfg["seq_len_C13"])
+        self.need_to_strip = False
 
-        self.atom_encoder = (
-            {"H": 0, "C": 1, "N": 2, "O": 3, "F": 4}
-            if not self.remove_h
-            else {
-                "C": 0,
-                "N": 1,
-                "O": 2,
-                "F": 3,
-                "P": 4,
-                "S": 5,
-                "Cl": 6,
-                "Br": 7,
-                "I": 8,
-            }
-        )
-        self.atom_decoder = list(self.atom_encoder.keys())
-        self.num_atom_types = len(self.atom_encoder)
+        atom_vocab = vocab["atom"]
+        self.atom_encoder = atom_vocab["token_to_id"]
+        self.atom_decoder = [
+            atom_vocab["id_to_token"][index]
+            for index in range(atom_vocab["num_embeddings"])
+        ]
+        self.num_atom_types = atom_vocab["num_embeddings"]
         self.valencies = (
             [1, 4, 3, 2, 1] if not self.remove_h else [4, 3, 2, 1, 3, 2, 1, 1, 1]
         )
@@ -922,483 +807,150 @@ class MSDnmrinfos:
                 8: 126.9,
             }
         )
-        if self.dataflag == "n<15":
-            self.max_n_nodes = 29 if not self.remove_h else 15
-            self.max_weight = 390 if not self.remove_h else 564
+        self.max_weight = MSD_NMR_MAX_WEIGHT[self.dataflag][self.remove_h]
 
-            self.n_nodes = (
-                paddle.to_tensor(
-                    [
-                        0,
-                        0,
-                        0,
-                        1.5287e-05,
-                        3.0574e-05,
-                        3.8217e-05,
-                        9.1721e-05,
-                        0.00015287,
-                        0.00049682,
-                        0.0013147,
-                        0.0036918,
-                        0.0080486,
-                        0.016732,
-                        0.03078,
-                        0.051654,
-                        0.078085,
-                        0.10566,
-                        0.1297,
-                        0.13332,
-                        0.1387,
-                        0.094802,
-                        0.10063,
-                        0.033845,
-                        0.048628,
-                        0.0054421,
-                        0.014698,
-                        0.00045096,
-                        0.0027211,
-                        0.0,
-                        0.00026752,
-                    ]
-                )
-                if not self.remove_h
-                else paddle.to_tensor(
-                    [
-                        0.0,
-                        0.0,
-                        0.0,
-                        0.0,
-                        0.0,
-                        0.000657983182463795,
-                        0.0034172674641013145,
-                        0.009784846566617489,
-                        0.019774870947003365,
-                        0.04433957487344742,
-                        0.07253380119800568,
-                        0.10895635187625885,
-                        0.14755095541477203,
-                        0.17605648934841156,
-                        0.19964483380317688,
-                        0.21728302538394928,
-                    ]
-                )
-            )
-            self.node_types = (
-                paddle.to_tensor([0.5122, 0.3526, 0.0562, 0.0777, 0.0013])
-                if not self.remove_h
-                else paddle.to_tensor(
-                    [
-                        0.7162184715270996,
-                        0.09598348289728165,
-                        0.12478094547986984,
-                        0.01828921213746071,
-                        0.0004915347089990973,
-                        0.014545895159244537,
-                        0.01616295613348484,
-                        0.011324135586619377,
-                        0.002203370677307248,
-                    ]
-                )
-            )
-            self.edge_types = (
-                paddle.to_tensor([0.88162, 0.11062, 0.0059875, 0.0017758, 0])
-                if not self.remove_h
-                else paddle.to_tensor(
-                    [
-                        0.8293983340263367,
-                        0.09064729511737823,
-                        0.011958839371800423,
-                        0.0011387828271836042,
-                        0.0668567642569542,
-                    ]
-                )
-            )
-        elif self.dataflag == "n<20":
-            self.max_n_nodes = 29 if not self.remove_h else 20
-            self.max_weight = 390 if not self.remove_h else 631
-            self.n_nodes = paddle.to_tensor(
-                [
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    1.465040404582396150e-04,
-                    7.087133126333355904e-04,
-                    2.005274174734950066e-03,
-                    4.010548349469900131e-03,
-                    9.273706004023551941e-03,
-                    1.550195924937725067e-02,
-                    2.318426594138145447e-02,
-                    3.164304420351982117e-02,
-                    3.758744522929191589e-02,
-                    4.201003536581993103e-02,
-                    4.522579908370971680e-02,
-                    4.758085310459136963e-02,
-                    4.873823374509811401e-02,
-                    5.004395171999931335e-02,
-                    4.889755696058273315e-02,
-                    4.859539121389389038e-02,
-                    4.685382544994354248e-02,
-                    4.636486992239952087e-02,
-                    4.473684355616569519e-02,
-                    4.392923787236213684e-02,
-                    4.205032438039779663e-02,
-                    4.190198704600334167e-02,
-                    3.956525027751922607e-02,
-                    3.861114010214805603e-02,
-                    3.698311373591423035e-02,
-                    3.511701896786689758e-02,
-                    3.210086748003959656e-02,
-                    2.951690368354320526e-02,
-                    2.601728774607181549e-02,
-                    2.254880405962467194e-02,
-                    1.854924298822879791e-02,
-                ]
-            )
-            self.node_types = paddle.to_tensor(
-                [
-                    7.415896058082580566e-01,
-                    9.485986828804016113e-02,
-                    1.080681160092353821e-01,
-                    2.368708699941635132e-02,
-                    3.370510821696370840e-04,
-                    1.273731887340545654e-02,
-                    1.297908369451761246e-02,
-                    4.853925667703151703e-03,
-                    8.879197412170469761e-04,
-                ]
-            )
-            self.edge_types = paddle.to_tensor(
-                [
-                    9.066669344902038574e-01,
-                    4.404582828283309937e-02,
-                    5.253293085843324661e-03,
-                    3.737418155651539564e-04,
-                    4.366017505526542664e-02,
-                ]
-            )
-        elif self.dataflag == "n<25":
-            self.max_n_nodes = 29 if not self.remove_h else 25
-            self.max_weight = 390 if not self.remove_h else 998
-            self.n_nodes = paddle.to_tensor(
-                [
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    1.465040404582396150e-04,
-                    7.087133126333355904e-04,
-                    2.005274174734950066e-03,
-                    4.010548349469900131e-03,
-                    9.273706004023551941e-03,
-                    1.550195924937725067e-02,
-                    2.318426594138145447e-02,
-                    3.164304420351982117e-02,
-                    3.758744522929191589e-02,
-                    4.201003536581993103e-02,
-                    4.522579908370971680e-02,
-                    4.758085310459136963e-02,
-                    4.873823374509811401e-02,
-                    5.004395171999931335e-02,
-                    4.889755696058273315e-02,
-                    4.859539121389389038e-02,
-                    4.685382544994354248e-02,
-                    4.636486992239952087e-02,
-                    4.473684355616569519e-02,
-                    4.392923787236213684e-02,
-                    4.205032438039779663e-02,
-                    4.190198704600334167e-02,
-                    3.956525027751922607e-02,
-                    3.861114010214805603e-02,
-                    3.698311373591423035e-02,
-                    3.511701896786689758e-02,
-                    3.210086748003959656e-02,
-                    2.951690368354320526e-02,
-                    2.601728774607181549e-02,
-                    2.254880405962467194e-02,
-                    1.854924298822879791e-02,
-                ]
-            )
-            self.node_types = paddle.to_tensor(
-                [
-                    7.415896058082580566e-01,
-                    9.485986828804016113e-02,
-                    1.080681160092353821e-01,
-                    2.368708699941635132e-02,
-                    3.370510821696370840e-04,
-                    1.273731887340545654e-02,
-                    1.297908369451761246e-02,
-                    4.853925667703151703e-03,
-                    8.879197412170469761e-04,
-                ]
-            )
-            self.edge_types = paddle.to_tensor(
-                [
-                    9.066669344902038574e-01,
-                    4.404582828283309937e-02,
-                    5.253293085843324661e-03,
-                    3.737418155651539564e-04,
-                    4.366017505526542664e-02,
-                ]
-            )
-        elif self.dataflag == "n<35":
-            self.max_n_nodes = 29 if not self.remove_h else 35
-            self.max_weight = 390 if not self.remove_h else 1094
-            self.n_nodes = paddle.to_tensor(
-                [
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    0.000000000000000000e00,
-                    1.465040404582396150e-04,
-                    7.087133126333355904e-04,
-                    2.005274174734950066e-03,
-                    4.010548349469900131e-03,
-                    9.273706004023551941e-03,
-                    1.550195924937725067e-02,
-                    2.318426594138145447e-02,
-                    3.164304420351982117e-02,
-                    3.758744522929191589e-02,
-                    4.201003536581993103e-02,
-                    4.522579908370971680e-02,
-                    4.758085310459136963e-02,
-                    4.873823374509811401e-02,
-                    5.004395171999931335e-02,
-                    4.889755696058273315e-02,
-                    4.859539121389389038e-02,
-                    4.685382544994354248e-02,
-                    4.636486992239952087e-02,
-                    4.473684355616569519e-02,
-                    4.392923787236213684e-02,
-                    4.205032438039779663e-02,
-                    4.190198704600334167e-02,
-                    3.956525027751922607e-02,
-                    3.861114010214805603e-02,
-                    3.698311373591423035e-02,
-                    3.511701896786689758e-02,
-                    3.210086748003959656e-02,
-                    2.951690368354320526e-02,
-                    2.601728774607181549e-02,
-                    2.254880405962467194e-02,
-                    1.854924298822879791e-02,
-                ]
-            )
-            self.node_types = paddle.to_tensor(
-                [
-                    7.415896058082580566e-01,
-                    9.485986828804016113e-02,
-                    1.080681160092353821e-01,
-                    2.368708699941635132e-02,
-                    3.370510821696370840e-04,
-                    1.273731887340545654e-02,
-                    1.297908369451761246e-02,
-                    4.853925667703151703e-03,
-                    8.879197412170469761e-04,
-                ]
-            )
-            self.edge_types = paddle.to_tensor(
-                [
-                    9.066669344902038574e-01,
-                    4.404582828283309937e-02,
-                    5.253293085843324661e-03,
-                    3.737418155651539564e-04,
-                    4.366017505526542664e-02,
-                ]
-            )
-        else:
-            logger.message("invalid dataflag: %s", self.dataflag)
-        self.complete_infos(n_nodes=self.n_nodes, node_types=self.node_types)
-        self.valency_distribution = paddle.zeros(3 * self.max_n_nodes - 2)
-        if self.dataflag == "n<15":
-            if not self.remove_h:
-                self.valency_distribution[0:6] = paddle.to_tensor(
-                    [0, 0.5136, 0.0840, 0.0554, 0.3456, 0.0012]
-                )
-            else:
-                self.valency_distribution[0:7] = paddle.to_tensor(
-                    [
-                        0.000000000000000000e00,
-                        1.856458932161331177e-01,
-                        2.707855999469757080e-01,
-                        3.008204102516174316e-01,
-                        2.362315803766250610e-01,
-                        3.544347826391458511e-03,
-                        2.972166286781430244e-03,
-                    ]
-                )
-        elif self.dataflag == "n<20":
-            if not self.remove_h:
-                self.valency_distribution[0:6] = paddle.to_tensor(
-                    [0, 0.5136, 0.0840, 0.0554, 0.3456, 0.0012]
-                )
-            else:
-                self.valency_distribution[0:7] = paddle.to_tensor(
-                    [
-                        0.000000000000000000e00,
-                        1.382219046354293823e-01,
-                        2.489367425441741943e-01,
-                        3.354085683822631836e-01,
-                        2.695656120777130127e-01,
-                        3.342652227729558945e-03,
-                        4.524504765868186951e-03,
-                    ]
-                )
-        elif self.dataflag == "n<25":
-            if not self.remove_h:
-                self.valency_distribution[0:6] = paddle.to_tensor(
-                    [0, 0.5136, 0.0840, 0.0554, 0.3456, 0.0012]
-                )
-            else:
-                self.valency_distribution[0:7] = paddle.to_tensor(
-                    [
-                        0.000000000000000000e00,
-                        1.382219046354293823e-01,
-                        2.489367425441741943e-01,
-                        3.354085683822631836e-01,
-                        2.695656120777130127e-01,
-                        3.342652227729558945e-03,
-                        4.524504765868186951e-03,
-                    ]
-                )
-        elif self.dataflag == "n<35":
-            if not self.remove_h:
-                self.valency_distribution[0:6] = paddle.to_tensor(
-                    [0, 0.5136, 0.0840, 0.0554, 0.3456, 0.0012]
-                )
-            else:
-                self.valency_distribution[0:7] = paddle.to_tensor(
-                    [
-                        0.000000000000000000e00,
-                        1.382219046354293823e-01,
-                        2.489367425441741943e-01,
-                        3.354085683822631836e-01,
-                        2.695656120777130127e-01,
-                        3.342652227729558945e-03,
-                        4.524504765868186951e-03,
-                    ]
-                )
-        if recompute_statistics:
-            self.n_nodes = dataloaders.node_counts()
-            self.node_types = dataloaders.node_types()
-            self.edge_types = dataloaders.edge_counts()
-            self.valency_distribution = dataloaders.valency_count(self.max_n_nodes)
+        train_dataset = getattr(self._train_dataloader, "dataset", None)
+        cache_path = cfg.get("statistics_cache_path") or getattr(
+            train_dataset, "statistics_cache_path", None
+        )
+        if cache_path is not None:
+            cache_path = osp.abspath(os.fspath(cache_path))
 
-        self.train_smiles = get_train_smiles(
-            cfg, dataloaders.train_dataloader, self, evaluate_dataset=False
+        statistics = None
+        if not recompute_statistics and cache_path and osp.exists(cache_path):
+            statistics = paddle.load(cache_path)
+
+        distributed = dist.is_initialized() and dist.get_world_size() > 1
+        rank = dist.get_rank() if distributed else 0
+        if statistics is None and self._train_dataloader is not None:
+            if rank == 0 or cache_path is None:
+                bond_vocab = vocab["bond"]
+                bond_orders = np.zeros(bond_vocab["num_embeddings"], dtype=np.float64)
+                order_by_token = {
+                    "NO_BOND": 0.0,
+                    "SINGLE": 1.0,
+                    "DOUBLE": 2.0,
+                    "TRIPLE": 3.0,
+                    "AROMATIC": 1.5,
+                }
+                for token, index in bond_vocab["token_to_id"].items():
+                    bond_orders[index] = order_by_token[token]
+
+                logger.message(
+                    f"Computing training statistics for MSD-NMR {self.dataflag} ..."
+                )
+                statistics = dataloaders.statistics(
+                    num_node_types=self.num_atom_types,
+                    num_edge_types=bond_vocab["num_embeddings"],
+                    max_nodes_hint=cfg.get("max_atoms"),
+                    edge_mode=cfg["build_graph_cfg"]["__init_params__"].get(
+                        "edge_mode", "bidirectional"
+                    ),
+                    bond_orders=bond_orders,
+                    no_bond_id=bond_vocab["token_to_id"]["NO_BOND"],
+                )
+                if cache_path:
+                    os.makedirs(osp.dirname(cache_path) or ".", exist_ok=True)
+                    paddle.save(statistics, cache_path)
+                    logger.message(f"Cached dataset statistics to {cache_path}")
+            if distributed and cache_path:
+                dist.barrier()
+                if rank != 0:
+                    statistics = paddle.load(cache_path)
+
+        if statistics is None:
+            raise FileNotFoundError(
+                "MSD-NMR statistics are not cached; provide the training loader "
+                "to compute them on first use."
+            )
+
+        self.n_nodes = statistics["n_nodes"]
+        self.node_types = statistics["node_types"]
+        self.edge_types = statistics["edge_types"]
+        self.valency_distribution = statistics["valency_distribution"]
+        self.num_classes = len(self.node_types)
+        self.max_n_nodes = len(self.n_nodes) - 1
+        self.nodes_dist = DistributionNodes(self.n_nodes)
+
+    def load_train_smiles(self):
+        return get_train_smiles(
+            self._cfg,
+            self._train_dataloader,
+            self,
+            evaluate_dataset=False,
         )
 
-    def complete_infos(self, n_nodes, node_types):
-        self.input_dims = None
-        self.output_dims = None
-        self.num_classes = len(node_types)
-        self.max_n_nodes = len(n_nodes) - 1
-        self.nodes_dist = DistributionNodes(n_nodes)
 
-    def compute_input_output_dims(
-        self, dataloader, extra_features, domain_features, conditionDim=0
-    ):
-        data = next(iter(dataloader()))
-        graph = data["graph"]
-        spectrum = data["spectrum"]
-        property = data["property"]
-        ex_dense, node_mask = utils.to_dense(
-            paddle.to_tensor(graph.node_feat["feat"]),
-            paddle.to_tensor(graph.edges.T),
-            paddle.to_tensor(graph.edge_feat["feat"]),
-            paddle.to_tensor(graph.graph_node_id),
-        )
-        example_data = {
-            "X_t": ex_dense.X,
-            "E_t": ex_dense.E,
-            "y_t": spectrum,
-            "node_mask": node_mask,
-        }
-
-        self.input_dims = {
-            "X": graph.node_feat["feat"].shape[1],
-            "E": graph.edge_feat["feat"].shape[1],
-            "y": property["y"].shape[1] + 1,
-        }  # + 1 due to time conditioning
-        ex_extra_feat = extra_features(example_data)
-        self.input_dims["X"] += ex_extra_feat.X.shape[-1]
-        self.input_dims["E"] += ex_extra_feat.E.shape[-1]
-        self.input_dims["y"] += ex_extra_feat.y.shape[-1]
-
-        ex_extra_molecular_feat = domain_features(example_data)
-        self.input_dims["X"] += ex_extra_molecular_feat.X.shape[-1]
-        self.input_dims["E"] += ex_extra_molecular_feat.E.shape[-1]
-        self.input_dims["y"] += ex_extra_molecular_feat.y.shape[-1]
-
-        self.input_dims["y"] += conditionDim
-
-        self.output_dims = {
-            "X": graph.node_feat["feat"].shape[1],
-            "E": graph.edge_feat["feat"].shape[1],
-            "y": 0,
-        }
+def _get_msd_nmr_subdataset_name(data_flag: str):
+    if data_flag == "n<15":
+        return "msd_nmr_nless15"
+    if data_flag == "n<20":
+        return "msd_nmr_nless20"
+    if data_flag == "n<25":
+        return "msd_nmr_nless25"
+    if data_flag == "n<35":
+        return "msd_nmr_nless35"
+    raise ValueError(
+        f"Unknown data_flag: {data_flag}. Expected one of "
+        f"{'n<15', 'n<20', 'n<25', 'n<35'}."
+    )
 
 
 def get_train_smiles(cfg, dataloader, dataset_infos, evaluate_dataset=False):
     if evaluate_dataset:
-        assert (
-            dataset_infos is not None
-        ), "If wanting to evaluate dataset, need to pass dataset_infos"
-    if not osp.exists(cfg["datadir"]):
-        logger.message(
-            "The dataset directory is not found. Will save it to default path now."
-        )
-        root_path = download.get_datasets_path_from_url(
-            MSDnmrDataset.url, MSDnmrDataset.md5
-        )
-        path = osp.join(root_path, MSDnmrDataset.name, osp.basename(cfg["datadir"]))
-        if cfg["data_flag"] == "n<15":
-            subdataset_name = "msd_nmr_nless15"
-        elif cfg["data_flag"] == "n<20":
-            subdataset_name = "msd_nmr_nless20"
-        elif cfg["data_flag"] == "n<30":
-            subdataset_name = "msd_nmr_nless30"
-        elif cfg["data_flag"] == "n<35":
-            subdataset_name = "msd_nmr_nless35"
-        else:
-            raise ValueError(
-                f"Unknown data_flag: {cfg['data_flag']}. Expected one of "
-                f"{'n<15', 'n<20', 'n<30', 'n<35'}."
-            )
-        path = osp.join(root_path, MSDnmrDataset.name, subdataset_name)
+        assert dataset_infos is not None
 
     remove_h = cfg["build_graph_cfg"]["__init_params__"]["remove_h"]
-    atom_decoder = dataset_infos.atom_decoder
+    file_name = "train_smiles_no_h.npy" if remove_h else "train_smiles_h.npy"
+    dataset = getattr(dataloader, "dataset", None)
+    cache_dir = getattr(dataset, "cache_path", None)
 
-    smiles_file_name = "train_smiles_no_h.npy" if remove_h else "train_smiles_h.npy"
-    smiles_path = os.path.join(path + "_cache", "train", smiles_file_name)
-    if os.path.exists(smiles_path):
-        logger.message("Dataset smiles were found")
+    if cache_dir is None and cfg.get("datadir") and osp.isdir(cfg["datadir"]):
+        subset_dir = cfg["datadir"]
+        if not osp.isfile(osp.join(subset_dir, "train.csv")):
+            subset_dir = osp.join(
+                subset_dir, _get_msd_nmr_subdataset_name(cfg["data_flag"])
+            )
+        cache_dir = osp.join(subset_dir + "_cache", "train")
+
+    smiles_path = osp.join(cache_dir, file_name) if cache_dir else None
+    if smiles_path and osp.exists(smiles_path):
+        train_smiles = np.load(smiles_path)
+    elif dataloader is None:
+        resource = TRAIN_SMILES_REGISTRY[(cfg["data_flag"], remove_h)]
+        smiles_path = download.get_datasets_path_from_url(
+            resource["url"], resource["md5"]
+        )
         train_smiles = np.load(smiles_path)
     else:
-        logger.message("Computing dataset smiles...")
-        train_smiles = compute_MSDnmr_smiles(atom_decoder, dataloader, remove_h)
-        np.save(smiles_path, np.array(train_smiles))
+        if smiles_path is None:
+            raise ValueError("MSD-NMR train SMILES require a dataset cache path.")
+        if dist.get_rank() == 0:
+            train_smiles = compute_MSDnmr_smiles(
+                dataset_infos.atom_decoder,
+                dataloader,
+                remove_h,
+                bond_decoder=dataset_infos.vocab["bond"],
+            )
+            os.makedirs(osp.dirname(smiles_path), exist_ok=True)
+            np.save(smiles_path, np.asarray(train_smiles))
+        if dist.is_initialized():
+            dist.barrier()
+        train_smiles = np.load(smiles_path)
 
     if evaluate_dataset:
         all_molecules = []
-        for i, data in enumerate(dataloader):
+        for data in dataloader:
             dense_data, node_mask = utils.to_dense(
                 data.x, data.edge_index, data.edge_attr, data.graph_node_id
             )
             dense_data = dense_data.mask(node_mask, collapse=True)
             X, E = dense_data.X, dense_data.E
-            for k in range(X.shape[0]):
-                n = int(paddle.sum((X != -1)[k, :]))
-                atom_types = X[k, :n].cpu()
-                edge_types = E[k, :n, :n].cpu()
-                all_molecules.append([atom_types, edge_types])
-        logger.message(
-            "Evaluating the dataset -- number of molecules to evaluate",
-            len(all_molecules),
-        )
+            for index in range(X.shape[0]):
+                num_nodes = int(paddle.sum((X != -1)[index]))
+                all_molecules.append(
+                    [X[index, :num_nodes].cpu(), E[index, :num_nodes, :num_nodes].cpu()]
+                )
         metrics = compute_molecular_metrics(
             molecule_list=all_molecules,
             train_smiles=train_smiles,
@@ -1408,17 +960,24 @@ def get_train_smiles(cfg, dataloader, dataset_infos, evaluate_dataset=False):
     return train_smiles
 
 
-def compute_MSDnmr_smiles(atom_decoder, dataloader, remove_h):
+def compute_MSDnmr_smiles(atom_decoder, dataloader, remove_h, bond_decoder=None):
     logger.message(f"Converting MSDnmr dataset to SMILES for remove_h={remove_h}...")
     mols_smiles = []
-    len_train = len(dataloader)
+    dataset = getattr(dataloader, "dataset", None)
+    batches = (
+        (dataset[index] for index in range(len(dataset)))
+        if dataset is not None
+        else iter(dataloader)
+    )
+    len_train = len(dataset) if dataset is not None else len(dataloader)
     invalid = 0
     disconnected = 0
-    for i, batch in enumerate(dataloader):
+    for i, batch in enumerate(batches):
         RDLogger.DisableLog("rdApp.*")
         if i % 1000 == 0:
             logger.message(
-                f"Converting MSDnmr dataset to SMILES {float(i)/len_train:.2%}"
+                f"Converting MSDnmr dataset to SMILES "
+                f"{float(i)/max(len_train, 1):.2%}"
             )
 
         logger.info(f"compute_MSDnmr_smiles i: {i:d}")
@@ -1439,7 +998,10 @@ def compute_MSDnmr_smiles(atom_decoder, dataloader, remove_h):
             molecule_list.append([atom_types, edge_types])
         for _, molecule in enumerate(molecule_list):
             mol = build_molecule_with_partial_charges(
-                molecule[0], molecule[1], atom_decoder
+                molecule[0],
+                molecule[1],
+                atom_decoder,
+                bond_decoder=bond_decoder,
             )
             smile = mol2smiles(mol)
             if smile is not None:
@@ -1466,76 +1028,77 @@ class DataLoaderCollection:
         self.val_dataloader = val_dataloader
         self.test_dataloader = test_dataloader
 
-    def node_counts(self, max_nodes_possible=300):
-        all_counts = paddle.zeros(max_nodes_possible)
-        for loader in [self.train_dataloader(), self.val_dataloader()]:
-            for data, other_data in loader:
-                unique, counts = np.unique(data.graph_node_id, return_counts=True)
-                for count in counts:
-                    all_counts[count] += 1
-        max_index = max(all_counts.nonzero())
-        all_counts = all_counts[: max_index + 1]
-        all_counts = all_counts / all_counts.sum()
-        return all_counts
+    def statistics(
+        self,
+        num_node_types,
+        num_edge_types,
+        max_nodes_hint=None,
+        *,
+        edge_mode="bidirectional",
+        bond_orders=None,
+        no_bond_id=0,
+    ):
+        """Compute graph histograms from each training sample exactly once."""
 
-    def node_types(self):
-        num_classes = None
-        for data, other_data in self.train_dataloader():
-            num_classes = data.node_feat["feat"].shape[1]
-            break
+        dataset = self.train_dataloader.dataset
+        node_counts = np.zeros(int(max_nodes_hint or 0) + 1, dtype=np.float64)
+        node_types = np.zeros(num_node_types, dtype=np.float64)
+        edge_types = np.zeros(num_edge_types, dtype=np.float64)
+        valencies = []
 
-        counts = paddle.zeros(num_classes)
+        for index in range(len(dataset)):
+            graph = dataset[index]["graph"]
+            node_feat = np.asarray(graph.node_feat["feat"])
+            edges = np.asarray(graph.edges)
+            edge_feat = np.asarray(graph.edge_feat["feat"])
+            num_nodes = node_feat.shape[0]
 
-        for i, (data, other_data) in enumerate(self.train_dataloader()):
-            counts += data.node_feat["feat"].sum(axis=0)
+            if num_nodes >= len(node_counts):
+                node_counts = np.pad(node_counts, (0, num_nodes + 1 - len(node_counts)))
+            node_counts[num_nodes] += 1
+            node_types += node_feat.sum(axis=0)
 
-        counts = counts / counts.sum()
-        return counts
+            non_self = edges[:, 0] != edges[:, 1]
+            edges = edges[non_self]
+            edge_feat = edge_feat[non_self]
+            all_pairs = num_nodes * (num_nodes - 1)
+            if edge_mode == "undirected":
+                all_pairs //= 2
+            edge_types += edge_feat.sum(axis=0)
+            edge_types[no_bond_id] += all_pairs - len(edges)
 
-    def edge_counts(self):
-        num_classes = None
-        for data, other_data in self.train_dataloader():
-            num_classes = data.edge_feat["feat"].shape[1]
-            break
+            node_valencies = np.zeros(num_nodes, dtype=np.float64)
+            seen_pairs = set()
+            for edge, edge_type in zip(edges, edge_feat):
+                source, target = map(int, edge)
+                pair = (min(source, target), max(source, target))
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                order = float(edge_type @ bond_orders)
+                node_valencies[source] += order
+                node_valencies[target] += order
+            valencies.extend(node_valencies.astype(np.int64).tolist())
 
-        d = paddle.zeros(num_classes, dtype=paddle.float32)
-
-        for i, (data, other_data) in enumerate(self.train_dataloader()):
-            unique, counts = np.unique(data.graph_node_id, return_counts=True)
-
-            all_pairs = 0
-            for count in counts:
-                all_pairs += count * (count - 1)
-
-            num_edges = data.edges.T.shape[1]
-            num_non_edges = all_pairs - num_edges
-
-            edge_types = data.edge_feat["feat"].sum(axis=0)
-            assert num_non_edges >= 0
-            d[0] += num_non_edges
-            d[1:] += edge_types[1:]
-
-        d = d / d.sum()
-        return d
-
-    def valency_count(self, max_n_nodes):
-        valencies = paddle.zeros(
-            3 * max_n_nodes - 2
-        )  # Max valency possible if everything is connected
-
-        # No bond, single bond, double bond, triple bond, aromatic bond
-        multiplier = paddle.to_tensor([0, 1, 2, 3, 1.5])
-
-        for data, other_data in self.train_dataloader():
-            n = data.node_feat["feat"].shape[0]
-
-            for atom in range(n):
-                edges = data.edge_feat["feat"][data.edges.T[0] == atom]
-                edges_total = edges.sum(axis=0)
-                valency = (edges_total * multiplier).sum()
-                valencies[valency.astype("int64").item()] += 1
-        valencies = valencies / valencies.sum()
-        return valencies
+        max_nodes = np.flatnonzero(node_counts)[-1]
+        node_counts = node_counts[: max_nodes + 1]
+        valency_counts = np.bincount(
+            valencies, minlength=max(1, 3 * max_nodes - 2)
+        ).astype(np.float64)
+        return {
+            "n_nodes": paddle.to_tensor(
+                node_counts / node_counts.sum(), dtype="float32"
+            ),
+            "node_types": paddle.to_tensor(
+                node_types / node_types.sum(), dtype="float32"
+            ),
+            "edge_types": paddle.to_tensor(
+                edge_types / edge_types.sum(), dtype="float32"
+            ),
+            "valency_distribution": paddle.to_tensor(
+                valency_counts / valency_counts.sum(), dtype="float32"
+            ),
+        }
 
 
 class DistributionNodes(object):
@@ -1564,52 +1127,3 @@ class DistributionNodes(object):
         probas = p[batch_n_nodes]
         log_p = paddle.log(x=probas + 1e-30)
         return log_p
-
-
-class SelecTargetTransform:
-    """Dynamically select specific dimensions or targets from the data."""
-
-    def __init__(
-        self,
-        target_indices: Union[int, Tuple[int, ...]],
-        apply_keys: Tuple[str, ...] = ("input", "label"),
-    ):
-        if isinstance(target_indices, int):
-            target_indices = (target_indices,)
-        self.target_indices = target_indices
-        self.apply_keys = apply_keys
-
-    def __call__(self, data):
-        for key in self.apply_keys:
-            assert key in data, f"Key {key} does not exist in data."
-            target = data[key]
-            if isinstance(target, np.ndarray):
-                data[key] = target[..., self.target_indices]
-        return data
-
-
-class RemoveYTransform:
-    def __init__(self):
-        pass
-
-    def __call__(self, data):
-        data.y = np.zeros((1, 0), dtype="float32")
-        return data
-
-
-class SelectMuTransform:
-    def __init__(self):
-        pass
-
-    def __call__(self, data):
-        data.y = data.y[..., :1]
-        return data
-
-
-class SelectHOMOTransform:
-    def __init__(self):
-        pass
-
-    def __call__(self, data):
-        data.y = data.y[..., 1:]
-        return data

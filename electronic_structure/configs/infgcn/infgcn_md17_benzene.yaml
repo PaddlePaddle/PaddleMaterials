@@ -3,12 +3,23 @@ Global:
   do_eval: True
   do_test: True
   use_voxel: False
+  graph_converter:
+    __class_name__: RadiusGraphConverter
+    __init_params__:
+      cutoff: 3.0
+      max_num_neighbors: 32
+      inclusive_cutoff: true
+      include_distance: false
+  build_field_cfg:
+    format: cube
+    name: density
+    num_cpus: 10
 
 Trainer:
   # Max epochs to train
-  max_epochs: 32
+  max_epochs: 1000
   # Max iteration which equals to steps * epoches, to early stop
-  max_iter: 10000
+  max_iter: 2000
   # Random seed
   seed: 42
   # Save path for checkpoints and logs
@@ -16,7 +27,11 @@ Trainer:
   # Save frequency [epoch], for example, save_freq=10 means save checkpoints every 10 epochs
   save_freq: 2000
   # Logging frequency [step], for example, log_freq=10 means log every 10 steps
-  log_freq: 1
+  log_freq: 10000
+  # Optional step-based cadence; used when one epoch is much larger than the
+  # desired validation/checkpoint interval. These are generic Trainer options.
+  eval_freq_steps: 20
+  save_freq_steps: 100
 
   # Start evaluation epoch, for example, start_eval_epoch=10 means start evaluation from epoch 10
   start_eval_epoch: 0
@@ -44,7 +59,7 @@ Trainer:
 
   # best metric indicator, you can choose from "train_loss", "eval_loss", "train_metric", "eval_metric"
   best_metric_indicator: 'eval_loss' # "train_loss", "eval_loss", "train_metric", "eval_metric"
-  # The name of the best metric, since you may have multiple metrics, such as "mae", "rmse", "mape"
+  # Select the best checkpoint by InfGCN normalized MAE from loss_dict.
   name_for_best_metric: "mae"
   # The metric whether is better when it is greater
   greater_is_better: False
@@ -61,20 +76,23 @@ Trainer:
 Model:
   __class_name__: InfGCN
   __init_params__:
-    n_atom_type: 3
     num_radial: 16
     num_spherical: 7
     radial_embed_size: 64
     radial_hidden_size: 128
     num_radial_layer: 2
     num_gcn_layer: 3
-    cutoff: 3.0
-    grid_cutoff: 3.0
+    atom_graph_cutoff: 3.0
+    atom_grid_cutoff: 3.0
     is_fc: false
     gauss_start: 0.5
     gauss_end: 5.0
     residual: true
+    periodic_mode: none
+    # Eval-only decoder memory limit (predict.py uses grid_batch_size instead).
+    inference_grid_point_budget: 16384
 
+Vocabulary: infgcn_md17
 
 Optimizer:
   __class_name__: Adam
@@ -92,68 +110,67 @@ Optimizer:
     weight_decay: 0.0
     beta1: 0.9
     beta2: 0.999
+  clip_norm_global: 100.0
 
 Dataset:
   train:
     dataset:
-      __class_name__: SmallDensityDataset
+      __class_name__: MD17DensityDataset
       __init_params__:
-        root: ./data/data_md #
-        mol_name: benzene
+        path: ./data/data_md/benzene/benzene_train
         split: "train"
+        build_graph_cfg: ${Global.graph_converter}
+        grid_sampler_cfg:
+          n_samples: 1024
+          sampling_mode: random
     sampler:
       __class_name__: BatchSampler
       __init_params__:
         shuffle: True
         drop_last: False
-        batch_size: 16
+        batch_size: 64
     loader:
       num_workers: 4
       use_shared_memory: False
-      collate_fn: DensityCollator # DensityVoxelCollator # if use voxel
-      collate_params:
-        n_samples: 2048
+      collate_fn: DensityCollator
   val:
     dataset:
-      __class_name__: SmallDensityDataset
+      __class_name__: MD17DensityDataset
       __init_params__:
-        root: ./data/data_md
-        mol_name: benzene
+        path: ./data/data_md/benzene/benzene_test
         split: "validation"
+        build_graph_cfg: ${Global.graph_converter}
+        grid_sampler_cfg:
+          n_samples: 1024
+          sampling_mode: random
     sampler:
       __class_name__: BatchSampler
       __init_params__:
         shuffle: True
         drop_last: False
-        batch_size: 16
+        batch_size: 64
     loader:
       num_workers: 8
       use_shared_memory: False
-      collate_fn: DensityCollator # DensityVoxelCollator # if use voxel
-      collate_params:
-        n_samples: 2048
+      collate_fn: DensityCollator
   test:
     dataset:
-      __class_name__: SmallDensityDataset
+      __class_name__: MD17DensityDataset
       __init_params__:
-        root: ./data/data_md
-        mol_name: benzene
+        path: ./data/data_md/benzene/benzene_test
         split: "test"
+        build_graph_cfg: ${Global.graph_converter}
     sampler:
       __class_name__: BatchSampler
       __init_params__:
-        shuffle: True
+        shuffle: False
         drop_last: False
         batch_size: 1
     loader:
       num_workers: 2
       use_shared_memory: False
-      collate_fn: DensityCollator # DensityVoxelCollator # if use voxel
-      collate_params:
-        n_samples: 2048 # recommend set blank if have enough gpu memory
-
+      collate_fn: DensityCollator
 Predict:
-  eval_with_no_grad: True
-  num_infer: null
-  num_vis: 2
-  inf_samples: 4096
+  graph_converter: ${Global.graph_converter}
+  build_field_cfg: ${Global.build_field_cfg}
+  grid_batch_size: 4096

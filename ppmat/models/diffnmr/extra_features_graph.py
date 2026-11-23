@@ -18,6 +18,8 @@ from ppmat.models.diffnmr.utils import diffgraphformer_utils
 
 
 class DummyExtraFeatures:
+    output_dims = {"X": 0, "E": 0, "y": 0}
+
     def __init__(self):
         """This class does not compute anything, just returns empty tensors."""
 
@@ -40,6 +42,11 @@ class ExtraFeatures:
         self.features_type = extra_features_type
         if extra_features_type in ["eigenvalues", "all"]:
             self.eigenfeatures = EigenFeatures(mode=extra_features_type)
+        self.output_dims = {
+            "cycles": {"X": 3, "E": 0, "y": 5},
+            "eigenvalues": {"X": 3, "E": 0, "y": 11},
+            "all": {"X": 6, "E": 0, "y": 11},
+        }[extra_features_type]
 
     def __call__(self, noisy_data):
         # n: (bs,1)

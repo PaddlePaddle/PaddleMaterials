@@ -3,12 +3,24 @@ Global:
   do_eval: True
   do_test: True
   use_voxel: False
+  graph_converter:
+    __class_name__: RadiusGraphConverter
+    __init_params__:
+      cutoff: 5.0
+      max_num_neighbors: 32
+      inclusive_cutoff: true
+      include_distance: false
+  build_field_cfg:
+    format: json
+    name: density
+    num_cpus: 10
+  cache_num_workers: 8
 
 Trainer:
   # Max epochs to train
-  max_epochs: 2
+  max_epochs: 1000
   # Max iteration which equals to steps * epoches, to early stop
-  max_iter: 100000
+  max_iter: 10000
   # Random seed
   seed: 42
   # Save path for checkpoints and logs
@@ -16,7 +28,9 @@ Trainer:
   # Save frequency [epoch], for example, save_freq=10 means save checkpoints every 10 epochs
   save_freq: 2000
   # Logging frequency [step], for example, log_freq=10 means log every 10 steps
-  log_freq: 1
+  log_freq: 10
+  eval_freq_steps: 100
+  save_freq_steps: 500
 
   # Start evaluation epoch, for example, start_eval_epoch=10 means start evaluation from epoch 10
   start_eval_epoch: 0
@@ -44,7 +58,7 @@ Trainer:
 
   # best metric indicator, you can choose from "train_loss", "eval_loss", "train_metric", "eval_metric"
   best_metric_indicator: 'eval_loss' # "train_loss", "eval_loss", "train_metric", "eval_metric"
-  # The name of the best metric, since you may have multiple metrics, such as "mae", "rmse", "mape"
+  # Select the best checkpoint by InfGCN normalized MAE from loss_dict.
   name_for_best_metric: "mae"
   # The metric whether is better when it is greater
   greater_is_better: False
@@ -61,20 +75,23 @@ Trainer:
 Model:
   __class_name__: InfGCN
   __init_params__:
-    n_atom_type: 84
     num_radial: 16
     num_spherical: 7
     radial_embed_size: 64
     radial_hidden_size: 128
     num_radial_layer: 2
     num_gcn_layer: 3
-    cutoff: 3.0
-    grid_cutoff: 3.0
+    atom_graph_cutoff: 5.0
     is_fc: false
     gauss_start: 0.5
     gauss_end: 5.0
-    residual: true
+    residual: false
+    # Reproduce the paper's periodic orbital minimum-image convention.
+    periodic_mode: minimum_image
+    # Eval-only decoder memory limit (predict.py uses grid_batch_size instead).
+    inference_grid_point_budget: 16384
 
+Vocabulary: infgcn_mp
 
 Optimizer:
   __class_name__: Adam
@@ -82,9 +99,9 @@ Optimizer:
     lr:
       __class_name__: ReduceOnPlateau
       __init_params__:
-        learning_rate: 0.001
+        learning_rate: 0.005
         factor: 0.5
-        patience: 10
+        patience: 5
         min_lr: 0.00001
         by_epoch: True
         indicator: "eval_loss"
@@ -92,81 +109,76 @@ Optimizer:
     weight_decay: 0.0
     beta1: 0.9
     beta2: 0.999
+  clip_norm_global: 100.0
 
 Dataset:
   train:
     dataset:
-      __class_name__: DensityDataset
+      __class_name__: MPCubicDensityDataset
       __init_params__:
-        root: ./data/data_cubic
-        split_file: crystal_data_split.json
-        atom_file:  ./data/data_cubic/crystal.json
-        extension: json
-        compression: xz
-        pbc: false
+        path: ./data/crystal_data_split.json
         split: "train"
-        enable_cache: false # if have enough space, set true, which is not completely tested in this dataset
+        build_field_cfg: ${Global.build_field_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+        cache_num_workers: ${Global.cache_num_workers}
         overwrite: false
+        grid_sampler_cfg:
+          n_samples: 1024
+          sampling_mode: random
     sampler:
       __class_name__: BatchSampler
       __init_params__:
         shuffle: True
         drop_last: True
-        batch_size: 16
+        batch_size: 32
     loader:
       num_workers: 0
       use_shared_memory: False
       collate_fn: DensityCollator
-      collate_params:
-        n_samples: 1024
   val:
     dataset:
-      __class_name__: DensityDataset
+      __class_name__: MPCubicDensityDataset
       __init_params__:
-        root: ./data/data_cubic
-        split_file: crystal_data_split.json
-        atom_file:  ./data/data_cubic/crystal.json
-        extension: json
-        compression: xz
-        pbc: false
+        path: ./data/crystal_data_split.json
         split: "validation"
-        enable_cache: false # if have enough space, set true, which is not completely tested in this dataset
+        build_field_cfg: ${Global.build_field_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+        cache_num_workers: ${Global.cache_num_workers}
         overwrite: false
+        grid_sampler_cfg:
+          n_samples: 2048
+          sampling_mode: random
     sampler:
       __class_name__: BatchSampler
       __init_params__:
-        shuffle: True
+        shuffle: False
         drop_last: False
-        batch_size: 6 # recommend >2 <=6, on V100 16G GPU
+        batch_size: 32
     loader:
       num_workers: 0
       use_shared_memory: False
       collate_fn: DensityCollator
-      collate_params:
-        n_samples: 4096
   test:
     dataset:
-      __class_name__: DensityDataset
+      __class_name__: MPCubicDensityDataset
       __init_params__:
-        root: ./data/data_cubic
-        split_file: crystal_data_split.json
-        atom_file:  ./data/data_cubic/crystal.json
-        extension: json
-        compression: xz
-        pbc: false
+        path: ./data/crystal_data_split.json
         split: "test"
-        rotate: false
-        enable_cache: false # if have enough space, set true, which is not completely tested in this dataset
+        build_field_cfg: ${Global.build_field_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+        cache_num_workers: ${Global.cache_num_workers}
         overwrite: false
     sampler:
       __class_name__: BatchSampler
       __init_params__:
-        shuffle: True
+        shuffle: False
         drop_last: False
         batch_size: 1
     loader:
       num_workers: 0
       use_shared_memory: False
-      collate_fn: DensityCollator # DensityVoxelCollator # if use voxel
-      collate_params:
-        n_samples: 2048 # recommend set blank if have enough gpu memory
+      collate_fn: DensityCollator
+Predict:
+  graph_converter: ${Global.graph_converter}
+  build_field_cfg: ${Global.build_field_cfg}
+  grid_batch_size: 4096

@@ -30,4 +30,4 @@ Machine Learning Electronic Structure (MLES) is an emerging paradigm in computat
 | QM9_EC                                       |      ✅    |
 | OMol25_EC                                    |      ✅    |
 
-**Notice**:🌟 represent originate research work published from paddlematerials toolkit
+**Legend:** ✅ Verified · 🧪 Implemented, pending validation · 🚧 In development · `-` Not supported · 🌟 Original Work

@@ -15,6 +15,8 @@
 import os
 import os.path as osp
 from typing import Optional
+from typing import Sequence
+from typing import Union
 
 import paddle
 import pandas as pd
@@ -28,13 +30,15 @@ from ppmat.models import build_model
 from ppmat.models import build_model_from_name
 from ppmat.utils import logger
 from ppmat.utils import save_load
+from ppmat.utils.download import is_url
+from ppmat.utils.execution import configure_execution_backend
+from ppmat.vocab import build_vocab
+
+PathLike = Union[str, os.PathLike]
 
 
 class BasePredictor:
-    """
-
-    This class provides an interface for predicting properties of crystalline
-    structures using pre-trained deep learning models.
+    """Common model loading and runtime behavior for predictors.
 
     Supports two initialization modes:
 
@@ -67,76 +71,140 @@ class BasePredictor:
             Defaults to None.
 
         checkpoint_path (Optional[str], optional):
-            Path to model checkpoint file
-            (.pdparams) for custom models. Required when not using predefined
-            `model_name`. Defaults to None.
+            Path to a model checkpoint file (.pdparams) for custom models. If omitted,
+            `Predict.checkpoint_path` from the config is used. Defaults to None.
     """
 
     def __init__(
         self,
         model_name: Optional[str] = None,
         weights_name: Optional[str] = None,
-        config_path: Optional[str] = None,
-        checkpoint_path: Optional[str] = None,
-        work_dir: Optional[str] = None,
-        device: Optional[str] = "cpu",
+        config_path: Optional[PathLike] = None,
+        checkpoint_path: Optional[PathLike] = None,
+        work_dir: Optional[PathLike] = None,
+        device: Optional[str] = None,
+        config_overrides: Optional[Sequence[str]] = None,
     ):
-
+        work_dir = work_dir or ""
+        self.work_dir = work_dir
         self.model_name = model_name
         self.device = device
-        self.config_path = config_path and osp.join(work_dir, config_path)
-        self.checkpoint_path = checkpoint_path and osp.join(work_dir, checkpoint_path)
-        self.weights_name = weights_name and osp.join(work_dir, weights_name)
+        self.config_path = self._resolve_work_path(config_path)
+        self.checkpoint_path = self._resolve_work_path(checkpoint_path)
+        self.weights_name = weights_name
+        self.config_overrides = config_overrides
+
+    def _resolve_work_path(self, path: Optional[PathLike]) -> Optional[str]:
+        if path is None:
+            return path
+        path = os.fspath(path)
+        if osp.isabs(path) or is_url(path):
+            return path
+        return osp.join(self.work_dir, path)
 
     def load_inference_model(self, interface_type: Optional[str] = None):
-        # if model_name is not None,
-        # then config_path and checkpoint_path must be provided
+        if self.device is not None:
+            paddle.set_device(self.device)
+        self.device = paddle.get_device()
         if self.model_name is None:
-            assert self.config_path is not None and self.checkpoint_path is not None, (
-                "config_path and checkpoint_path must be provided "
-                "when model_name is None."
-            )
-            logger.info(
-                f"Loading configuration from {self.config_path} "
-                f"and model from {self.checkpoint_path}."
-            )
+            if self.config_path is None:
+                raise ValueError("config_path is required when model_name is not set.")
+            if self.weights_name is not None:
+                raise ValueError("weights_name can only be used with model_name.")
 
             config = OmegaConf.load(self.config_path)
+            if self.config_overrides:
+                config = OmegaConf.merge(
+                    config, OmegaConf.from_dotlist(self.config_overrides)
+                )
             config = OmegaConf.to_container(config, resolve=True)
 
+            checkpoint_path = self.checkpoint_path
+            if checkpoint_path is None:
+                checkpoint_path = (config.get("Predict") or {}).get("checkpoint_path")
+                checkpoint_path = self._resolve_work_path(checkpoint_path)
+            if checkpoint_path is None:
+                raise ValueError(
+                    "checkpoint_path is required when the config does not define "
+                    "Predict.checkpoint_path."
+                )
+            logger.info(f"Loading model weights from {checkpoint_path}.")
             model_config = config.get("Model", None)
             assert model_config is not None, "Model config must be provided."
             if interface_type:
                 model_config = self.modify_model_config(interface_type, model_config)
             else:
                 logger.info("No interface, use the model directly")
-            model = build_model(model_config)
-            save_load.load_pretrain(model, self.checkpoint_path)
+            vocab = build_vocab(config.get("Vocabulary"))
+            model = build_model(model_config, vocab=vocab)
+            save_load.load_pretrain(model, checkpoint_path)
         else:
+            if self.config_path is not None or self.checkpoint_path is not None:
+                raise ValueError(
+                    "config_path and checkpoint_path cannot be combined with "
+                    "model_name."
+                )
+            unsupported_overrides = []
+            for item in self.config_overrides or ():
+                key = item.split("=", 1)[0]
+                root = key.split(".", 1)[0]
+                if root not in {"Predict", "Dataset", "Execution"}:
+                    unsupported_overrides.append(item)
+            if unsupported_overrides:
+                raise ValueError(
+                    "Registered-model overrides only support Predict.*, Dataset.*, "
+                    "and Execution.*; use config_path and checkpoint_path for other "
+                    f"changes. Unsupported overrides: {unsupported_overrides}."
+                )
             logger.info("Since model_name is given, downloading it...")
-            model, config = build_model_from_name(self.model_name, self.weights_name)
             if interface_type:
-                model_config = config.get("Model")
-                config["Model"] = self.modify_model_config(interface_type, model_config)
+                model, config = build_model_from_name(
+                    self.model_name,
+                    self.weights_name,
+                    model_config_modifier=lambda model_config: (
+                        self.modify_model_config(interface_type, model_config)
+                    ),
+                )
             else:
+                model, config = build_model_from_name(
+                    self.model_name, self.weights_name
+                )
+            if self.config_overrides:
+                config = OmegaConf.merge(
+                    OmegaConf.create(config),
+                    OmegaConf.from_dotlist(self.config_overrides),
+                )
+                config = OmegaConf.to_container(config, resolve=True)
+            if not interface_type:
                 logger.info("No interface, use the model directly")
 
         self.model = model
         self.config = config
+        self.vocab = build_vocab(config.get("Vocabulary"))
 
+        self.predict_config = config.get("Predict") or {}
+        execution_config = config.get("Execution") or {}
+        self.execution_backend = configure_execution_backend(
+            self.model,
+            execution_config.get("backend"),
+            init_params=execution_config.get("__init_params__"),
+            world_size=paddle.distributed.get_world_size(),
+            owner="Predictor",
+        )
+        # Backend selection may replace the callable used for the forward pass.
+        # Apply eval mode after that hook so the runtime sees the same contract.
         self.model.eval()
 
-        self.predict_config = config.get("Predict", None)
         self.eval_with_no_grad = self.predict_config.get("eval_with_no_grad", True)
 
-        if self.predict_config is not None:
-            graph_converter_config = self.predict_config.get("graph_converter", None)
-            if graph_converter_config is not None:
-                self.graph_converter_fn = build_graph_converter(graph_converter_config)
-        else:
-            self.graph_converter_fn = None
+        self.graph_converter_fn = None
+        graph_converter_config = self.predict_config.get("graph_converter")
+        if graph_converter_config is not None:
+            self.graph_converter_fn = build_graph_converter(
+                graph_converter_config, vocab=self.vocab
+            )
 
-        self.post_transforms_cfg = self.predict_config.get("post_transforms", None)
+        self.post_transforms_cfg = self.predict_config.get("post_transforms")
         if self.post_transforms_cfg is not None:
             self.post_transforms = build_post_transforms(self.post_transforms_cfg)
         else:
@@ -219,6 +287,14 @@ class BasePredictor:
             return data
         return self.post_transforms(data)
 
+    def _run_model(self, data):
+        if self.eval_with_no_grad:
+            with paddle.no_grad():
+                output = self.model.predict(data)
+        else:
+            output = self.model.predict(data)
+        return self.post_process(output)
+
     def get_predict(
         self,
         files: list,
@@ -228,13 +304,7 @@ class BasePredictor:
         for structure in tqdm(structures):
             data = self.graph_converter(structure)
             data = data.tensor()
-            if self.eval_with_no_grad:
-                with paddle.no_grad():
-                    out = self.model.predict(data)
-            else:
-                out = self.model.predict(data)
-            out = self.post_process(out)
-            results.append(out)
+            results.append(self._run_model(data))
 
         # save file names and output to csv file
         if not results:

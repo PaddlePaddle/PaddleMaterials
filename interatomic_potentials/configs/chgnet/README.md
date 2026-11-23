@@ -188,12 +188,36 @@ python interatomic_potentials/train.py -c interatomic_potentials/configs/chgnet/
 
 
 # Mode 1: Leverage a pre-trained machine learning model for crystal shear moduli prediction. The implementation includes automated model download functionality, eliminating the need for manual configuration.
-python interatomic_potentials/predict.py --model_name='chgnet_mptrj' --cif_file_path='./interatomic_potentials/example_data/cifs/'
+python interatomic_potentials/predict.py --model_name='chgnet_mptrj' --input_format=cif --input_path='./interatomic_potentials/example_data/cifs/'
 
 # Mode2: Use a custom configuration file and checkpoint for crystal shear moduli prediction. This approach allows for more flexibility and customization.
 python interatomic_potentials/predict.py --config_path='interatomic_potentials/configs/chgnet/chgnet_mptrj.yaml' --checkpoint_path="your checkpoint path(*.pdparams)"
 ```
 
+
+## CINN execution
+
+Forces and stress are differentiated inside the compiled boundary, and SOT capture can split
+`paddle.grad` from its input. When running this model with `Execution.backend=cinn`, set
+`Execution.__init_params__.full_graph=true` so that the whole boundary is captured as one graph:
+
+```yaml
+Execution:
+  backend: cinn
+  __init_params__:
+    full_graph: true
+    dynamic_shape: true  # default
+```
+
+Without `full_graph`, CINN fails for force or stress predictions with an error about an input that
+does not appear in the backward graph. Energy-only predictions can use the default SOT capture.
+
+The boundary declares its bond (directed and undirected) and angle axes as dynamic. In eval mode
+these counts can change between calls, as they do at every MD or relaxation step, without a new
+compilation; a new atom count still compiles a new program. Set
+`Execution.__init_params__.dynamic_shape=false` to compile one program per input shape instead.
+Training keeps static shapes, because a training batch also changes the atom count. See [CINN
+execution backend](../../../docs/cinn.md) for details.
 
 ## Citation
 ```

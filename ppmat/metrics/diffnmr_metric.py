@@ -29,6 +29,7 @@ from rdkit.Chem import RDKFingerprint
 from ppmat.models.diffnmr.utils import diffgraphformer_utils as utils
 from ppmat.schedulers import scheduling_diffnmr
 from ppmat.utils.ext_rdkit import compute_molecular_metrics
+from ppmat.utils.ext_rdkit import mol_from_graphs
 
 # =========================
 # Utilities
@@ -365,6 +366,9 @@ class _NHistogram:
     def accumulate(self):
         return _l1_normalize(self.hist)
 
+    def reset(self):
+        self.hist = paddle.zeros_like(self.hist)
+
     def __call__(self, molecules):
         self.update(molecules)
         return self.accumulate()
@@ -383,9 +387,6 @@ class _NodeHistogram:
         arrs = []
         for atom_types, _ in molecules:
             a = paddle.to_tensor(atom_types, dtype="int64")
-            # mask should already be trimmed; keep assert
-            if (a == -1).any():
-                raise AssertionError("mask error: atom_types contains -1")
             arrs.append(a)
         if not arrs:
             return
@@ -394,6 +395,9 @@ class _NodeHistogram:
 
     def accumulate(self):
         return _l1_normalize(self.hist)
+
+    def reset(self):
+        self.hist = paddle.zeros_like(self.hist)
 
     def __call__(self, molecules):
         self.update(molecules)
@@ -423,6 +427,9 @@ class _EdgeHistogram:
     def accumulate(self):
         return _l1_normalize(self.hist)
 
+    def reset(self):
+        self.hist = paddle.zeros_like(self.hist)
+
     def __call__(self, molecules):
         self.update(molecules)
         return self.accumulate()
@@ -432,25 +439,34 @@ class _EdgeHistogram:
 
 
 class _ValencyHistogram:
-    """
-    Discrete bins with 0.5 step: index = round(valency*2)
-    Using length = 3*max_n - 2 (covers [0, 0.5, 1, ..., 3n-2]/2).
-    Aromatic bond (4) is treated as 1.5 degree contribution.
-    """
+    """Integer valency bins matching the MSD-NMR dataset statistics."""
 
-    def __init__(self, max_n):
+    def __init__(self, max_n, bond_decoder=None, num_edge_types=5):
         self.L = 3 * max_n - 2
         self.hist = paddle.zeros([self.L], "float32")
+        orders = [0.0, 1.0, 2.0, 3.0, 1.5]
+        if bond_decoder is not None:
+            order_by_token = {
+                "NO_BOND": 0.0,
+                "SINGLE": 1.0,
+                "DOUBLE": 2.0,
+                "TRIPLE": 3.0,
+                "AROMATIC": 1.5,
+            }
+            orders = [0.0] * num_edge_types
+            for token, index in bond_decoder["token_to_id"].items():
+                orders[index] = order_by_token[token]
+        self.bond_orders = paddle.to_tensor(orders, dtype="float32")
 
     def update(self, molecules):
         arrs = []
         for _, edge_types in molecules:
-            e = paddle.to_tensor(edge_types, dtype="float32")
-            e = paddle.where(e == 4.0, _to_f32(1.5), e)  # Aromatic=1.5
-            val = paddle.sum(e, axis=0)  # [n]
-            idx = paddle.round(val * 2.0).astype("int64")
-            # clip to valid range just in case
-            idx = paddle.clip(idx, 0, self.L - 1)
+            edge_ids = paddle.to_tensor(edge_types, dtype="int64")
+            orders = self.bond_orders[edge_ids]
+            forward = paddle.triu(orders, diagonal=1)
+            reverse = paddle.triu(orders.transpose([1, 0]), diagonal=1)
+            pair_orders = paddle.where(forward > 0, forward, reverse)
+            idx = (pair_orders.sum(axis=0) + pair_orders.sum(axis=1)).astype("int64")
             arrs.append(idx)
         if not arrs:
             return
@@ -459,6 +475,9 @@ class _ValencyHistogram:
 
     def accumulate(self):
         return _l1_normalize(self.hist)
+
+    def reset(self):
+        self.hist = paddle.zeros_like(self.hist)
 
     def __call__(self, molecules):
         self.update(molecules)
@@ -540,9 +559,13 @@ class SamplingMolecularMetrics(nn.Layer):
 
         # online counters
         self.gen_n = _NHistogram(dataset_infos.max_n_nodes)
-        self.gen_nodes = _NodeHistogram(dataset_infos.output_dims["X"])
-        self.gen_edges = _EdgeHistogram(dataset_infos.output_dims["E"])
-        self.gen_val = _ValencyHistogram(dataset_infos.max_n_nodes)
+        self.gen_nodes = _NodeHistogram(dataset_infos.num_atom_types)
+        self.gen_edges = _EdgeHistogram(int(dataset_infos.edge_types.shape[0]))
+        self.gen_val = _ValencyHistogram(
+            dataset_infos.max_n_nodes,
+            bond_decoder=dataset_infos.vocab["bond"],
+            num_edge_types=int(dataset_infos.edge_types.shape[0]),
+        )
 
         # MAEs
         self.mae_n = _HistMAE(self.target_n, "n/")
@@ -566,10 +589,13 @@ class SamplingMolecularMetrics(nn.Layer):
         # 1) exact match
         hit = 0
         for p, t in zip(pred, true):
-            mg = scheduling_diffnmr.mol_from_graphs(self.atom_decoder, *p)
-            mt = scheduling_diffnmr.mol_from_graphs(self.atom_decoder, *t)
-            if Chem.MolToSmiles(mg, True) == Chem.MolToSmiles(mt, True):
-                hit += 1
+            try:
+                mg = mol_from_graphs(self.atom_decoder, *p)
+                mt = mol_from_graphs(self.atom_decoder, *t)
+                if Chem.MolToSmiles(mg, True) == Chem.MolToSmiles(mt, True):
+                    hit += 1
+            except Exception:
+                continue
         to_log.update(
             {"Accuracy": hit / total, "Right Number": hit, "Total Number": total}
         )
@@ -629,7 +655,7 @@ class SamplingMolecularMetrics(nn.Layer):
             )
 
         # 5) retrieval top-k (optional)
-        if "candidates" in samples and samples["batch_condition"] is None:
+        if samples.get("candidates") and samples.get("batch_condition"):
             to_log.update(
                 self._retrieval_metrics(
                     samples,
@@ -718,16 +744,12 @@ class SamplingMolecularMetrics(nn.Layer):
         csv_records: List[Dict[str, str]] = []
 
         for i in range(B):
-            m_true = scheduling_diffnmr.mol_from_graphs(
-                self.atom_decoder, *true_list[i]
-            )
+            m_true = mol_from_graphs(self.atom_decoder, *true_list[i])
             s_true = Chem.MolToSmiles(m_true, True)
 
             # top-1
             sel = int(max_idx[i])
-            m_pred = scheduling_diffnmr.mol_from_graphs(
-                self.atom_decoder, *cand_lists[sel][i]
-            )
+            m_pred = mol_from_graphs(self.atom_decoder, *cand_lists[sel][i])
             s_pred = Chem.MolToSmiles(m_pred, True)
             if s_pred == s_true:
                 hit1 += 1
@@ -736,10 +758,7 @@ class SamplingMolecularMetrics(nn.Layer):
             for sel in top5_idx[:, i].astype("int64").tolist():
                 if (
                     Chem.MolToSmiles(
-                        scheduling_diffnmr.mol_from_graphs(
-                            self.atom_decoder, *cand_lists[sel][i]
-                        ),
-                        True,
+                        mol_from_graphs(self.atom_decoder, *cand_lists[sel][i]), True
                     )
                     == s_true
                 ):
@@ -748,10 +767,7 @@ class SamplingMolecularMetrics(nn.Layer):
             for sel in top10_idx[:, i].astype("int64").tolist():
                 if (
                     Chem.MolToSmiles(
-                        scheduling_diffnmr.mol_from_graphs(
-                            self.atom_decoder, *cand_lists[sel][i]
-                        ),
-                        True,
+                        mol_from_graphs(self.atom_decoder, *cand_lists[sel][i]), True
                     )
                     == s_true
                 ):
@@ -785,7 +801,16 @@ class SamplingMolecularMetrics(nn.Layer):
         }
 
     def reset(self):
-        for m in [self.mae_n, self.mae_nodes, self.mae_edges, self.mae_val]:
+        for m in [
+            self.gen_n,
+            self.gen_nodes,
+            self.gen_edges,
+            self.gen_val,
+            self.mae_n,
+            self.mae_nodes,
+            self.mae_edges,
+            self.mae_val,
+        ]:
             m.reset()
 
 

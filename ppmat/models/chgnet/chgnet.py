@@ -29,62 +29,14 @@ from pymatgen.core import Structure
 
 from ppmat.models.chgnet.prefitted_weights import MPF_prefitted_data
 from ppmat.models.chgnet.prefitted_weights import MPTrj_prefitted_data
+from ppmat.models.common.runtime import RuntimeMixin
+from ppmat.models.common.runtime import runtime_boundary
 from ppmat.utils import logger
 from ppmat.utils.crystal import frac_to_cart_coords
+from ppmat.utils.scatter import scatter
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-
-def aggregate(
-    data: paddle.Tensor, owners: paddle.Tensor, average=True, num_owner=None
-) -> paddle.Tensor:
-    """Aggregate rows in data by specifying the owners.
-
-    Args:
-        data (Tensor): data tensor to aggregate [n_row, feature_dim]
-        owners (Tensor): specify the owner of each row [n_row, 1]
-        average (bool): if True, average the rows, if False, sum the rows.
-            Default = True
-        num_owner (int, optional): the number of owners, this is needed if the
-            max idx of owner is not presented in owners tensor
-            Default = None
-
-    Returns:
-        output (Tensor): [num_owner, feature_dim]
-    """
-    bin_count = paddle.bincount(x=owners.cast("int32"))
-    bin_count = paddle.where(
-        bin_count != 0, bin_count, paddle.ones([1], dtype=bin_count.dtype)
-    )
-    if num_owner is not None and tuple(bin_count.shape)[0] != num_owner:
-        difference = num_owner - tuple(bin_count.shape)[0]
-        bin_count = paddle.concat(
-            x=[bin_count, paddle.ones(shape=difference, dtype=bin_count.dtype)]
-        )
-
-    output0 = paddle.zeros(
-        shape=[tuple(bin_count.shape)[0], tuple(data.shape)[1]], dtype=data.dtype
-    )
-    output0.stop_gradient = False
-    output = output0.index_add(axis=0, index=owners.cast("int32"), value=data)
-
-    # this is a atternative to the above code,
-    # from ppmat.utils.scatter import scatter
-    # start = time.time()
-    # output = scatter(data, owners.cast("int32"), dim=0)
-    # if bin_count.shape[0] > output.shape[0]:
-    #     diff = paddle.zeros(
-    #         shape=[bin_count.shape[0] - output.shape[0], output.shape[1]]
-    #     )
-    #     diff.stop_gradient = False
-    #     output = paddle.concat(
-    #         x=[output, diff],
-    #     )
-
-    if average:
-        output = (output.T / bin_count).T
-    return output
 
 
 class MLP(paddle.nn.Layer):
@@ -393,7 +345,7 @@ class Fourier(paddle.nn.Layer):
         # support high-order gradients, an alternative implementation was used
         # result = paddle.zeros(shape=[tuple(x.shape)[0], 1 + 2 * self.order],
         #     dtype=x.dtype)
-        result = paddle.ones(shape=[tuple(x.shape)[0], 1], dtype=x.dtype)
+        result = paddle.ones(shape=[x.shape[0], 1], dtype=x.dtype)
         result = result / paddle.sqrt(x=paddle.to_tensor(data=[2.0]))
 
         tmp = paddle.outer(x=x, y=self.frequencies)
@@ -761,8 +713,12 @@ class AtomConv(paddle.nn.Layer):
         messages = self.twoBody_atom(messages)
         bond_weight = paddle.gather(x=bond_weights, axis=0, index=directed2undirected)
         messages *= bond_weight
-        new_atom_feas = aggregate(
-            messages, atom_graph[:, 0], average=False, num_owner=len(atom_feas)
+        new_atom_feas = scatter(
+            messages,
+            atom_graph[:, 0].cast("int64"),
+            dim=0,
+            dim_size=len(atom_feas),
+            reduce="sum",
         )
         if self.use_mlp_out:
             new_atom_feas = self.mlp_out(new_atom_feas)
@@ -856,27 +812,31 @@ class BondConv(paddle.nn.Layer):
             - num_batch_atoms = sum(num_atoms) in batch
         """
         center_atoms = paddle.gather(
-            x=atom_feas, axis=0, index=bond_graph[:, 0].cast("int32")
+            x=atom_feas, axis=0, index=bond_graph[:, 0].cast("int64")
         )
         bond_feas_i = paddle.gather(
-            x=bond_feas, axis=0, index=bond_graph[:, 1].cast("int32")
+            x=bond_feas, axis=0, index=bond_graph[:, 1].cast("int64")
         )
         bond_feas_j = paddle.gather(
-            x=bond_feas, axis=0, index=bond_graph[:, 2].cast("int32")
+            x=bond_feas, axis=0, index=bond_graph[:, 2].cast("int64")
         )
         total_fea = paddle.concat(
             x=[bond_feas_i, bond_feas_j, angle_feas, center_atoms], axis=1
         )
         bond_update = self.twoBody_bond(total_fea)
         bond_weights_i = paddle.gather(
-            x=bond_weights, axis=0, index=bond_graph[:, 1].cast("int32")
+            x=bond_weights, axis=0, index=bond_graph[:, 1].cast("int64")
         )
         bond_weights_j = paddle.gather(
-            x=bond_weights, axis=0, index=bond_graph[:, 2].cast("int32")
+            x=bond_weights, axis=0, index=bond_graph[:, 2].cast("int64")
         )
         bond_update = bond_update * bond_weights_i * bond_weights_j
-        new_bond_feas = aggregate(
-            bond_update, bond_graph[:, 1], average=False, num_owner=len(bond_feas)
+        new_bond_feas = scatter(
+            bond_update,
+            bond_graph[:, 1].cast("int64"),
+            dim=0,
+            dim_size=len(bond_feas),
+            reduce="sum",
         )
         if self.use_mlp_out:
             new_bond_feas = self.mlp_out(new_bond_feas)
@@ -973,7 +933,10 @@ class GraphPooling(paddle.nn.Layer):
         self.average = average
 
     def forward(
-        self, atom_feas: paddle.Tensor, atom_owner: paddle.Tensor
+        self,
+        atom_feas: paddle.Tensor,
+        atom_owner: paddle.Tensor,
+        num_owner: int | None = None,
     ) -> paddle.Tensor:
         """Merge the atom features that belong to same graph in a batched graph.
 
@@ -982,12 +945,19 @@ class GraphPooling(paddle.nn.Layer):
                 [num_batch_atoms, atom_fea_dim or 1]
             atom_owner (Tensor): graph indices for each atom.
                 [num_batch_atoms]
+            num_owner (int, optional): number of graphs in the batch.
 
         Returns:
             crystal_feas (Tensor): crystal feature matrix.
                 [n_crystals, atom_fea_dim or 1]
         """
-        return aggregate(atom_feas, atom_owner, average=self.average)
+        return scatter(
+            atom_feas,
+            atom_owner.cast("int64"),
+            dim=0,
+            dim_size=num_owner,
+            reduce="mean" if self.average else "sum",
+        )
 
 
 class GraphAttentionReadOut(paddle.nn.Layer):
@@ -1018,7 +988,10 @@ class GraphAttentionReadOut(paddle.nn.Layer):
         self.average = average
 
     def forward(
-        self, atom_feas: paddle.Tensor, atom_owner: paddle.Tensor
+        self,
+        atom_feas: paddle.Tensor,
+        atom_owner: paddle.Tensor,
+        num_owner: int | None = None,
     ) -> paddle.Tensor:
         """Merge the atom features that belong to same graph in a batched graph.
 
@@ -1027,6 +1000,7 @@ class GraphAttentionReadOut(paddle.nn.Layer):
                 [num_batch_atoms, atom_fea_dim]
             atom_owner (Tensor): graph indices for each atom.
                 [num_batch_atoms]
+            num_owner (int, optional): number of graphs in the batch.
 
         Returns:
             crystal_feas (Tensor): crystal feature matrix.
@@ -1047,7 +1021,7 @@ class GraphAttentionReadOut(paddle.nn.Layer):
         return paddle.stack(x=crystal_feas, axis=0)
 
 
-class CHGNet(paddle.nn.Layer):
+class CHGNet(RuntimeMixin, paddle.nn.Layer):
     """Crystal Hamiltonian Graph neural Network. A model that takes in a crystal graph
     and output energy, force, magmom, stress.
 
@@ -1148,9 +1122,12 @@ class CHGNet(paddle.nn.Layer):
         loss_type: str = "mse_loss",
         huber_loss_delta: float = 0.1,
         loss_weights_dict: dict | None = None,
+        execution_backend: str = "eager",
+        runtime_options: dict | None = None,
         **kwargs,
     ) -> None:
         super().__init__()
+        self._init_runtime(execution_backend, runtime_options)
         self.atom_fea_dim = atom_fea_dim
         self.bond_fea_dim = bond_fea_dim
         self.is_intensive = is_intensive
@@ -1388,68 +1365,40 @@ class CHGNet(paddle.nn.Layer):
         self,
         batch_data,
     ) -> dict[str, paddle.Tensor]:
-        """Get prediction associated with input graphs"""
-        #  The data in data['graph'] is numpy.ndarray, convert it to paddle.Tensor
+        """Prepare graph topology and execute one differentiable tensor graph."""
         batch_data["graph"] = batch_data["graph"].tensor()
-
         graphs = batch_data["graph"]
-        comp_energy = (
-            0 if self.composition_model is None else self.composition_model(graphs)
-        )
 
-        atom_graph = graphs.edge_feat["atom_graph"].astype("int32")
-        num_atoms = graphs.node_feat["num_atoms"].astype("int32")
-        num_edges = graphs.edge_feat["num_edges"].astype("int32")
-        batch_size = graphs.num_graph
-        atom_owners = graphs.graph_node_id
-        directed2undirected = graphs.edge_feat["directed2undirected"].astype("int32")
-        undirected2directed = graphs.edge_feat["undirected2directed"].astype("int32")
-
-        atomic_numbers = graphs.node_feat["atom_types"].astype("int32")
-
-        frac_coords = graphs.node_feat["frac_coords"]
-        frac_coords.stop_gradient = False
-        lattice = graphs.node_feat["lattice"]
-        lattice.stop_gradient = False
-
-        if "stress" not in self.property_names:
-            strains = None
-            volumes = None
-        else:
-            strains = paddle.to_tensor(
-                paddle.zeros([batch_size, 3, 3], dtype="float32"), stop_gradient=False
-            )
-            lattice = paddle.matmul(
-                lattice, paddle.eye(3, dtype="float32")[None, :, :] + strains
-            )
-
-            volumes = paddle.dot(
-                lattice[:, 0], paddle.cross(x=lattice[:, 1], y=lattice[:, 2], axis=-1)
-            )
-            volumes.stop_gradient = True
-
-        if "stress" not in self.property_names:
-            # 使用einsum 与 @ 计算矩阵乘法有误差
-            atom_positions = frac_to_cart_coords(
-                frac_coords,
-                num_atoms=num_atoms,
-                lattices=lattice,
+        num_atoms = graphs.node_feat["num_atoms"].astype("int64")
+        num_edges = graphs.edge_feat["num_edges"].astype("int64")
+        atom_owners = graphs.graph_node_id.astype("int64")
+        directed2undirected = graphs.edge_feat["directed2undirected"].astype("int64")
+        undirected2directed = graphs.edge_feat["undirected2directed"].astype("int64")
+        atomic_numbers = graphs.node_feat["atom_types"].astype("int64")
+        # Make the geometry inputs differentiable leaves before the boundary.
+        # Forces differentiate the energy w.r.t. cartesian positions, which are
+        # derived from frac_coords; stress differentiates w.r.t. strains. Each
+        # requested derivative needs its own leaf, otherwise paddle.grad finds
+        # no path from the energy back to it.
+        frac_coords = graphs.node_feat["frac_coords"].detach()
+        lattice = graphs.node_feat["lattice"].detach()
+        strains = paddle.zeros_like(lattice)
+        if "force" in self.property_names:
+            frac_coords.stop_gradient = False
+        if "stress" in self.property_names:
+            strains.stop_gradient = False
+        if self.composition_model is None or isinstance(
+            self.composition_model, AtomRef
+        ):
+            composition_energy = paddle.zeros(
+                [num_atoms.shape[0], 1], dtype=frac_coords.dtype
             )
         else:
-            atom_positions = []
-            start = 0
-            for i in range(batch_size):
-                end = start + num_atoms[i]
-                atom_positions.append(frac_coords[start:end] @ lattice[i])
-                start = end
-            atom_positions = paddle.concat(atom_positions)
+            composition_energy = self.composition_model(graphs)
 
-        # Stores the edge information of each crystal pattern, shape=[2, N], Where N is
-        # the number of edges,
-        # Each element represents the index of two atoms
-        atom_graph = graphs.edge_feat["atom_graph"]
-        num_atom_graph = graphs.edge_feat["num_atom_graph"]
-        num_atoms_cumsum = paddle.cumsum(num_atoms).astype('int32')
+        atom_graph = graphs.edge_feat["atom_graph"].astype("int64")
+        num_atom_graph = graphs.edge_feat["num_atom_graph"].astype("int64")
+        num_atoms_cumsum = paddle.cumsum(num_atoms)
         num_atoms_cumsum = paddle.concat(
             [paddle.zeros(1, dtype=num_atoms_cumsum.dtype), num_atoms_cumsum]
         )
@@ -1458,64 +1407,26 @@ class CHGNet(paddle.nn.Layer):
         atom_graph_offset = paddle.repeat_interleave(num_atoms_cumsum, num_atom_graph)
         atom_graph = atom_graph + atom_graph_offset[:, None]
 
-        # Calculate the vector and distance of each edge in the crystal diagram
-        center = atom_positions[atom_graph[:, 0]]
-        neighbor = atom_positions[atom_graph[:, 1]]
-        image = graphs.edge_feat["image"]
-
-        if "stress" not in self.property_names:
-            lattice_edges = paddle.repeat_interleave(
-                x=lattice, repeats=num_edges, axis=0
-            )
-            offset = paddle.einsum("bi,bij->bj", image, lattice_edges)
-        else:
-            offset = []
-            start = 0
-            for i in range(batch_size):
-                end = start + num_edges[i]
-                offset.append(image[start:end] @ lattice[i])
-                start = end
-
-            offset = paddle.concat(offset)
-
-        neighbor = neighbor + offset
-        bond_vectors = center - neighbor
-        bond_lengths = paddle.linalg.norm(x=bond_vectors, axis=1)
-        bond_vectors = bond_vectors / bond_lengths[:, None]
-
-        # Accumulate the number of edges in each crystal pattern and add it as an
-        # offset to the index of each edge vector
-        num_edges_cumsum = paddle.cumsum(num_edges).astype('int32')
+        num_edges_cumsum = paddle.cumsum(num_edges)
         num_edges_cumsum = paddle.concat(
             [paddle.zeros(1, dtype=num_edges_cumsum.dtype), num_edges_cumsum]
         )
         num_edges_cumsum = num_edges_cumsum[:-1]
 
         undirected2directed_offset = paddle.repeat_interleave(
-            num_edges_cumsum, graphs.edge_feat["undirected2directed_len"]
+            num_edges_cumsum,
+            graphs.edge_feat["undirected2directed_len"].astype("int64"),
         )
         undirected2directed = undirected2directed + undirected2directed_offset
 
-        # Extract the length corresponding to the undirected edge
-        undirected_bond_lengths = paddle.gather(
-            x=bond_lengths, axis=0, index=undirected2directed
-        )
-
-        bond_bases_ag = self.bond_basis_expansion.rbf_expansion_ag(
-            undirected_bond_lengths
-        )
-        bond_bases_bg = self.bond_basis_expansion.rbf_expansion_bg(
-            undirected_bond_lengths
-        )
-
-        num_bond_graph = graphs.edge_feat["num_bond_graph"]
+        num_bond_graph = graphs.edge_feat["num_bond_graph"].astype("int64")
         bond_vec_index_offset = paddle.repeat_interleave(
             num_edges_cumsum, num_bond_graph
         )
 
         undirected2directed_len_cumsum = paddle.cumsum(
-            graphs.edge_feat["undirected2directed_len"]
-        ).astype('int32')
+            graphs.edge_feat["undirected2directed_len"].astype("int64")
+        )
         undirected2directed_len_cumsum = paddle.concat(
             [
                 paddle.zeros(1, dtype=undirected2directed_len_cumsum.dtype),
@@ -1524,29 +1435,21 @@ class CHGNet(paddle.nn.Layer):
         )
         undirected2directed_len_cumsum = undirected2directed_len_cumsum[:-1]
 
-        if num_bond_graph.max() != 0:
-            bond_vecs_i_index = (
-                graphs.edge_feat["bond_graph"][:, 2] + bond_vec_index_offset
-            )
-            bond_vecs_j_index = (
-                graphs.edge_feat["bond_graph"][:, 4] + bond_vec_index_offset
-            )
-            bond_vecs_i = paddle.gather(x=bond_vectors, axis=0, index=bond_vecs_i_index)
-            bond_vecs_j = paddle.gather(x=bond_vectors, axis=0, index=bond_vecs_j_index)
-            angle_bases = self.angle_basis_expansion(bond_vecs_i, bond_vecs_j)
-
-            bond_graph_new = paddle.zeros([graphs.edge_feat["bond_graph"].shape[0], 3])
-            offset_tmp = paddle.repeat_interleave(num_atoms_cumsum, num_bond_graph)
-            bond_graph_new[:, 0] = graphs.edge_feat["bond_graph"][:, 0] + offset_tmp
-
-            offset_tmp = paddle.repeat_interleave(
-                undirected2directed_len_cumsum, num_bond_graph
-            )
-            bond_graph_new[:, 1] = graphs.edge_feat["bond_graph"][:, 1] + offset_tmp
-            bond_graph_new[:, 2] = graphs.edge_feat["bond_graph"][:, 3] + offset_tmp
-        else:
-            angle_bases = paddle.to_tensor(data=[])
-            bond_graph_new = paddle.to_tensor(data=[])
+        bond_graph = graphs.edge_feat["bond_graph"].astype("int64")
+        bond_vecs_i_index = bond_graph[:, 2] + bond_vec_index_offset
+        bond_vecs_j_index = bond_graph[:, 4] + bond_vec_index_offset
+        atom_offset = paddle.repeat_interleave(num_atoms_cumsum, num_bond_graph)
+        bond_offset = paddle.repeat_interleave(
+            undirected2directed_len_cumsum, num_bond_graph
+        )
+        bond_graph = paddle.stack(
+            [
+                bond_graph[:, 0] + atom_offset,
+                bond_graph[:, 1] + bond_offset,
+                bond_graph[:, 3] + bond_offset,
+            ],
+            axis=1,
+        )
 
         offset_tmp = paddle.repeat_interleave(undirected2directed_len_cumsum, num_edges)
         directed2undirected = directed2undirected + offset_tmp
@@ -1559,21 +1462,36 @@ class CHGNet(paddle.nn.Layer):
             site_energies,
             atom_feas,
             crystal_feas,
-        ) = self._compute(
+        ) = self._runtime_forward(
             atomic_numbers=atomic_numbers,
-            bond_bases_ag=bond_bases_ag,
-            bond_bases_bg=bond_bases_bg,
-            angle_bases=angle_bases,
+            composition_fea=graphs.node_feat["composition_fea"],
+            composition_energy=composition_energy,
+            frac_coords=frac_coords,
+            lattice=lattice,
+            strains=strains,
+            num_atoms=num_atoms,
+            num_edges=num_edges,
+            image=graphs.edge_feat["image"],
             batched_atom_graph=atom_graph,
-            batched_bond_graph=bond_graph_new,
+            batched_bond_graph=bond_graph,
+            bond_vecs_i_index=bond_vecs_i_index,
+            bond_vecs_j_index=bond_vecs_j_index,
+            undirected2directed=undirected2directed,
             atom_owners=atom_owners,
             directed2undirected=directed2undirected,
-            atom_positions=atom_positions,  # atom_positions_list,
-            strains=strains,
-            volumes=volumes,
         )
 
-        energy += comp_energy
+        atoms_per_graph = paddle.bincount(x=atom_owners)
+        if self.return_site_energies:
+            site_energies = paddle.split(
+                x=site_energies, num_or_sections=atoms_per_graph.tolist()
+            )
+        else:
+            site_energies = None
+        if self.return_atom_feas:
+            atom_feas = paddle.split(
+                x=atom_feas, num_or_sections=atoms_per_graph.tolist()
+            )
 
         if self.return_site_energies and self.composition_model is not None:
             site_energy_shifts = self.composition_model.get_site_energies(graphs)
@@ -1583,9 +1501,98 @@ class CHGNet(paddle.nn.Layer):
 
         return energy, force, stress, magmom, site_energies, atom_feas, crystal_feas
 
+    @runtime_boundary(
+        "forward",
+        # Bond (directed and undirected) and angle counts change at every MD
+        # step; atom and structure counts stay static.
+        dynamic_dims={
+            "image": 0,
+            "batched_atom_graph": 0,
+            "batched_bond_graph": 0,
+            "bond_vecs_i_index": 0,
+            "bond_vecs_j_index": 0,
+            "undirected2directed": 0,
+            "directed2undirected": 0,
+        },
+    )
+    def _runtime_forward(
+        self,
+        atomic_numbers,
+        composition_fea,
+        composition_energy,
+        frac_coords,
+        lattice,
+        strains,
+        num_atoms,
+        num_edges,
+        image,
+        batched_atom_graph,
+        batched_bond_graph,
+        bond_vecs_i_index,
+        bond_vecs_j_index,
+        undirected2directed,
+        atom_owners,
+        directed2undirected,
+    ):
+        """Run geometry, message passing, readout, force and stress as one graph."""
+        if "stress" in self.property_names:
+            lattice = paddle.matmul(
+                lattice, paddle.eye(3, dtype=lattice.dtype)[None, :, :] + strains
+            )
+            volumes = paddle.sum(
+                lattice[:, 0] * paddle.cross(x=lattice[:, 1], y=lattice[:, 2], axis=-1),
+                axis=-1,
+            ).detach()
+        else:
+            volumes = paddle.ones([lattice.shape[0]], dtype=lattice.dtype)
+
+        atom_positions = frac_to_cart_coords(
+            frac_coords,
+            num_atoms=num_atoms,
+            lattices=lattice,
+        )
+        center = atom_positions[batched_atom_graph[:, 0]]
+        neighbor = atom_positions[batched_atom_graph[:, 1]]
+        lattice_edges = paddle.repeat_interleave(x=lattice, repeats=num_edges, axis=0)
+        offset = paddle.bmm(image.unsqueeze(1), lattice_edges).squeeze(1)
+        bond_vectors = center - neighbor - offset
+        bond_lengths = paddle.linalg.norm(x=bond_vectors, axis=1)
+        bond_vectors = bond_vectors / bond_lengths[:, None]
+
+        undirected_bond_lengths = paddle.gather(
+            x=bond_lengths, axis=0, index=undirected2directed
+        )
+        bond_bases_ag = self.bond_basis_expansion.rbf_expansion_ag(
+            undirected_bond_lengths
+        )
+        bond_bases_bg = self.bond_basis_expansion.rbf_expansion_bg(
+            undirected_bond_lengths
+        )
+        bond_vecs_i = paddle.gather(x=bond_vectors, axis=0, index=bond_vecs_i_index)
+        bond_vecs_j = paddle.gather(x=bond_vectors, axis=0, index=bond_vecs_j_index)
+        angle_bases = self.angle_basis_expansion(bond_vecs_i, bond_vecs_j)
+
+        return self._compute(
+            atomic_numbers=atomic_numbers,
+            composition_fea=composition_fea,
+            composition_energy=composition_energy,
+            bond_bases_ag=bond_bases_ag,
+            bond_bases_bg=bond_bases_bg,
+            angle_bases=angle_bases,
+            batched_atom_graph=batched_atom_graph,
+            batched_bond_graph=batched_bond_graph,
+            atom_owners=atom_owners,
+            directed2undirected=directed2undirected,
+            atom_positions=atom_positions,
+            strains=strains,
+            volumes=volumes,
+        )
+
     def _compute(
         self,
         atomic_numbers,
+        composition_fea,
+        composition_energy,
         bond_bases_ag,
         bond_bases_bg,
         angle_bases,
@@ -1609,23 +1616,20 @@ class CHGNet(paddle.nn.Layer):
                 m (Tensor) : magnetic moments of sites [num_batch_atoms, 3]
         """
 
-        energy, force, stress, magmom = None, None, None, None
-        site_energies, atom_feas, crystal_feas = None, None, None
-
         atoms_per_graph = paddle.bincount(x=atom_owners)
 
         atom_feas = self.atom_embedding(atomic_numbers - 1)
+        atom_feas_out = atom_feas
+        magmom = paddle.zeros([atomic_numbers.shape[0], 1], dtype=atom_feas.dtype)
         bond_feas = self.bond_embedding(bond_bases_ag)
         bond_weights_ag = self.bond_weights_ag(bond_bases_ag)
         bond_weights_bg = self.bond_weights_bg(bond_bases_bg)
-        if len(angle_bases) != 0:
-            angle_feas = self.angle_embedding(angle_bases)
+        angle_feas = self.angle_embedding(angle_bases)
         for idx, (atom_layer, bond_layer, angle_layer) in enumerate(
             zip(
                 self.atom_conv_layers[:-1],
                 self.bond_conv_layers,
                 self.angle_layers,
-                strict=False,
             )
         ):
             atom_feas = atom_layer(
@@ -1635,7 +1639,7 @@ class CHGNet(paddle.nn.Layer):
                 atom_graph=batched_atom_graph,
                 directed2undirected=directed2undirected,
             )
-            if len(angle_bases) != 0 and bond_layer is not None:
+            if bond_layer is not None:
                 bond_feas = bond_layer(
                     atom_feas=atom_feas,
                     bond_feas=bond_feas,
@@ -1651,20 +1655,13 @@ class CHGNet(paddle.nn.Layer):
                         bond_graph=batched_bond_graph,
                     )
             if idx == self.n_conv - 2:
-                if self.return_atom_feas:
-                    atom_feas = paddle.split(
-                        x=atom_feas, num_or_sections=atoms_per_graph.tolist()
-                    )
+                atom_feas_out = atom_feas
                 if "magmom" in self.property_names:
                     magmom = paddle.abs(x=self.site_wise(atom_feas))
-                    # magmom = list(
-                    #     paddle.split(
-                    #         x=magmom.reshape([-1]),
-                    #         num_or_sections=atoms_per_graph.tolist(),
-                    #     )
-                    # )
                 else:
-                    magmom = None
+                    magmom = paddle.zeros(
+                        [atomic_numbers.shape[0], 1], dtype=atom_feas.dtype
+                    )
         atom_feas = self.atom_conv_layers[-1](
             atom_feas=atom_feas,
             bond_feas=bond_feas,
@@ -1677,29 +1674,37 @@ class CHGNet(paddle.nn.Layer):
 
         if self.mlp_first:
             energies = self.mlp(atom_feas)
-            energy = self.pooling(energies, atom_owners)  # .reshape([-1])
-            if self.return_site_energies:
-                site_energies = paddle.split(
-                    x=energies.squeeze(axis=1), num_or_sections=atoms_per_graph.tolist()
+            energy = self.pooling(
+                energies, atom_owners, num_owner=atoms_per_graph.shape[0]
+            )  # .reshape([-1])
+            site_energies = energies.squeeze(axis=1)
+            if self.return_crystal_feas:
+                crystal_feas = self.pooling(
+                    atom_feas, atom_owners, num_owner=atoms_per_graph.shape[0]
                 )
-            if self.return_crystal_feas:
-                crystal_feas = self.pooling(atom_feas, atom_owners)
+            else:
+                crystal_feas = paddle.zeros(
+                    [0, self.atom_fea_dim], dtype=atom_feas.dtype
+                )
         else:
-            crystal_feas = self.pooling(atom_feas, atom_owners)
-            energy = self.mlp(crystal_feas) * atoms_per_graph  # .reshape([-1])
-            if self.return_crystal_feas:
-                crystal_feas = crystal_feas
+            crystal_feas = self.pooling(
+                atom_feas, atom_owners, num_owner=atoms_per_graph.shape[0]
+            )
+            energy = self.mlp(crystal_feas) * atoms_per_graph
+            site_energies = paddle.zeros([0], dtype=energy.dtype)
 
         if "force" in self.property_names:
-            force = paddle.grad(
+            # Stress differentiates the same energy afterwards, so the graph has
+            # to survive this call. Without it the second paddle.grad reads freed
+            # buffers and eager and compiled execution disagree on stress.
+            force = -paddle.grad(
                 outputs=energy.sum(),
                 inputs=atom_positions,
                 create_graph=self.training,
-                retain_graph=self.training,
-            )
-            if isinstance(atom_positions, paddle.Tensor):
-                force = force[0]
-            force = -1 * force
+                retain_graph=self.training or "stress" in self.property_names,
+            )[0]
+        else:
+            force = paddle.zeros_like(atom_positions)
 
         if "stress" in self.property_names:
             stress = paddle.grad(
@@ -1707,18 +1712,30 @@ class CHGNet(paddle.nn.Layer):
                 inputs=strains,
                 create_graph=self.training,
                 retain_graph=self.training,
-            )
-            if isinstance(strains, paddle.Tensor):
-                stress = stress[0]
+            )[0]
             scale = 1 / volumes * 160.21766208
-            stress = stress * scale[:, None, None]
+            stress = stress * scale.reshape([-1, 1, 1])
+        else:
+            stress = paddle.zeros_like(strains)
 
         if self.is_intensive:
             energy /= atoms_per_graph.unsqueeze(-1).cast("float32")
-        return energy, force, stress, magmom, site_energies, atom_feas, crystal_feas
+        if isinstance(self.composition_model, AtomRef):
+            energy += self.composition_model._get_energy(composition_fea)
+        else:
+            energy += composition_energy
+        return (
+            energy,
+            force,
+            stress,
+            magmom,
+            site_energies,
+            atom_feas_out,
+            crystal_feas,
+        )
 
     def _prediction_to_numpy(self, prediction):
-        for key in prediction.keys():
+        for key in prediction:
             if isinstance(prediction[key], list):
                 prediction[key] = [
                     prediction[key][i].numpy() for i in range(len(prediction[key]))
@@ -1733,31 +1750,18 @@ class CHGNet(paddle.nn.Layer):
                 prediction[key] = prediction[key][0]
         return prediction
 
-    def predict(self, graphs):
-        if isinstance(graphs, list):
-            results = []
-            for graph in graphs:
-                result = self.forward(
-                    {
-                        "graph": graph,
-                    },
-                    return_loss=False,
-                    return_prediction=True,
-                )
-                prediction = result["pred_dict"]
-                prediction = self._prediction_to_numpy(prediction)
-                results.append(prediction)
-            return results
+    def predict(self, samples):
+        is_list = isinstance(samples, list)
+        samples = samples if is_list else [samples]
 
-        else:
-            data = {
-                "graph": graphs,
-            }
+        results = []
+        for sample in samples:
             result = self.forward(
-                data,
+                {"graph": sample},
                 return_loss=False,
                 return_prediction=True,
             )
             prediction = result["pred_dict"]
             prediction = self._prediction_to_numpy(prediction)
-            return prediction
+            results.append(prediction)
+        return results if is_list else results[0]

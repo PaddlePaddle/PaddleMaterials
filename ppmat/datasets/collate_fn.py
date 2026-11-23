@@ -24,12 +24,15 @@ from typing import List
 import numpy as np
 import paddle
 import pgl
-import warnings
 
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.datasets.custom_data_type import ConcatNumpyWarper
 from ppmat.datasets.geometric_data_type.batch import Batch
 from ppmat.datasets.geometric_data_type.data import Data
+from ppmat.utils import logger
+from ppmat.utils.pgl_compat import patch_pgl_empty_edge_batch
+
+patch_pgl_empty_edge_batch()
 
 
 class DefaultCollator(object):
@@ -88,217 +91,128 @@ class DefaultCollator(object):
         )
 
 
+class RadiusGraphCollator:
+    """Collate PGL radius graphs and offset their edge-based triplet indices."""
+
+    def __call__(self, batch):
+        graphs = [sample["graph"] for sample in batch]
+        num_edges = [np.asarray(graph.edges).shape[0] for graph in graphs]
+        edge_offsets = np.cumsum([0] + num_edges[:-1])
+
+        triplet_fields = {key: [] for key in ("idx_kj", "idx_ji")}
+        for index, graph in enumerate(graphs):
+            for key in triplet_fields:
+                triplet_fields[key].append(
+                    np.asarray(graph.edge_feat[f"ti_{key}"], dtype=np.int64)
+                    + edge_offsets[index]
+                )
+
+        graph = pgl.Graph.batch(graphs)
+        graph.edge_feat.update(
+            {
+                f"ti_{key}": np.concatenate(values)
+                for key, values in triplet_fields.items()
+            }
+        )
+
+        result = DefaultCollator()(
+            [
+                {key: value for key, value in sample.items() if key != "graph"}
+                for sample in batch
+            ]
+        )
+        result["graph"] = graph
+        return result
+
+
 class DensityCollator:
     def __init__(
         self,
-        n_samples=None,
-        padding_value=-1.0,
-        sampling_mode: str = "uniform",  # "uniform" or "random"
-        uniform_random_offset: bool = False,
-        sampling_seed: int | None = None,
+        *,
         clip_max: float | None = None,
-        importance_sampling: bool = False,
-        importance_threshold: float = 1e-5,
-        importance_ratio: float = 0.8,
-        extreme_threshold: float | None = None,
-        extreme_ratio: float = 0.05,
+        pad_skew_warn_ratio: float = 4.0,
     ):
-        self.n_samples = n_samples
-        self.padding_value = padding_value
-        self.sampling_mode = sampling_mode.lower()
-        self.uniform_random_offset = bool(uniform_random_offset)
-        self.sampling_seed = sampling_seed
-        self._rng = np.random.default_rng(sampling_seed) if sampling_seed is not None else None
         self.clip_max = clip_max
-        self.importance_sampling = bool(importance_sampling)
-        self.importance_threshold = importance_threshold
-        self.importance_ratio = float(importance_ratio)
-        self.extreme_threshold = extreme_threshold
-        self.extreme_ratio = float(extreme_ratio)
-        self._warned_length_mismatch = False
+        self.pad_skew_warn_ratio = float(pad_skew_warn_ratio)
+        if self.pad_skew_warn_ratio <= 0.0:
+            raise ValueError("pad_skew_warn_ratio must be positive.")
 
     def __call__(self, batch):
-        g, densities, grid_coord, infos = zip(*batch)
-        g = Batch.from_data_list(g)
-        infos = list(infos)
-        if self.n_samples is None:
-            densities = pad_sequence(
-                densities, batch_first=True, padding_value=self.padding_value
-            )
-            grid_coord = pad_sequence(grid_coord, batch_first=True, padding_value=0.0)
-            mask = (densities != self.padding_value).astype("float32")
-        else:
-            sampled_density, sampled_grid, mask = [], [], []
-            target_samples = int(self.n_samples)
-            for d, coord in zip(densities, grid_coord):
-                total_d = int(d.shape[0])
-                total_coord = int(coord.shape[0])
-                total = min(total_d, total_coord)
-                if total_d != total_coord and not self._warned_length_mismatch:
-                    warnings.warn(
-                        f"Density length ({total_d}) and grid length "
-                        f"({total_coord}) differ; truncating to {total}."
-                    )
-                    self._warned_length_mismatch = True
-                if total == 0:
-                    raise ValueError("Empty density/grid pair encountered in batch.")
-                if self.importance_sampling:
-                    total_idx = np.arange(total)
-                    dense_vals = np.abs(d.numpy().reshape(-1))
-                    threshold = float(self.importance_threshold)
-                    high_mask = dense_vals >= threshold
-                    high_idx = total_idx[high_mask]
-
-                    extreme_idx = np.array([], dtype=int)
-                    if self.extreme_threshold is not None:
-                        extreme_mask = dense_vals >= self.extreme_threshold
-                        extreme_idx = total_idx[extreme_mask]
-                        # ensure extreme is subset of high
-                        extreme_idx = np.intersect1d(extreme_idx, high_idx, assume_unique=True)
-                    mid_idx = np.setdiff1d(high_idx, extreme_idx, assume_unique=True)
-
-                    high_quota = min(target_samples, max(0, int(target_samples * self.importance_ratio)))
-                    extreme_quota = min(target_samples, max(0, int(target_samples * self.extreme_ratio)))
-
-                    extreme_take = min(len(extreme_idx), extreme_quota)
-                    indices_extreme = (
-                        np.random.choice(extreme_idx, extreme_take, replace=False)
-                        if extreme_take > 0
-                        else np.array([], dtype=int)
-                    )
-
-                    remaining_high = high_quota - len(indices_extreme)
-                    mid_take = min(len(mid_idx), remaining_high)
-                    indices_mid = (
-                        np.random.choice(mid_idx, mid_take, replace=False)
-                        if mid_take > 0
-                        else np.array([], dtype=int)
-                    )
-
-                    selected = np.concatenate([indices_extreme, indices_mid])
-                    remaining = target_samples - len(selected)
-                    if remaining > 0:
-                        low_candidates = np.setdiff1d(total_idx, selected, assume_unique=False)
-                        if len(low_candidates) == 0:
-                            low_candidates = total_idx
-                        replace_low = remaining > len(low_candidates)
-                        indices_low = np.random.choice(low_candidates, remaining, replace=replace_low)
-                        indices = np.concatenate([selected, indices_low])
-                    else:
-                        indices = selected
-                else:
-                    if self.sampling_mode == "uniform":
-                        if self.uniform_random_offset:
-                            if self._rng is None:
-                                self._rng = np.random.default_rng()
-                            step = (total - 1) / max(target_samples - 1, 1)
-                            offset = float(self._rng.uniform(0, max(step, 1.0))) if step > 0 else 0.0
-                            idx = offset + step * np.arange(target_samples)
-                            indices = np.clip(np.round(idx).astype(int), 0, total - 1)
-                        else:
-                            indices = np.linspace(0, total - 1, num=target_samples, dtype=int)
-                    elif self.sampling_mode == "random":
-                        replace = target_samples > total
-                        indices = np.random.choice(total, target_samples, replace=replace)
-                    else:
-                        raise ValueError(
-                            f"Unsupported sampling_mode '{self.sampling_mode}'. "
-                            "Use 'uniform' or 'random'."
-                        )
-                indices.sort()
-                sampled_density.append(d[indices])
-                sampled_grid.append(coord[indices])
-                mask.append(
-                    paddle.ones_like(x=sampled_density[-1], dtype="float32")
+        densities = [sample["density"] for sample in batch]
+        grid_coord = [sample["grid_coord"] for sample in batch]
+        for density, coordinates in zip(densities, grid_coord):
+            density_length = int(density.shape[0])
+            coordinate_length = int(coordinates.shape[0])
+            if density_length != coordinate_length:
+                raise ValueError(
+                    f"Density length ({density_length}) and grid length "
+                    f"({coordinate_length}) must match."
                 )
-            densities = paddle.stack(x=sampled_density, axis=0)
-            grid_coord = paddle.stack(x=sampled_grid, axis=0)
-            mask = paddle.stack(x=mask, axis=0)
+            if density_length == 0:
+                raise ValueError("Empty density/grid pair encountered in batch.")
+        channel_shapes = {tuple(density.shape[1:]) for density in densities}
+        if len(channel_shapes) > 1:
+            raise ValueError(
+                "Density channel shapes must match across a batch, but got "
+                f"{sorted(channel_shapes)}."
+            )
 
-        densities = densities * mask
+        prepared_density, prepared_grid, masks = [], [], []
+        lengths = [int(density.shape[0]) for density in densities]
+        max_length = max(lengths)
+        min_length = min(lengths)
+        if min_length == max_length:
+            # Every field already has the same length, so there is nothing to
+            # mask. ``None`` lets the models skip the all-ones multiply.
+            prepared_density = densities
+            prepared_grid = grid_coord
+            masks = [None] * len(densities)
+        else:
+            if min_length * self.pad_skew_warn_ratio < max_length:
+                # Padding allocates every field at the longest length and the
+                # padded grid points still cost graph edges and orbital math.
+                logger.warning(
+                    "Density padding is batching fields of very different "
+                    f"sizes ({min_length} to {max_length} grid points): "
+                    f"{sum(lengths) / (len(lengths) * max_length):.1%} of the "
+                    "padded batch carries real data. Consider setting the "
+                    "dataset's grid_sampler_cfg, or grouping fields of similar "
+                    "size."
+                )
+            for density, coordinates in zip(densities, grid_coord):
+                length = int(density.shape[0])
+                pad_width = [(0, max_length - length)] + [
+                    (0, 0) for _ in range(density.ndim - 1)
+                ]
+                prepared_density.append(np.pad(density, pad_width, constant_values=0.0))
+                prepared_grid.append(
+                    np.pad(
+                        coordinates,
+                        ((0, max_length - length), (0, 0)),
+                        constant_values=0.0,
+                    )
+                )
+                mask = np.zeros_like(prepared_density[-1], dtype=np.float32)
+                mask[:length] = 1.0
+                masks.append(mask)
+
+        prepared_batch = []
+        for sample, density, coordinates, mask in zip(
+            batch,
+            prepared_density,
+            prepared_grid,
+            masks,
+        ):
+            prepared_sample = dict(sample)
+            prepared_sample["density"] = density
+            prepared_sample["density_mask"] = mask
+            prepared_sample["grid_coord"] = coordinates
+            prepared_sample["info"] = {
+                "cell": sample["info"]["cell"],
+            }
+            prepared_batch.append(prepared_sample)
+
+        result = DefaultCollator()(prepared_batch)
         if self.clip_max is not None:
-            densities = paddle.clip(densities, min=self.padding_value, max=self.clip_max)
-        return {
-            "density": densities,
-            "density_mask": mask,
-            "grid_coord": grid_coord,
-            "graph": g,
-            "infos": infos,
-        }
-
-
-class DensityVoxelCollator:
-    def __init__(self, padding_value=-1.0):
-        self.padding_value = padding_value
-
-    def __call__(self, batch):
-        g, densities, grid_coord, infos = zip(*batch)
-        g = Batch.from_data_list(g)
-        shapes = [info["shape"] for info in infos]
-        max_shape = np.array(shapes).max(0)
-        padded_density, padded_grid = [], []
-        for den, grid, shape in zip(densities, grid_coord, shapes):
-            padded_density.append(
-                paddle.nn.functional.pad(
-                    x=den.view(*shape),
-                    pad=(
-                        0,
-                        max_shape[2] - shape[2],
-                        0,
-                        max_shape[1] - shape[1],
-                        0,
-                        max_shape[0] - shape[0],
-                    ),
-                    value=-1,
-                    pad_from_left_axis=False,
-                )
-            )
-            padded_grid.append(
-                paddle.nn.functional.pad(
-                    x=grid.view(*shape, 3),
-                    pad=(
-                        0,
-                        0,
-                        0,
-                        max_shape[2] - shape[2],
-                        0,
-                        max_shape[1] - shape[1],
-                        0,
-                        max_shape[0] - shape[0],
-                    ),
-                    value=0.0,
-                    pad_from_left_axis=False,
-                )
-            )
-        densities = paddle.stack(x=padded_density, axis=0)
-        grid_coord = paddle.stack(x=padded_grid, axis=0)
-        mask = (densities != self.padding_value).astype("float32")
-        densities = densities * mask
-        return {
-            "density": densities,
-            "density_mask": mask,
-            "grid_coord": grid_coord,
-            "graph": g,
-            "infos": list(infos),
-        }
-
-# utils DensityCollator
-def pad_sequence(sequences, batch_first=False, padding_value=0):
-    max_len = max([int(s.shape[0]) for s in sequences])  # 确保转换为Python整数
-    trailing_dims = tuple(sequences[0].shape[1:])
-
-    if batch_first:
-        out_dims = (len(sequences), max_len) + trailing_dims
-    else:
-        out_dims = (max_len, len(sequences)) + trailing_dims
-
-    out_tensor = paddle.full(out_dims, padding_value, dtype=sequences[0].dtype)
-
-    for i, tensor in enumerate(sequences):
-        length = tensor.shape[0]
-        if batch_first:
-            out_tensor[i, :length, ...] = tensor
-        else:
-            out_tensor[:length, i, ...] = tensor
-
-    return out_tensor
+            result["density"] = np.minimum(result["density"], self.clip_max)
+        return result

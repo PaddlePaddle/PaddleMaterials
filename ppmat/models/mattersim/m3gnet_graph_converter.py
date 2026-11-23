@@ -250,7 +250,10 @@ class M3GNetGraphConvertor:
             edge_features["num_triple_ij"] = n_triple_ij.astype("int64").reshape(-1, 1)
 
         graph = self.build_pgl_graph(
-            structure, edge_indices, to_jimages, edge_features=edge_features
+            Structure.from_ase_atoms(atoms),
+            edge_indices,
+            to_jimages,
+            edge_features=edge_features,
         )
 
         return graph

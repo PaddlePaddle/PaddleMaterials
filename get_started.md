@@ -14,7 +14,7 @@ You can perform inference using either built-in models or local models.
 
 PaddleMaterials offers multiple built-in models that can be directly used for inference. Taking the `megnet_mp2018_train_60k_e_form` model as an example (a MEGNet model trained on the MP2018 dataset for material formation energy prediction), use the following command for inference:
 ```bash
-python property_prediction/predict.py --model_name='megnet_mp2018_train_60k_e_form' --weights_name='best.pdparams' --cif_file_path='./property_prediction/example_data/cifs/' --save_path='result.csv'
+python property_prediction/predict.py --model_name='megnet_mp2018_train_60k_e_form' --weights_name='best.pdparams' --input_format=cif --input_path='./property_prediction/example_data/cifs/' --output_path='results/'
 ```
 
 <table>
@@ -34,11 +34,15 @@ python property_prediction/predict.py --model_name='megnet_mp2018_train_60k_e_fo
             <td>Weights file name</td>
         </tr>
         <tr>
-            <td>--cif_file_path</td>
+            <td>--input_format</td>
+            <td>Input file format, such as cif or xyz</td>
+        </tr>
+        <tr>
+            <td>--input_path</td>
             <td>Path to CIF files for prediction</td>
         </tr>
         <tr>
-            <td>--save_path</td>
+            <td>--output_path</td>
             <td>Path to save prediction results</td>
         </tr>
     </tbody>
@@ -48,7 +52,7 @@ python property_prediction/predict.py --model_name='megnet_mp2018_train_60k_e_fo
 
 In addition to built-in models, you can also use your own locally trained models for inference. Taking the `megnet_mp2018_train_60k_e_form` model as an example (assuming you've trained it locally), use the following command:
 ```bash
-python property_prediction/predict.py --config_path='property_prediction/configs/megnet/megnet_mp2018_train_60k_e_form.yaml' --checkpoint_path='you_checkpoint_path.pdparams' --cif_file_path='./property_prediction/example_data/cifs/' --save_path='result.csv'
+python property_prediction/predict.py --config_path='property_prediction/configs/megnet/megnet_mp2018_train_60k_e_form.yaml' --checkpoint_path='you_checkpoint_path.pdparams' --input_format=cif --input_path='./property_prediction/example_data/cifs/' --output_path='results/'
 ```
 
 <table>
@@ -68,11 +72,15 @@ python property_prediction/predict.py --config_path='property_prediction/configs
             <td>Model weights file path</td>
         </tr>
         <tr>
-            <td>--cif_file_path</td>
+            <td>--input_format</td>
+            <td>Input file format, such as cif or xyz</td>
+        </tr>
+        <tr>
+            <td>--input_path</td>
             <td>Path to CIF files for prediction</td>
         </tr>
         <tr>
-            <td>--save_path</td>
+            <td>--output_path</td>
             <td>Path to save prediction results</td>
         </tr>
     </tbody>

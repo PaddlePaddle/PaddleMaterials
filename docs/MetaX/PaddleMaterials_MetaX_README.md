@@ -31,7 +31,7 @@ python structure_generation/train.py -c structure_generation/configs/diffcsp/dif
 
 ### 2) Sample
 ```bash
-python structure_generation/sample.py --model_name='diffcsp_mp20' --weights_name='latest.pdparams' --save_path='result_diffcsp_mp20-1/' --chemical_formula='LiMnO2'
+python structure_generation/sample.py --model_name='diffcsp_mp20' --weights_name='latest.pdparams' --output_path='result_diffcsp_mp20-1/' --chemical_formula='LiMnO2'
 ```
 ![](./pic5.png)
 

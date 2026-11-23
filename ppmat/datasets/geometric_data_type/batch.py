@@ -22,7 +22,9 @@ import paddle
 
 from ppmat.datasets.geometric_data_type.data import Data
 from ppmat.datasets.geometric_data_type.dataset import IndexType
+
 # from ppmat.utils.paddle_aux import *
+
 
 class Batch(Data):
     """A plain old python object modeling a batch of graphs as one big
@@ -56,6 +58,8 @@ class Batch(Data):
         Additionally, creates assignment batch vectors for each key in
         :obj:`follow_batch`.
         Will exclude any keys given in :obj:`exclude_keys`."""
+        if not data_list:
+            raise ValueError("data_list must not be empty.")
         keys = list(set(data_list[0].keys) - set(exclude_keys))
         assert "batch" not in keys and "ptr" not in keys
         batch = cls()
@@ -67,37 +71,53 @@ class Batch(Data):
         for key in keys + ["batch"]:
             batch[key] = []
         batch["ptr"] = [0]
-        device = None
         slices = {key: [0] for key in keys}
         cumsum = {key: [0] for key in keys}
         cat_dims = {}
         num_nodes_list = []
         for i, data in enumerate(data_list):
             for key in keys:
-                item = data[key]
+                original_item = data[key]
+                item = original_item
                 cum = cumsum[key][-1]
-                if isinstance(item, paddle.Tensor) and item.dtype != "bool":
+                if isinstance(item, paddle.Tensor) and item.dtype != paddle.bool:
                     if not isinstance(cum, int) or cum != 0:
+                        item = item + cum
+                elif isinstance(item, np.ndarray) and item.dtype != np.bool_:
+                    if np.any(np.asarray(cum) != 0):
                         item = item + cum
                 elif isinstance(item, (int, float)):
                     item = item + cum
                 size = 1
-                cat_dim = data.__cat_dim__(key, data[key])
+                cat_dim = data.__cat_dim__(key, original_item)
                 if isinstance(item, paddle.Tensor) and item.dim() == 0:
                     cat_dim = None
+                elif isinstance(item, np.ndarray) and item.ndim == 0:
+                    cat_dim = None
+                if key in cat_dims and cat_dims[key] != cat_dim:
+                    raise ValueError(
+                        f"Inconsistent concatenation dimension for {key!r}."
+                    )
                 cat_dims[key] = cat_dim
                 if isinstance(item, paddle.Tensor) and cat_dim is None:
                     cat_dim = 0
                     item = item.unsqueeze(axis=0)
-                    device = item.place
                 elif isinstance(item, paddle.Tensor):
                     size = item.shape[cat_dim]
-                    device = item.place
+                elif isinstance(item, np.ndarray) and cat_dim is None:
+                    cat_dim = 0
+                    item = np.expand_dims(item, axis=0)
+                elif isinstance(item, np.ndarray):
+                    size = item.shape[cat_dim]
                 batch[key].append(item)
                 slices[key].append(size + slices[key][-1])
-                inc = data.__inc__(key, item)
+                inc = data.__inc__(key, original_item)
                 if isinstance(inc, (tuple, list)):
-                    inc = paddle.to_tensor(data=inc)
+                    inc = (
+                        np.asarray(inc)
+                        if isinstance(original_item, np.ndarray)
+                        else paddle.to_tensor(data=inc)
+                    )
                 cumsum[key].append(inc + cumsum[key][-1])
                 if key in follow_batch:
                     if isinstance(size, paddle.Tensor):
@@ -132,10 +152,16 @@ class Batch(Data):
         for key in batch.keys:
             items = batch[key]
             item = items[0]
-            cat_dim = ref_data.__cat_dim__(key, item)
+            cat_dim = cat_dims.get(key, ref_data.__cat_dim__(key, item))
             cat_dim = 0 if cat_dim is None else cat_dim
             if isinstance(item, paddle.Tensor):
+                if not all(isinstance(value, paddle.Tensor) for value in items):
+                    raise TypeError(f"All values for {key!r} must be Paddle tensors.")
                 batch[key] = paddle.concat(x=items, axis=cat_dim)
+            elif isinstance(item, np.ndarray):
+                if not all(isinstance(value, np.ndarray) for value in items):
+                    raise TypeError(f"All values for {key!r} must be NumPy arrays.")
+                batch[key] = np.concatenate(items, axis=cat_dim)
             elif isinstance(item, (int, float)):
                 batch[key] = paddle.to_tensor(data=items)
         return batch.contiguous()
@@ -147,7 +173,8 @@ class Batch(Data):
         order to be able to reconstruct the initial objects."""
         if self.__slices__ is None:
             raise RuntimeError(
-                "Cannot reconstruct data list from batch because the batch object was not created using `Batch.from_data_list()`."
+                "Cannot reconstruct data list from batch because the batch object "
+                "was not created using `Batch.from_data_list()`."
             )
         data = self.__data_class__()
         idx = self.num_graphs + idx if idx < 0 else idx
@@ -155,20 +182,32 @@ class Batch(Data):
             item = self[key]
             if self.__cat_dims__[key] is None:
                 item = item[idx]
+                if isinstance(self[key], np.ndarray):
+                    item = np.asarray(item)
             elif isinstance(item, paddle.Tensor):
                 dim = self.__cat_dims__[key]
                 start = self.__slices__[key][idx]
                 end = self.__slices__[key][idx + 1]
                 start_0 = item.shape[dim] + start if start < 0 else start
                 item = paddle.slice(item, [dim], [start_0], [start_0 + (end - start)])
+            elif isinstance(item, np.ndarray):
+                dim = self.__cat_dims__[key]
+                start = self.__slices__[key][idx]
+                end = self.__slices__[key][idx + 1]
+                item_slice = [slice(None)] * item.ndim
+                item_slice[dim] = slice(start, end)
+                item = item[tuple(item_slice)]
             else:
                 start = self.__slices__[key][idx]
                 end = self.__slices__[key][idx + 1]
                 item = item[start:end]
                 item = item[0] if len(item) == 1 else item
             cum = self.__cumsum__[key][idx]
-            if isinstance(item, paddle.Tensor):
+            if isinstance(item, paddle.Tensor) and item.dtype != paddle.bool:
                 if not isinstance(cum, int) or cum != 0:
+                    item = item - cum
+            elif isinstance(item, np.ndarray) and item.dtype != np.bool_:
+                if np.any(np.asarray(cum) != 0):
                     item = item - cum
             elif isinstance(item, (int, float)):
                 item = item - cum
@@ -180,19 +219,21 @@ class Batch(Data):
     def index_select(self, idx: IndexType) -> List[Data]:
         if isinstance(idx, slice):
             idx = list(range(self.num_graphs)[idx])
-        elif isinstance(idx, paddle.Tensor) and idx.dtype == "int64":
+        elif isinstance(idx, paddle.Tensor) and idx.dtype == paddle.int64:
             idx = idx.flatten().tolist()
-        elif isinstance(idx, paddle.Tensor) and idx.dtype == "bool":
+        elif isinstance(idx, paddle.Tensor) and idx.dtype == paddle.bool:
             idx = idx.flatten().nonzero(as_tuple=False).flatten().tolist()
         elif isinstance(idx, np.ndarray) and idx.dtype == np.int64:
             idx = idx.flatten().tolist()
-        elif isinstance(idx, np.ndarray) and idx.dtype == np.bool:
+        elif isinstance(idx, np.ndarray) and idx.dtype == np.bool_:
             idx = idx.flatten().nonzero()[0].flatten().tolist()
         elif isinstance(idx, Sequence) and not isinstance(idx, str):
             pass
         else:
             raise IndexError(
-                f"Only integers, slices (':'), list, tuples, torch.tensor and np.ndarray of dtype long or bool are valid indices (got '{type(idx).__name__}')"
+                "Batch indices must be an integer, slice, non-string sequence, "
+                "or a paddle.Tensor/numpy.ndarray with int64 or bool dtype; "
+                f"got {type(idx).__name__}."
             )
         return [self.get_example(i) for i in idx]
 

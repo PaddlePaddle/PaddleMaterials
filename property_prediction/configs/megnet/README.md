@@ -43,7 +43,7 @@ The MP2018.6.1 dataset represents a foundational benchmark for the field, encomp
 
     | Dataset | Count | Properties |
     | :---: | :---: | :---------: |
-    | pbe_2d | 100000 | Formation Energy, et al.  | 
+    | pbe_2d | 100000 | Formation Energy, et al.  |
 
 - Matbench
 
@@ -514,13 +514,13 @@ You can replace the `--model_name` parameter at  `Mode 1` with other model names
 # Mode 1: Leverage a pre-trained machine learning model for crystal formation energy prediction. The implementation includes automated model download functionality, eliminating the need for manual configuration.
 python property_prediction/predict.py \
     --model_name='megnet_mp2018_train_60k_e_form' \
-    --cif_file_path='./property_prediction/example_data/cifs/'
+    --input_format=cif --input_path='./property_prediction/example_data/cifs/'
 
 # Mode2: Use a custom configuration file and checkpoint for crystal formation energy prediction. This approach allows for more flexibility and customization.
 python property_prediction/predict.py \
     --config_path='property_prediction/configs/megnet/megnet_mp2018_train_60k_e_form.yaml' \
     --checkpoint_path='you_checkpoint_path.pdparams' \
-    --cif_file_path='./property_prediction/example_data/cifs/'
+    --input_format=cif --input_path='./property_prediction/example_data/cifs/'
 
 ```
 

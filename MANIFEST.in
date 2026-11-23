@@ -1,0 +1,26 @@
+include LICENSE
+include README.md
+include README_PYPI.md
+include pyproject.toml
+include requirements.txt
+include setup.py
+
+recursive-include ppmat *.json *.py *.pyx
+
+prune .github
+prune docs
+prune electronic_structure
+prune interatomic_potentials
+prune output
+prune ppmatSim
+prune property_prediction
+prune research
+prune spectrum_elucidation
+prune spectrum_enhancement
+prune structure_generation
+prune test
+
+exclude ppmat/models/common/e3nn/o3/_tensor_product/tensor_product_pre_visualization.png
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude __pycache__

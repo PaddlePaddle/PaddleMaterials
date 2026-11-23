@@ -24,11 +24,14 @@ import paddle
 import paddle.nn as nn
 import pgl
 from paddle.nn import Linear
-from pgl.math import segment_softmax
-from pgl.math import segment_sum
 
 from ppmat.models.common import initializer
+from ppmat.models.common.runtime import RuntimeMixin
+from ppmat.models.common.runtime import runtime_boundary
 from ppmat.utils import logger
+from ppmat.utils.pgl_compat import graph_count
+from ppmat.utils.pgl_compat import segment_softmax
+from ppmat.utils.pgl_compat import segment_sum
 
 
 class GaussianExpansion(paddle.nn.Layer):
@@ -375,9 +378,7 @@ class MEGNetGraphConv(paddle.nn.Layer):
     def node_update(self, graph, node_feat, edge_feat, u):
         src, dst, eid = graph.sorted_edges(sort_by="dst")
         # node_feat_e = paddle.geometric.segment_mean(edge_feat[eid], dst)
-        node_feat_e = self.sorted_segment_mean(
-            edge_feat[eid], dst, graph.num_nodes.item()
-        )
+        node_feat_e = self.sorted_segment_mean(edge_feat[eid], dst, node_feat.shape[0])
         node_feat = paddle.concat([node_feat, node_feat_e, u], axis=1)
         node_feat = self.node_func(node_feat)
         return node_feat
@@ -579,7 +580,7 @@ class Set2Set(nn.Layer):
             output_feat: A tensor with shape (num_nodes, output_size).
         """
         graph_id = graph.graph_node_id
-        batch_size = graph_id.max() + 1
+        batch_size = graph_count(graph)
         h = (
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
@@ -589,8 +590,8 @@ class Set2Set(nn.Layer):
             q, h = self.lstm(q_star.unsqueeze(0), h)
             q = q.reshape((batch_size, self.input_dim))
             e = (x * q.index_select(graph_id, axis=0)).sum(axis=-1, keepdim=True)
-            a = segment_softmax(e, graph_id)
-            r = segment_sum(a * x, graph_id)
+            a = segment_softmax(e, graph_id, batch_size)
+            r = segment_sum(a * x, graph_id, batch_size)
             q_star = paddle.concat([q, r], axis=-1)
 
         return q_star
@@ -627,7 +628,7 @@ class EdgeSet2Set(paddle.nn.Layer):
             output_feat: A tensor with shape (num_nodes, output_size).
         """
         graph_id = graph.graph_edge_id
-        batch_size = graph_id.max() + 1
+        batch_size = graph_count(graph)
         h = (
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
             paddle.zeros((self.n_layers, batch_size, self.input_dim)),
@@ -637,14 +638,14 @@ class EdgeSet2Set(paddle.nn.Layer):
             q, h = self.lstm(q_star.unsqueeze(0), h)
             q = q.reshape((batch_size, self.input_dim))
             e = (x * q.index_select(graph_id, axis=0)).sum(axis=-1, keepdim=True)
-            a = segment_softmax(e, graph_id)
-            r = segment_sum(a * x, graph_id)
+            a = segment_softmax(e, graph_id, batch_size)
+            r = segment_sum(a * x, graph_id, batch_size)
             q_star = paddle.concat([q, r], axis=-1)
 
         return q_star
 
 
-class MEGNetPlus(paddle.nn.Layer):
+class MEGNetPlus(RuntimeMixin, paddle.nn.Layer):
     """MegNet: Graph Networks as a Universal Machine Learning Framework for Molecules
     and Crystals
 
@@ -679,6 +680,9 @@ class MEGNetPlus(paddle.nn.Layer):
         data_mean (float, optional): Mean of the training data. Defaults to 0.0.
         data_std (float, optional): Standard deviation of the training data. Defaults
             to 1.0.
+        execution_backend (str, optional): Numerical execution backend. Use
+            ``"eager"`` or ``"cinn"``. Defaults to ``"eager"``.
+        runtime_options (dict, optional): Per-backend runtime options.
     """
 
     def __init__(
@@ -699,10 +703,13 @@ class MEGNetPlus(paddle.nn.Layer):
         property_name: Optional[str] = "formation_energy_per_atom",
         data_mean: float = 0.0,
         data_std: float = 1.0,
+        execution_backend: str = "eager",
+        runtime_options: dict | None = None,
         # loss_cfg:dict = {},
     ):
         # loss = build_loss(loss_cfg)
         super().__init__()
+        self._init_runtime(execution_backend, runtime_options)
         self.max_element_types = max_element_types
         if bond_expansion_cfg is None:
             bond_expansion_cfg = {
@@ -779,12 +786,15 @@ class MEGNetPlus(paddle.nn.Layer):
         elif isinstance(m, nn.LSTM):
             initializer.lstm_init_(m)
 
+    @runtime_boundary("forward")
     def _forward(self, data):
         #  The data in data['graph'] is numpy.ndarray, convert it to paddle.Tensor
         g = data["graph"].tensor()
         # print(data["id"])
-        batch_size = g.num_graph
-        state_attr = paddle.zeros([batch_size, 2])
+        batch_size = graph_count(g)
+        state_attr = paddle.zeros(
+            [batch_size, self.embedding.dim_state_embedding], dtype="float32"
+        )
         node_attr = g.node_feat["atom_types"]
         edge_attr = self.bond_expansion(g.edge_feat["bond_dist"])
         node_feat, edge_feat, state_feat = self.embedding(
@@ -836,25 +846,14 @@ class MEGNetPlus(paddle.nn.Layer):
         return {"loss_dict": loss_dict, "pred_dict": prediction}
 
     @paddle.no_grad()
-    def predict(self, graphs):
-        if isinstance(graphs, list):
-            results = []
-            for graph in graphs:
-                result = self._forward(
-                    {
-                        "graph": graph,
-                    }
-                )
-                result = self.unnormalize(result).numpy()[0, 0]
-                result = {self.property_name: result}
-                results.append(result)
-            return results
+    def predict(self, samples):
+        is_list = isinstance(samples, list)
+        samples = samples if is_list else [samples]
 
-        else:
-            data = {
-                "graph": graphs,
-            }
-            result = self._forward(data)
+        results = []
+        for sample in samples:
+            result = self._forward({"graph": sample})
             result = self.unnormalize(result).numpy()[0, 0]
-            result = {self.property_name: result}
-            return result
+            results.append({self.property_name: result})
+
+        return results if is_list else results[0]

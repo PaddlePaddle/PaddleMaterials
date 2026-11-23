@@ -1,8 +1,32 @@
 # PaddleMaterials
 
 <p align="center">
- <img src="docs/ppmat_logo.png" align="middle" width = "400"/>
+  <img src="docs/ppmat_logo.png" alt="PaddleMaterials" width="400">
+</p>
+
 <p align="center">
+  <a href="https://paddlepaddle.github.io/PaddleMaterials/">
+    <img alt="Homepage" src="https://img.shields.io/badge/Homepage-PaddleMaterials-3B82F6?style=flat">
+  </a>
+  <a href="Install.md">
+    <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&amp;logoColor=white">
+  </a>
+  <a href="https://pypi.org/project/ppmat/">
+    <img alt="PyPI version" src="https://img.shields.io/pypi/v/ppmat?logo=pypi&amp;logoColor=white&amp;cacheSeconds=300">
+  </a>
+  <a href="LICENSE">
+    <img alt="Apache 2.0 License" src="https://img.shields.io/github/license/PaddlePaddle/PaddleMaterials">
+  </a>
+  <a href="https://github.com/PaddlePaddle/PaddleMaterials/stargazers">
+    <img alt="GitHub Stars" src="https://img.shields.io/github/stars/PaddlePaddle/PaddleMaterials?style=flat&amp;logo=github">
+  </a>
+</p>
+
+<p align="center">
+  <a href="README.md"><img src="https://img.shields.io/badge/English-blue" alt="English"></a>
+  <a href="README_zh.md"><img src="https://img.shields.io/badge/简体中文-lightgrey" alt="简体中文"></a>
+  <a href="README_ja.md"><img src="https://img.shields.io/badge/日本語-lightgrey" alt="日本語"></a>
+</p>
 
 ## 🚀 Introduction
 
@@ -12,58 +36,66 @@
  <img src="docs/overview_en.png" align="middle" width = "1000"/>
 <p align="left">
 
-### Core Capabilities
+### 🧩 Core Capabilities
 
 | Task | Description | Typical Applications |
 |------|-------------|---------------------|
-| **Property Prediction (PP)** | Predict material properties from structure | Formation energy, band gap, elastic moduli |
-| **Structure Generation (SG)** | Generate novel crystal structures | High-throughput screening, inverse design |
-| **Interatomic Potential (IP)** | Replace DFT with ML potentials | Molecular dynamics, large-scale simulations |
-| **Electronic Structure (ES)** | Predict electronic properties | Band structure, density of states |
+| **Property Prediction (PP)** | Predict material properties from structure | Forward design or predict formation energy, band gap, elastic moduli etc. |
+| **Structure Generation (SG)** | Generate novel crystal structures | Inverse design or structure generation |
+| **Machine Learning Interatomic Potential (MLIP)** | Surrogate Model for DFT as ML potentials | Molecular dynamics simulations |
+| **Electronic Structure (ES)** | Surrogate Model for DFT to predict physical field  | Predict electronic density |
 | **Spectrum Elucidation (SE)** | Reconstruct structures from spectra | NMR structure elucidation |
+| **Spectrum Enhancement (SPEN)** | Enhance microscopy and spectrum signals | STEM image enhancement, denoising |
 
-### Supported Materials
+### 🧱 Supported Materials
 
-- **Inorganic Crystals** - Well-supported with multiple datasets (MP2018, MP2024, JARVIS) and pretrained models
-- **Organic Molecules** - Support for small molecule datasets (QM9) and property prediction
-- *Polymers, catalysts, and amorphous materials are under development*
+- **Inorganic Crystals** - Well-supported with multiple datasets and pretrained models
+- **Organic Molecules** - Support for multiple datasets and pretrained models including small molecules and partial polymers
 
-### Why PaddleMaterials?
+### ✨ Why PaddleMaterials?
 
-- ✅ **Rich Pretrained Models** - 50+ pretrained models ready for inference
-- ✅ **Multi-Task Integration** - Unified framework across PP, SG, MLIP, MLES, SE
-- ✅ **Domestic Hardware Support** - Full support for MetaX GPUs and NVIDIA GPUs
-- ✅ **PaddlePaddle Ecosystem** - Seamless integration with PaddlePaddle tools
-- ✅ **Production-Ready** - Distributed training, mixed precision, checkpoint recovery
+- ✅ **Rich Pretrained Models & AI-ready Datasets** - 50+ pretrained models ready for inference and Multiple curated datasets for training
+- ✅ **Multi-Task Integration** - Unified framework across tasks of PP, SG, MLIP, ES, SE, SPEN etc.
+- ✅ **Multi-Hardware Support** - Full support for NVIDIA GPUs and MetaX GPUs and Intel CPUs
+- ✅ **Production-Ready** - Easy to use with standandlize design & distributed training, mixed precision, checkpoint recovery
 
----
-
-## 📣 News
-
-
----
-
-## 📑 Tasks
+### 📑 Support Tasks
 
 | Task | Description | Link |
 |------|-------------|------|
 | **Property Prediction (PP)** | Predict formation energy, band gap, elastic properties | [README](property_prediction/README.md) |
 | **Structure Generation (SG)** | Generate new crystal structures with diffusion models | [README](structure_generation/README.md) |
-| **Interatomic Potential (IP)** | DFT-accurate potentials for molecular dynamics | [README](interatomic_potentials/README.md) |
+| **Machine Learning Interatomic Potential (MLIP)** | DFT-accurate potentials for molecular dynamics | [README](interatomic_potentials/README.md) |
 | **Electronic Structure (ES)** | Predict electronic structure properties | [README](electronic_structure/README.md) |
 | **Spectrum Elucidation (SE)** | Reconstruct molecular structures from NMR spectra | [README](spectrum_elucidation/README.md) |
+| **Spectrum Enhancement (SPEN)** | Enhance microscopy and spectral signals | [README](spectrum_enhancement/README.md) |
+
+### 🤖 Available Pretrained Models
+
+| Task | Models | Dataset |
+|------|--------|---------|
+| **Property Prediction**                       | MEGNet, iComformer, DimeNet++, SphereNet | MP2018, MP2024, JARVIS, QM9, etc.|
+| **Structure Generation**                      | MatterGen, DiffCSP                       | MP20, ALEX, etc.|
+| **Machine Learning Interatomic Potential**    | CHGNet, MatterSim, SphereNet             | MPTRJ, MD17, etc.|
+| **Electronic Structure**                      | InfGCN                                   | QM9_ES, MP_ES, OMol25_MC_ES, etc.|
+| **Spectrum Elucidation**                      | DiffNMR                                  | MSD_NMR, etc.|
+| **Spectrum Enhancement**                      | SFIN                                     | SFIN-HAADF/BF, etc.|
+
+Full model list: See [MODEL_REGISTRY](ppmat/models/__init__.py#L75)
 
 ---
 
-## 🔧 Installation
+## 🚀 Get Started
+
+### 🔧 Installation
 
 Please refer to the installation [document](Install.md) for your hardware environment. See [SupportedHardwareList](./docs/multi_device.md) for more multi-hardware adaptation information.
 
 ---
 
-## ⚡ Get Started
+### ⚡ Easy Inference
 
-### Property Prediction
+#### Property Prediction
 
 Predict material formation energy using a pretrained MEGNet model:
 
@@ -71,80 +103,114 @@ Predict material formation energy using a pretrained MEGNet model:
 python property_prediction/predict.py \
     --model_name='megnet_mp2018_train_60k_e_form' \
     --weights_name='best.pdparams' \
-    --cif_file_path='./property_prediction/example_data/cifs/' \
-    --save_path='result.csv'
+    --input_format='cif' \
+    --input_path='./property_prediction/example_data/cifs/' \
+    --output_path='result_property_prediction/'
 ```
 
-### Structure Generation
+#### Structure Generation
 
-Generate novel crystal structures:
+Generate novel crystal structures using a pretrained MatterGen model:
 
 ```bash
-python structure_generation/predict.py \
+python structure_generation/sample.py \
     --model_name='mattergen_mp20' \
-    --num_structures=100 \
-    --save_path='generated_structures/'
+    --weights_name='latest.pdparams' \
+    --output_path='result_mattergen_mp20/' \
+    --mode='by_num_atoms' \
+    --num_atoms=4
 ```
 
-### Interatomic Potentials
+#### Interatomic Potentials
 
-Run molecular dynamics with ML potentials:
+Predict energy and forces using a pretrained MatterSim model:
 
 ```bash
-python interatomic_potentials/run_md.py 
-    --model_name='mattersim_1M' 
-    --structure_path='input.cif' 
-    --temperature=300
+python interatomic_potentials/predict.py \
+    --model_name='mattersim_1M' \
+    --weights_name='mattersim-v1.0.0-1M_model.pdparams' \
+    --input_format='cif' \
+    --input_path='./interatomic_potentials/example_data/cifs/' \
+    --output_path='result_interatomic_potentials/'
+```
+
+#### Electronic Structure
+
+Predict electron density from the bundled methane example using a pretrained InfGCN
+model:
+
+```bash
+python electronic_structure/predict.py \
+    --model_name='infgcn_qm9' \
+    --weights_name='best.pdparams' \
+    --input_format='mol' \
+    --input_path='electronic_structure/example_data/methane.mol' \
+    --grid_shape=8 \
+    --grid_batch_size=4096 \
+    --output_path='output/infgcn_qm9/methane'
+```
+
+See the [InfGCN prediction guide](electronic_structure/configs/infgcn/README.md#prediction)
+for registered-model and local-checkpoint inference from MOL, CUBE, CHGCAR, and
+density JSON inputs. Real test-split field examples are bundled under
+`electronic_structure/example_data/`.
+
+#### Spectrum Elucidation
+
+Run NMR spectrum elucidation using the bundled example and a pretrained DiffNMR
+model:
+
+```bash
+python spectrum_elucidation/sample.py \
+    --model_name='diffnmr_msdnmr_nless15' \
+    --weights_name='best.pdparams' \
+    --output_path='result_diffnmr_nless15/'
+```
+
+#### Spectrum Enhancement
+
+Enhance STEM images using a pretrained SFIN model:
+
+```bash
+python spectrum_enhancement/predict.py \
+    --model_name='sfin_haadf_enhance' \
+    --weights_name='best.pdparams' \
+    --input_path='spectrum_enhancement/example_data/sfin_haadf.png' \
+    --output_path='result_sfin/'
 ```
 
 ---
 
-### Train Your Own Model
+### 🏋️ Start Training
 
 For training and fine-tuning, refer to the [documentation](get_started.md).
 
-### Contribute to PaddleMaterials
-
-For developer, please refer to [architecture](docs/ARCHITECTURE_ch.md).
-
 ---
 
-## 🎯 Available Pretrained Models
+## 🤝 Contributors & Cooperation & Community
 
-| Task | Models | Dataset |
-|------|--------|---------|
-| **Property Prediction** | MEGNet, iComformer, DimeNet++ | MP2018, MP2024, JARVIS |
-| **Structure Generation** | MatterGen, DiffCSP | MP20, ALEX |
-| **Interatomic Potentials** | CHGNet, MatterSim | MPTRJ |
-| **Electronic Structure** | InfGCN | Custom datasets |
+[![Star History Chart](https://api.star-history.com/svg?repos=PaddlePaddle/PaddleMaterials&type=date&legend=top-left)](https://www.star-history.com/#PaddlePaddle/PaddleMaterials&type=date&legend=top-left)
 
-Full model list: See [MODEL_REGISTRY](ppmat/models/__init__.py)
+Thanks to all contributors who have helped build PaddleMaterials！
+<a href="https://github.com/PaddlePaddle/PaddleMaterials/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=PaddlePaddle/PaddleMaterials" />
+</a>
 
----
-
-## ⭐️ Star History
-
-[![Star History Chart](https://api.star-history.com/svg?repos=PaddlePaddle/PaddleMaterials&type=date&legend=top-left)](https://www.star-history.com/#PaddlePaddle/PaddleMaterilas&type=date&legend=top-left)
-
----
-
-## 👩‍👩‍👧‍👦 Cooperation
-
+Thanks for the following organiziton for cooprative support!
 <p align="left">
- <img src="docs/logo_SZNL_2.jpeg" align="middle" width = "240"/>
- <img src="docs/logo_SinochemDI_2.jpeg" align="middle" width = "240"/>
- <img src="docs/logo_MetaX.png" align="middle" width = "240"/>
+ <img src="docs/logo_SZNL_2.jpeg" align="middle" width = "180"/>
+ <img src="docs/logo_SinochemDI_2.jpeg" align="middle" width = "180"/>
+ <img src="docs/logo_MetaX.png" align="middle" width = "140"/>
 <p align="left">
-
----
-
-## 👩‍👩‍👧‍👦 Community
 
 Join the PaddleMaterials WeChat group to discuss with us!
+<p align="left">
+ <img src="docs/wechat_group.png" align="middle" width = "100"/>
+<p align="left">
 
-<p align="left">
- <img src="docs/wechat_group.png" align="middle" width = "200"/>
-<p align="left">
+## 🛠️ Contribute to PaddleMaterials
+
+For developer, please refer to [architecture](docs/ARCHITECTURE_ch.md).
 
 ---
 
@@ -157,17 +223,20 @@ PaddleMaterials is licensed under the [Apache License 2.0](LICENSE).
 ## 🎓 Citation
 
 ```bibtex
-@misc{paddlematerials2025,
-  title={PaddleMaterials, a deep learning toolkit based on PaddlePaddle for material science.},
-  author={PaddleMaterials Contributors},
-  howpublished = {\url{https://github.com/PaddlePaddle/PaddleMaterials}},
-  year={2025}
+@misc{liu2026paddlematerialsendtoenddeeplearning,
+  title={PaddleMaterials: An End-to-End Deep Learning Toolkit for Materials Science},
+  author={Xuwei Liu and Zhimin Zhang and Xiaoguang Hu and Zhongwei Liu and Yuanhui Sun and Jun Huo and Hua Wu and Haifeng Wang},
+  year={2026},
+  eprint={2611.03154},
+  archivePrefix={arXiv},
+  primaryClass={cs.LG},
+  url={https://arxiv.org/abs/2611.03154},
 }
 ```
 
 ---
 
-## Acknowledgements
+## 🙏 Acknowledgements
 
 This repository references code from the following projects:
 

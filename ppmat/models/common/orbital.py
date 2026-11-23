@@ -18,15 +18,14 @@ import paddle
 
 from ppmat.models.common.e3nn import o3
 
-from ppmat.utils.paddle_aux import view
-
 
 class GaussianOrbital(paddle.nn.Layer):
     """
     Gaussian-type orbital
 
     .. math::
-        \\psi_{n\\ell m}(\\mathbf{r})=\\sqrt{\\frac{2(2a_n)^{\\ell+3/2}}{\\Gamma(\\ell+3/2)}}
+        \\psi_{n\\ell m}(\\mathbf{r})=
+        \\sqrt{\\frac{2(2a_n)^{\\ell+3/2}}{\\Gamma(\\ell+3/2)}}
         \\exp(-a_n r^2) r^\\ell Y_{\\ell}^m(\\hat{\\mathbf{r}})
 
     """
@@ -52,7 +51,7 @@ class GaussianOrbital(paddle.nn.Layer):
         numerator = power * paddle.log(x=2 * self.gauss).unsqueeze(axis=0) + math.log(2)
         denominator = paddle.lgamma(x=power)
         lognorm = (numerator - denominator) / 2
-        return lognorm.view(-1)
+        return lognorm.reshape([-1])
 
     def forward(self, vec):
         """
@@ -73,7 +72,7 @@ class GaussianOrbital(paddle.nn.Layer):
         exponent = -self.gauss * (r * r)
         poly = paddle.arange(dtype="float32", end=self.lmax + 1) * paddle.log(x=r)
         log = exponent.unsqueeze(axis=-2) + poly.unsqueeze(axis=-1)
-        log_flat = log.view(*tuple(log.shape)[:-2], -1)
+        log_flat = log.reshape([*tuple(log.shape)[:-2], -1])
         radial = paddle.exp(x=paddle.add(log_flat, lognorm))
         # Use explicit elementwise multiplication to avoid potential issues
         # with Python's `*` dispatch on Tensor-like objects.
@@ -85,7 +84,8 @@ class BroadcastGTOTensor(paddle.nn.Layer):
     Broadcast between spherical tensors of the Gaussian Type Orbitals (GTOs):
 
     .. math::
-        \\{a_{clm}, 1\\le c\\le c_{max}, 0\\le\\ell\\le\\ell_{max}, -\\ell\\le m\\le\\ell\\}
+        \\{a_{clm}, 1\\le c\\le c_{max}, 0\\le\\ell\\le\\ell_{max},
+        -\\ell\\le m\\le\\ell\\}
 
     For efficiency reason, the feature tensor is indexed by l, c, m.
     For example, for lmax = 3, cmax = 2, we have a tensor of 1s2s 1p2p 1d2d 1f2f.
@@ -123,10 +123,10 @@ class BroadcastGTOTensor(paddle.nn.Layer):
         :return: (lmax+1)^2 * cmax
         """
         indices = [
-            (l * self.cmax + c)
-            for l in range(self.lmax + 1)
+            (degree * self.cmax + c)
+            for degree in range(self.lmax + 1)
             for c in range(self.cmax)
-            for _ in range(2 * l + 1)
+            for _ in range(2 * degree + 1)
         ]
         return paddle.to_tensor(data=indices, dtype="int64")
 
@@ -140,10 +140,10 @@ class BroadcastGTOTensor(paddle.nn.Layer):
         :return: (lmax+1)^2 * cmax
         """
         indices = [
-            (l * l + m)
-            for l in range(self.lmax + 1)
+            (degree * degree + m)
+            for degree in range(self.lmax + 1)
             for _ in range(self.cmax)
-            for m in range(2 * l + 1)
+            for m in range(2 * degree + 1)
         ]
         return paddle.to_tensor(data=indices, dtype="int64")
 
@@ -153,9 +153,10 @@ class BroadcastGTOTensor(paddle.nn.Layer):
         :param x: (..., src_dim)
         :return: (..., dst_dim)
         """
-        assert (
-            x.shape[-1] == self.src_dim
-        ), f"Input dimension mismatch! Should be {self.src_dim}, but got {x.shape[-1]} instead!"
+        assert x.shape[-1] == self.src_dim, (
+            f"Input dimension mismatch! Should be {self.src_dim}, "
+            f"but got {x.shape[-1]} instead!"
+        )
         if self.src == self.dst:
             return x
         return x[..., self.indices]

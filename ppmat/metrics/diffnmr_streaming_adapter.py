@@ -14,6 +14,7 @@
 
 from typing import Any
 from typing import Dict
+from typing import Iterable
 from typing import Optional
 
 import paddle
@@ -48,12 +49,21 @@ class DiffNMRStreamingAdapter(StreamingMetricBase):
         *,
         t_scale: float = 1.0,  # multiply eval NLL/terms by T if you want
         dataset_infos: Any = None,
+        sample_metrics: Optional[Iterable[str]] = None,
     ):
         self.t_scale = float(t_scale)
         self.train_core = DiffNMRMetric(mode="train", dataset_infos=dataset_infos)
         self.model: Optional[paddle.nn.Layer] = None
         self.eval_acc = EvalAccumulator()
         self.sample_core = None
+        self.dataset_infos = None
+        self.clip = None
+        self.num_candidate = 1
+        if isinstance(sample_metrics, dict):
+            sample_metrics = sample_metrics.keys()
+        elif isinstance(sample_metrics, str):
+            sample_metrics = [sample_metrics]
+        self.sample_metrics = None if sample_metrics is None else set(sample_metrics)
         self.reset()
 
     # ---- lifecycle ----
@@ -68,17 +78,9 @@ class DiffNMRStreamingAdapter(StreamingMetricBase):
                 )
             except TypeError:
                 pass
-        clip = runtime_objs.get("clip", None)
-        train_smiles = runtime_objs.get("train_smiles", [])
-        num_candidate = runtime_objs.get("num_candidate", 1)
-        dataset_infos = runtime_objs.get("dataset_infos", None)
-        if self.sample_core is None and dataset_infos is not None:
-            self.sample_core = SamplingMolecularMetrics(
-                dataset_infos=dataset_infos,
-                train_smiles=train_smiles,
-                clip=clip,
-                num_candidate=num_candidate,
-            )
+        self.clip = runtime_objs.get("clip", self.clip)
+        self.num_candidate = runtime_objs.get("num_candidate", self.num_candidate)
+        self.dataset_infos = runtime_objs.get("dataset_infos", self.dataset_infos)
 
     def reset(self):
         if hasattr(self.train_core, "reset"):
@@ -230,7 +232,16 @@ class DiffNMRStreamingAdapter(StreamingMetricBase):
 
     def _update_sample(self, result: Dict[str, Any], batch: Any):
         if self.sample_core is None:
-            return
+            assert self.dataset_infos is not None, "Sampling requires dataset infos."
+            train_smiles = None
+            if self.sample_metrics is None or "Novelty" in self.sample_metrics:
+                train_smiles = self.dataset_infos.load_train_smiles()
+            self.sample_core = SamplingMolecularMetrics(
+                dataset_infos=self.dataset_infos,
+                train_smiles=train_smiles,
+                clip=self.clip,
+                num_candidate=self.num_candidate,
+            )
         self.sample_metric_dict = self.sample_core(
             samples=result["samples"],
             current_epoch=result.get("epoch_id", 0),

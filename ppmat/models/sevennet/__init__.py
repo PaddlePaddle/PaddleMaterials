@@ -1,3 +1,4 @@
-from .sevennet_model import PurePaddleSevenNet
+from .sevennet import SevenNet
+from .sevennet_graph_converter import SevenNetGraphConverter
 
-__all__ = ["PurePaddleSevenNet"]
+__all__ = ["SevenNet", "SevenNetGraphConverter"]

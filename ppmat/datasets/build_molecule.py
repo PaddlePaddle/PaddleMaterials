@@ -23,14 +23,17 @@ from typing import Union
 
 from p_tqdm import p_map
 from rdkit import Chem
+from rdkit.Geometry import Point3D
 
 
 class BuildMolecule:
     """Build RDKit Mol from different formats.
 
     Args:
-        format (Literal["smiles","mol_block","mol_file","sdf_file", "inchi","dict",
-            "rdmol"]): format of input molecules data used by convertion of RDKit
+        format (Literal["smiles","mol_block","mol_file","sdf_file","xyz_block",
+            "xyz_file","inchi","dict","rdmol"]): format of input molecules data
+            used by convertion of RDKit. The ``dict`` format accepts
+            ``atomic_numbers`` and ``positions`` arrays.
         sanitize (bool): Whether to sanitize the molecule using RDKit after construction
             (e.g., validate valence, adjust bond orders). Defaults to True.
         add_hs (bool): Whether to add explicit hydrogen atoms to the molecule.
@@ -47,7 +50,15 @@ class BuildMolecule:
     def __init__(
         self,
         format: Literal[
-            "smiles", "mol_block", "mol_file", "sdf_file", "inchi", "dict", "rdmol"
+            "smiles",
+            "mol_block",
+            "mol_file",
+            "sdf_file",
+            "xyz_block",
+            "xyz_file",
+            "inchi",
+            "dict",
+            "rdmol",
         ],
         sanitize: bool = True,
         add_hs: bool = False,
@@ -93,21 +104,41 @@ class BuildMolecule:
         if format == "smiles":
             mol = Chem.MolFromSmiles(str(mol_data), sanitize=sanitize)
         elif format == "mol_block":
-            mol = Chem.MolFromMolBlock(str(mol_data), sanitize=sanitize)
+            mol = Chem.MolFromMolBlock(
+                str(mol_data),
+                sanitize=sanitize,
+                removeHs=False,
+            )
         elif format == "mol_file":
             with open(str(mol_data), "r") as f:
                 mol_block = f.read()
-            mol = Chem.MolFromMolBlock(mol_block, sanitize=sanitize)
+            mol = Chem.MolFromMolBlock(
+                mol_block,
+                sanitize=sanitize,
+                removeHs=False,
+            )
         elif format == "sdf_file":
             suppl = Chem.SDMolSupplier(str(mol_data), sanitize=sanitize, removeHs=False)
             mol = next((m for m in suppl if m is not None), None)
+        elif format == "xyz_block":
+            mol = Chem.MolFromXYZBlock(str(mol_data))
+        elif format == "xyz_file":
+            mol = Chem.MolFromXYZFile(str(mol_data))
         elif format == "inchi":
             mol = Chem.MolFromInchi(str(mol_data))
         elif format == "dict":
-            mol_block = mol_data.get("mol_block", None)
-            if mol_block is None:
-                raise ValueError("dict format requires key 'mol_block'.")
-            mol = Chem.MolFromMolBlock(mol_block, sanitize=sanitize)
+            atomic_numbers = mol_data["atomic_numbers"]
+            positions = mol_data["positions"]
+            mol = Chem.RWMol()
+            for atomic_number in atomic_numbers:
+                mol.AddAtom(Chem.Atom(int(atomic_number)))
+            mol = mol.GetMol()
+            conformer = Chem.Conformer(len(atomic_numbers))
+            for atom_idx, position in enumerate(positions):
+                conformer.SetAtomPosition(
+                    atom_idx, Point3D(*(float(value) for value in position))
+                )
+            mol.AddConformer(conformer)
         elif format == "rdmol":
             mol = mol_data
         else:

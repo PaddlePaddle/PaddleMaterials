@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PaddleMaterials Trainer 文档</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<script>mermaid.initialize({startOnLoad:true,theme:'default',flowchart:{htmlLabels:true,curve:'basis',useMaxWidth:false,nodeSpacing:55,rankSpacing:65},themeVariables:{fontSize:'18px'}});</script>
+<style>
+  :root{--fg:#1f2328;--muted:#57606a;--bd:#d0d7de;--bg:#f6f8fa;--accent:#0969da;--code-bg:#eaeef2;--ok:#1a7f37;--warn:#bf3989;--side:#ffffff;}
+  *{box-sizing:border-box;}
+  body{font-family:-apple-system,"Segoe UI","PingFang SC","Microsoft YaHei",Roboto,Helvetica,Arial,sans-serif;color:var(--fg);margin:0;line-height:1.7;background:#fff;}
+  .layout{display:flex;align-items:flex-start;}
+  /* sidebar */
+  aside{position:sticky;top:0;height:100vh;width:288px;min-width:288px;overflow-y:auto;
+    border-right:1px solid var(--bd);background:var(--side);padding:22px 14px 40px;font-size:.9rem;}
+  aside .brand{font-weight:700;font-size:1.02rem;padding:0 8px 10px;border-bottom:1px solid var(--bd);margin-bottom:8px;}
+  aside .part{font-weight:700;color:var(--accent);font-size:.82rem;text-transform:uppercase;letter-spacing:.04em;padding:14px 8px 4px;}
+  aside a{display:block;color:var(--muted);text-decoration:none;padding:4px 10px;border-radius:5px;line-height:1.4;}
+  aside a:hover{background:var(--bg);color:var(--fg);}
+  aside a.active{background:#ddf4ff;color:var(--accent);font-weight:600;}
+  /* main */
+  main{flex:1;min-width:0;max-width:900px;margin:0 auto;padding:36px 36px 100px;}
+  h1{font-size:1.7rem;margin:0 0 4px;}
+  h2{font-size:1.3rem;margin:44px 0 6px;padding-bottom:6px;border-bottom:1px solid var(--bd);}
+  h3{font-size:1.04rem;margin:24px 0 6px;color:var(--muted);font-weight:600;}
+  .sub{color:var(--muted);font-size:.95rem;margin-bottom:6px;}
+  p{margin:8px 0;}
+  code{background:var(--code-bg);padding:1px 6px;border-radius:4px;font-size:.87em;font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;}
+  pre{background:#0d1117;color:#e6edf3;padding:14px 16px;border-radius:8px;overflow-x:auto;font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;font-size:.83rem;line-height:1.55;}
+  pre code{background:transparent;padding:0;color:inherit;}
+  .note{background:var(--bg);border:1px solid var(--bd);border-left:4px solid var(--accent);padding:10px 14px;border-radius:6px;margin:14px 0;font-size:.92rem;}
+  .tip{background:#dafbe1;border:1px solid #aceebb;border-left:4px solid var(--ok);padding:10px 14px;border-radius:6px;margin:14px 0;font-size:.92rem;}
+  .warn{background:#fff4f2;border:1px solid #ffd5cc;border-left:4px solid var(--warn);padding:10px 14px;border-radius:6px;margin:14px 0;font-size:.92rem;}
+  .part-banner{background:linear-gradient(90deg,#0969da11,transparent);border-left:4px solid var(--accent);padding:12px 16px;border-radius:6px;margin:10px 0 20px;}
+  .part-banner h1{margin:0;}
+  .diagram{background:var(--bg);border:1px solid var(--bd);border-radius:8px;padding:16px 8px;margin:12px 0;text-align:center;overflow-x:auto;}
+  .mermaid{display:inline-block;}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:.89rem;}
+  th,td{border:1px solid var(--bd);padding:8px 11px;text-align:left;vertical-align:top;}
+  th{background:var(--bg);font-weight:600;white-space:nowrap;}
+  td code{font-size:.84em;}
+  ul{margin:6px 0 6px 22px;}li{margin:3px 0;}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;margin:12px 0;}
+  .card{border:1px solid var(--bd);border-radius:8px;padding:12px 14px;background:var(--bg);}
+  .card h4{margin:0 0 4px;font-size:.96rem;color:var(--accent);}
+  .card p{margin:0;font-size:.86rem;color:var(--muted);}
+  footer{color:var(--muted);font-size:.82rem;margin-top:50px;border-top:1px solid var(--bd);padding-top:12px;}
+  .nav-top{position:fixed;right:24px;bottom:24px;background:var(--accent);color:#fff;text-decoration:none;
+    padding:8px 14px;border-radius:20px;font-size:.84rem;box-shadow:0 2px 8px #0002;}
+  /* mobile */
+  @media(max-width:860px){.layout{flex-direction:column;}aside{position:static;height:auto;width:auto;border-right:none;border-bottom:1px solid var(--bd);}main{padding:24px;}}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<!-- ============ SIDEBAR ============ -->
+<aside>
+  <div class="brand">
+    <img src="ppmat_logo_image.png" alt="logo" style="height:28px;vertical-align:middle;margin-right:6px;">
+    <img src="ppmat_logo_character.png" alt="PaddleMaterials" style="height:20px;vertical-align:middle;">
+  </div>
+  <div class="part">Ⅰ 用户指南</div>
+  <a href="#u-quick">1.1 快速上手</a>
+  <a href="#u-which">1.2 我想做哪件事</a>
+  <a href="#u-config">1.3 配置文件</a>
+  <a href="#u-knobs">1.4 Trainer 配置项</a>
+  <a href="#u-tasks">1.5 常见任务</a>
+  <a href="#u-output">1.6 运行后产物</a>
+  <a href="#u-timeline">1.7 训练时间线</a>
+  <div class="part">Ⅱ 开发者接入</div>
+  <a href="#d-overview">2.1 装配全景</a>
+  <a href="#d-registry">2.2 注册约定</a>
+  <a href="#d-model">2.3 模型契约</a>
+  <a href="#d-data">2.4 数据集契约</a>
+  <a href="#d-metric">2.5 指标</a>
+  <a href="#d-entry">2.6 训练入口</a>
+  <a href="#d-ability">2.7 BaseTrainer 能力</a>
+  <a href="#d-minimal">2.8 最小骨架</a>
+  <a href="#d-pitfalls">2.9 常见陷阱</a>
+  <div class="part">Ⅲ 贡献者·维护者</div>
+  <a href="#m-map">3.1 代码地图</a>
+  <a href="#m-layer">3.2 架构分层</a>
+  <a href="#m-newtask">3.3 新增任务 checklist</a>
+  <a href="#m-internals">3.4 Trainer 内部机制</a>
+  <a href="#m-cache">3.5 缓存子系统</a>
+  <a href="#m-confsys">3.6 配置系统</a>
+  <a href="#m-download">3.7 下载与注册表</a>
+  <a href="#m-package">3.8 预训练模型包</a>
+  <a href="#m-test">3.9 测试</a>
+  <a href="#m-release">3.10 依赖与发布</a>
+  <a href="#m-style">3.11 代码风格</a>
+  <a href="#m-maintain">3.12 维护注意</a>
+</aside>
+
+<!-- ============ MAIN ============ -->
+<main>
+
+<div class="part-banner"><h1>PaddleMaterials Trainer 文档</h1></div>
+
+<!-- ============================================================ -->
+<!-- Ⅰ 用户指南 -->
+<!-- ============================================================ -->
+<div class="part-banner" style="border-color:var(--accent);background:#0969da0d;"><h2 style="border:0;margin:0;padding:0;">Ⅰ · 用户指南</h2></div>
+
+<h2 id="u-quick">1.1 快速上手</h2>
+<pre><code># 性质预测（单卡）
+python property_prediction/train.py -c property_prediction/configs/spherenet/spherenet_qm9_U0.yaml
+
+# 原子间势（多卡）
+python -m paddle.distributed.launch --gpus="0,1,2,3" \
+    interatomic_potentials/train.py -c interatomic_potentials/configs/chgnet/chgnet_mptrj.yaml
+
+# 结构生成（单卡）
+python structure_generation/train.py -c structure_generation/configs/diffcsp/diffcsp_mp20.yaml
+
+# 临时覆盖配置项（命令行追加 Key=Value）
+python &lt;task&gt;/train.py -c &lt;config.yaml&gt; Trainer.max_epochs=50</code></pre>
+<div class="note">6 个任务入口：<code>property_prediction/</code>（DimeNet++/MEGNet/SphereNet/iComformer）、<code>interatomic_potentials/</code>（CHGNet/M3GNet/SphereNet）、<code>electronic_structure/</code>（InfGCN）、<code>spectrum_enhancement/</code>（SFIN）、<code>spectrum_elucidation/</code>（DiffNMR 系）、<code>structure_generation/</code>（DiffCSP/MatterGen）。完整模型清单见 <a href="models_overview.html" style="color:var(--accent);">全任务模型总览</a>。</div>
+<div class="tip"><strong>预测式 vs 生成式</strong>：前 4 个任务是<strong>预测式</strong>（train+eval 走 BaseTrainer，推理走 <code>predict.py</code>）；后 2 个是<strong>生成式</strong>（train 走 BaseTrainer，生成走 <code>sample.py</code> + Sampler）。两者模型契约不同，见 §2.3。</div>
+
+<h2 id="u-which">1.2 我想做哪件事</h2>
+<div class="diagram"><div class="mermaid">
+flowchart TD
+  Q(["我想做什么？"])
+  Q --> W1["从头训练"] --> C1["do_train=True<br/>python train.py -c config"]
+  Q --> W2["断点续训"] --> C2["Trainer.resume_from_checkpoint=ckpt"]
+  Q --> W3["加载预训练微调"] --> C3["Trainer.pretrained_model_path=权重"]
+  Q --> W4["只评估/测试"] --> C4["do_train=False do_eval=True<br/>pretrained_model_path=权重"]
+  Q --> W5["多卡加速"] --> C5["paddle.distributed.launch --gpus=..."]
+</div></div>
+
+<h2 id="u-config">1.3 配置文件</h2>
+<pre><code>Global:
+  do_train / do_eval / do_test : True
+Trainer:
+  max_epochs / max_iter / seed / output_dir
+  eval_freq | eval_freq_steps     # 二选一（epoch 级 vs 步级 eval，互斥）
+  save_freq | save_freq_steps     # 检查点节奏
+  pretrained_model_path / resume_from_checkpoint
+  use_amp / eval_with_no_grad / gradient_accumulation_steps
+  best_metric_indicator / name_for_best_metric / greater_is_better
+  use_tensorboard / use_visualdl / use_wandb
+Model / Dataset / Optimizer / Vocabulary / Metric  # 按 __class_name__ 注册</code></pre>
+
+<h2 id="u-knobs">1.4 Trainer 配置项</h2>
+<table>
+<tr><th>配置项</th><th>作用</th><th>例子</th></tr>
+<tr><td><code>max_epochs</code></td><td>最大训练轮数</td><td>1000</td></tr>
+<tr><td><code>max_iter</code></td><td>全局步数预算，到步早停</td><td>10000</td></tr>
+<tr><td><code>eval_freq</code></td><td>每 N epoch 验证（epoch 级 eval）</td><td>1</td></tr>
+<tr><td><code>eval_freq_steps</code></td><td>每 N 步验证（步级 eval）；设了即关闭 epoch 级</td><td>200</td></tr>
+<tr><td><code>save_freq</code> / <code>save_freq_steps</code></td><td>latest / step_N 检查点节奏</td><td>2000</td></tr>
+<tr><td><code>resume_from_checkpoint</code></td><td>断点续训（含优化器+进度）</td><td>latest.pdparams 路径</td></tr>
+<tr><td><code>pretrained_model_path</code></td><td>加载预训练权重（仅权重）</td><td>权重路径</td></tr>
+<tr><td><code>use_amp</code> / <code>amp_level</code></td><td>混合精度</td><td>True / 'O1'</td></tr>
+<tr><td><code>gradient_accumulation_steps</code></td><td>梯度累积</td><td>2</td></tr>
+<tr><td><code>eval_with_no_grad</code></td><td>评估 no_grad（含高阶导则关）</td><td>True</td></tr>
+<tr><td><code>best_metric_indicator</code> + <code>name_for_best_metric</code> + <code>greater_is_better</code></td><td>best 检查点评选口径</td><td>eval_loss / mae / False</td></tr>
+</table>
+
+<h2 id="u-tasks">1.5 常见任务</h2>
+<h3>从头训练</h3><pre><code>python &lt;task&gt;/train.py -c &lt;config.yaml&gt;</code></pre>
+<h3>断点续训</h3><pre><code>python &lt;task&gt;/train.py -c &lt;config.yaml&gt; Trainer.resume_from_checkpoint=./output/.../latest.pdparams</code></pre>
+<div class="tip">恢复优化器状态 + 训练进度；勿与 <code>pretrained_model_path</code> 同用。</div>
+<h3>加载预训练微调</h3><pre><code>python &lt;task&gt;/train.py -c &lt;config.yaml&gt; Trainer.pretrained_model_path=./pretrained/model.pdparams</code></pre>
+<h3>只评估 / 测试</h3><pre><code>python &lt;task&gt;/train.py -c &lt;config.yaml&gt; \
+    Global.do_train=False Global.do_eval=True \
+    Trainer.pretrained_model_path=./output/.../best.pdparams</code></pre>
+<h3>步级 eval（长 epoch 用）</h3><pre><code>Trainer.eval_freq_steps=200 Trainer.save_freq_steps=2000</code></pre>
+<div class="warn">设了 <code>eval_freq_steps</code>，epoch 级 eval / epoch 级 best / by-epoch lr 全部关闭，改由步级 eval 接管。</div>
+
+<h2 id="u-output">1.6 运行后产物</h2>
+<div class="cards">
+<div class="card"><h4>best.pdparams</h4><p>验证最优检查点，推理优先用。</p></div>
+<div class="card"><h4>latest.pdparams</h4><p>最近检查点，续训用它。</p></div>
+<div class="card"><h4>step_N.pdparams</h4><p>每 save_freq_steps 步存一个。</p></div>
+<div class="card"><h4>run.log</h4><p>训练日志。</p></div>
+<div class="card"><h4>tensorboard/</h4><p>曲线：<code>tensorboard --logdir &lt;dir&gt;</code></p></div>
+<div class="card"><h4>config.yaml 快照</h4><p>本次运行配置（含覆盖），便于复现。</p></div>
+</div>
+<p><code>output_dir</code> 运行时自动加 <code>_t_&lt;时间戳&gt;_s_&lt;seed&gt;</code> 后缀。</p>
+
+<h2 id="u-timeline">1.7 训练时间线</h2>
+<div class="diagram"><div class="mermaid">
+flowchart LR
+  S(["train.py -c config"]) --> A["装配：模型/数据/优化器"]
+  A --> B["训练循环（逐 epoch）"]
+  B --> C["每 log_freq 步打日志<br/>按节奏存检查点"]
+  C --> D{"按 eval 节奏评估"}
+  D --> E["更新 best + 学习率"]
+  E --> F{"还有 epoch 且未到 max_iter？"}
+  F -- 是 --> B
+  F -- 否 --> G(["产出：best/latest + 日志"])
+</div></div>
+
+<!-- ============================================================ -->
+<!-- Ⅱ 开发者接入 -->
+<!-- ============================================================ -->
+<div class="part-banner" style="border-color:var(--ok);background:#1a7f370d;"><h2 style="border:0;margin:0;padding:0;">Ⅱ · 开发者接入指南</h2></div>
+
+<h2 id="d-overview">2.1 装配全景</h2>
+<div class="diagram"><div class="mermaid">
+flowchart LR
+  C(["YAML"]) --> V[build_vocab]
+  V --> M["build_model<br/>你的模型"]
+  V --> D["build_dataloader<br/>你的 Dataset+collate"]
+  M --> O[build_optimizer]
+  D --> O --> MM["build_metric<br/>你的指标"] --> T[BaseTrainer] --> RUN(["train/eval"])
+  M -.注册.-> R["__class_name__/__init_params__<br/>MODEL_REGISTRY(权重)"]
+</div></div>
+
+<h2 id="d-registry">2.2 注册约定</h2>
+<pre><code>Model:
+  __class_name__: MyModel        # 类名，需 import 进对应 __init__.py
+  __init_params__: { hidden_dim: 128 }</code></pre>
+<table>
+<tr><th>build 函数</th><th>位置</th><th>说明</th></tr>
+<tr><td><code>build_model(cfg, vocab=None)</code></td><td>models/__init__.py</td><td>vocab 注入（若构造函数接受）</td></tr>
+<tr><td><code>build_dataloader(cfg, vocab=None)</code></td><td>datasets/__init__.py</td><td>读 Dataset.{train,val,test}</td></tr>
+<tr><td><code>build_optimizer(cfg, model, max_epochs, n_steps)</code></td><td>optimizer/</td><td>含 lr scheduler</td></tr>
+<tr><td><code>build_metric(cfg)</code> / <code>build_graph_converter</code> / <code>build_vocab</code></td><td>metrics/ · models/ · vocab/</td><td>同注册模式</td></tr>
+</table>
+<div class="tip"><code>MODEL_REGISTRY</code>（models/__init__.py）是<strong>预训练权重下载</strong>注册表（name→BCE url），与类的 import 注册是两回事。</div>
+
+<h2 id="d-model">2.3 模型契约</h2>
+<div class="diagram"><div class="mermaid">
+flowchart TD
+  B(["batch=collate(samples)"]) --> F["model.forward(batch)"]
+  F --> LD["loss_dict:{'loss':Tensor,...}"] --> BL["loss_dict['loss']→backward"]
+  F --> PD["pred_dict:{...}"] --> MET["指标/预测"]
+</div></div>
+<pre><code>class MyModel(paddle.nn.Layer):
+    def __init__(self, hidden_dim=128, vocab=None, **kwargs):
+        super().__init__(); self.vocab=vocab; self.target_name="energy"
+    def forward(self, batch):
+        pred = self._compute(batch)
+        loss = some_loss(pred, batch["label"])
+        return {"loss_dict": {"loss": loss, "mae": paddle.mean(paddle.abs(pred-batch["label"]))},
+                "pred_dict": {self.target_name: pred}}
+    def before_train(self, trainer): ...   # 可选 hook</code></pre>
+<p><code>loss_dict["loss"]</code> 是反向唯一入口；其它键可作 best 指标（<code>name_for_best_metric</code>）。</p>
+
+<h3>生成式模型（扩散：DiffNMR / DiffCSP / MatterGen）</h3>
+<p>生成式模型的 <strong>训练</strong> 也返回 <code>loss_dict</code>（BaseTrainer 优化），但 <strong>生成/采样</strong> 走独立的 <code>sample()</code> 方法 + Sampler，不经 Trainer：</p>
+<pre><code># 训练（BaseTrainer 优化）
+def forward(self, batch):
+    return {"loss_dict": {"loss": total_loss, "loss_coord": ..., "loss_atom": ...}}
+
+# 生成（sample.py 入口 + MolecularSampler/StructureSampler，不经 Trainer）
+def sample(self, batch, num_inference_steps=1000, **kwargs):
+    return generated_structures</code></pre>
+<div class="note">预测式任务（性质/势/电子结构/图像增强）推理走 <code>predict.py</code> + <code>BasePredictor</code> 子类；生成式任务（NMR/结构）生成走 <code>sample.py</code> + <code>ppmat/sampler/</code>。</div>
+
+<h2 id="d-data">2.4 数据集契约</h2>
+<pre><code>class MyDataset(paddle.io.Dataset):
+    def __getitem__(self, idx):
+        return {"graph": pgl_graph, "x": np.ndarray, "y": np.ndarray, "id": idx, "info": {...}}
+    def __len__(self): ...</code></pre>
+<table>
+<tr><th>collate_fn</th><th>处理</th></tr>
+<tr><td><code>DefaultCollator</code></td><td>ndarray→stack、Mapping→递归、pgl.Graph→batch、Data→Batch.from_data_list</td></tr>
+<tr><td><code>RadiusGraphCollator</code></td><td>批量半径图 + triplet 偏移</td></tr>
+<tr><td><code>DensityCollator</code></td><td>体密度场：变长 padding + mask</td></tr>
+</table>
+<div class="warn">节点特征键名：<code>cart_coords</code> / <code>atom_types</code> / <code>x</code>（RadiusGraphConverter 产出），接入已有模型需保持一致。</div>
+
+<h2 id="d-metric">2.5 指标</h2>
+<p><b>(a) 函数式</b>：<code>def metric(pred,label)->scalar</code>，注册到 <code>Metric</code> 段。<br>
+<b>(b) 流式</b>：实现 <code>update_step/compute_epoch/reset</code>，框架在 epoch 边界聚合。<br>
+best 口径：<code>best_metric_indicator</code> + <code>name_for_best_metric</code> + <code>greater_is_better</code>。</p>
+
+<h2 id="d-entry">2.6 训练入口</h2>
+<pre><code>config = OmegaConf.to_container(OmegaConf.merge(OmegaConf.load(c), OmegaConf.from_dotlist(args)), resolve=True)
+vocab = build_vocab(config.get("Vocabulary"))
+model = build_model(config["Model"], vocab=vocab)
+loaders = read_dataloader_config(config, vocab=vocab)
+opt, lr = build_optimizer(config["Optimizer"], model, config["Trainer"]["max_epochs"], len(loaders[0]))
+trainer = BaseTrainer(config["Trainer"], model, *loaders[:2], optimizer=opt, lr_scheduler=lr,
+                      compute_metric_func_dict=build_metric(config.get("Metric")))
+if do_train: trainer.train()
+if do_eval:  trainer.eval(loaders[1])
+if do_test:  trainer.eval(loaders[2])</code></pre>
+
+<h2 id="d-ability">2.7 BaseTrainer 能力</h2>
+<table>
+<tr><th>能力</th><th>配置</th></tr>
+<tr><td>训练循环+反向+优化</td><td>梯度累积、裁剪、AMP</td></tr>
+<tr><td>检查点</td><td>best/latest/step_N（分布式仅 rank0 写）</td></tr>
+<tr><td>续训/预训练</td><td>resume_from_checkpoint / pretrained_model_path</td></tr>
+<tr><td>评估节奏</td><td>eval_freq（epoch）或 eval_freq_steps（步）</td></tr>
+<tr><td>lr 调度</td><td>ReduceOnPlateau（按指标）或其它；by-epoch/by-step</td></tr>
+<tr><td>日志/分布式/早停</td><td>tb/vdl/wandb、fleet、max_iter</td></tr>
+</table>
+
+<h2 id="d-minimal">2.8 最小骨架</h2>
+<pre><code># my_model.py
+class MyModel(paddle.nn.Layer):
+    def __init__(self, hidden_dim=64, vocab=None, **kw):
+        super().__init__(); self.linear=paddle.nn.Linear(hidden_dim,1)
+    def forward(self, batch):
+        pred=self.linear(batch["x"]).squeeze(-1)
+        loss=paddle.nn.functional.mse_loss(pred,batch["y"])
+        return {"loss_dict":{"loss":loss,"mae":paddle.mean(paddle.abs(pred-batch["y"]))},
+                "pred_dict":{"y":pred}}
+# ppmat/models/__init__.py 加: from .my_model import MyModel
+# config.yaml: Model/Dataset/Optimizer/Trainer/Global 同标准结构</code></pre>
+
+<h2 id="d-pitfalls">2.9 常见陷阱</h2>
+<ul>
+<li>类必须 import 进 __init__.py，否则 <code>eval(__class_name__)</code> 报 NameError。</li>
+<li><code>loss_dict</code> 必须有 <code>"loss"</code>。</li>
+<li>collate 要与样本类型匹配（pgl.Graph / Data 各有路径）。</li>
+<li>分布式自定义存盘要尊重 rank（只 rank0）。</li>
+<li><code>vocab</code> 仅当构造函数有该参数才注入。</li>
+<li><code>${}</code> 插值在 resolve=True 展开。</li>
+</ul>
+
+<!-- ============================================================ -->
+<!-- Ⅲ 贡献者·维护者 -->
+<!-- ============================================================ -->
+<div class="part-banner" style="border-color:var(--warn);background:#bf39890d;"><h2 style="border:0;margin:0;padding:0;">Ⅲ · 贡献者 / 维护者指南</h2></div>
+
+<h2 id="m-map">3.1 代码地图</h2>
+<table>
+<tr><th>模块</th><th>职责</th></tr>
+<tr><td><code>ppmat/trainer/base_trainer.py</code></td><td>训练/评估循环、检查点、lr、日志、分布式</td></tr>
+<tr><td><code>ppmat/datasets/__init__.py</code> · <code>collate_fn.py</code></td><td>build_dataloader、DefaultCollator/Radius/Density</td></tr>
+<tr><td><code>ppmat/datasets/build_field.py</code> · <code>build_*  .py</code></td><td>场/结构/分子/图像构建器</td></tr>
+<tr><td><code>ppmat/datasets/density_dataset.py</code> · <code>grid_sampler.py</code></td><td>密度数据集族、网格采样</td></tr>
+<tr><td><code>ppmat/datasets/graph_utils/</code></td><td>radius/radius_graph 等图工具</td></tr>
+<tr><td><code>ppmat/models/__init__.py</code> · <code>common/graph_converter.py</code></td><td>build_model/graph_converter、MODEL_REGISTRY、RadiusGraphConverter</td></tr>
+<tr><td><code>ppmat/optimizer/</code> · <code>metrics/</code> · <code>vocab/</code></td><td>优化器+lr、指标（函数式+流式）、词表</td></tr>
+<tr><td><code>ppmat/predictor/</code> · <code>sampler/</code> · <code>schedulers/</code></td><td>推理包、采样器、扩散调度</td></tr>
+<tr><td><code>ppmat/utils/</code></td><td>download、io(write_cube/calc_md5)、save_load、logger、misc、crystal、pgl_compat</td></tr>
+<tr><td><code>ppmat/visualization/</code></td><td>molecule/crystal/structure/volume/animation</td></tr>
+<tr><td><code>&lt;task&gt;/{train,predict,sample}.py</code></td><td>任务入口脚本</td></tr>
+<tr><td><code>test/</code> · <code>setup.py</code> · <code>requirements.txt</code> · <code>.pre-commit-config.yaml</code></td><td>测试、打包、依赖、提交钩子</td></tr>
+</table>
+
+<h2 id="m-layer">3.2 架构分层</h2>
+<div class="diagram"><div class="mermaid">
+flowchart TD
+  L1["入口层 &lt;task&gt;/train.py"] --> L2["Trainer 层 BaseTrainer"]
+  L2 --> L3["组件层 build_model/dataloader/optimizer/metric"]
+  L3 --> L4["基础层 models/datasets/optimizer/metrics/vocab/utils"]
+  L2 -.使用.-> U["utils: save_load / logger / download / io"]
+  L4 -.注册.-> R["__class_name__ 反射 + MODEL_REGISTRY"]
+</div></div>
+<p>分层原则：入口只编排；Trainer 不感知具体模型（只认 forward 契约）；组件层走注册反射；基础层可独立单测。</p>
+
+<h2 id="m-newtask">3.3 新增一个任务（checklist）</h2>
+<ol>
+<li>建目录 <code>&lt;task&gt;/</code>，含 <code>train.py</code> / <code>predict.py</code>(或 sample.py) / <code>configs/</code>。</li>
+<li>实现模型（§2.3 契约），<code>import</code> 进 <code>ppmat/models/__init__.py</code>。</li>
+<li>实现数据集（§2.4），选/写 collate_fn，<code>import</code> 进 <code>ppmat/datasets/__init__.py</code>。</li>
+<li>（按需）指标、graph converter、词表（注册到 vocab）。</li>
+<li>config 模板：Global/Trainer/Model/Dataset/Optimizer/Vocabulary/Metric。</li>
+<li>README：命令 + 结果表 + 数据准备说明。</li>
+<li>（可选）预训练权重：上传 BCE → <code>MODEL_REGISTRY</code> 登记 → 按 §3.8 打包。</li>
+<li>（可选）推理：实现/复用 <code>ppmat/predictor/</code> 子类。</li>
+<li>测试：<code>test/test_&lt;task&gt;.py</code>（契约、collate、小样本前向）。</li>
+<li>冒烟：<code>max_epochs=1</code> 跑通 → 提交。</li>
+</ol>
+
+<h2 id="m-internals">3.4 Trainer 内部机制</h2>
+<h3>方法职责边界</h3>
+<table>
+<tr><th>方法</th><th>职责</th></tr>
+<tr><td><code>train()</code></td><td>resume → epoch 循环（max_iter 早停）→ 每 epoch 调 train_epoch → epoch 级 streaming/log/save → eval 节奏门 → best/by-epoch lr</td></tr>
+<tr><td><code>train_epoch(train,val)</code></td><td>逐 batch forward/loss/backward（梯度累积+AMP+裁剪）→ opt.step + by-step lr → log(log_freq) → 步级 eval(eval_freq_steps) → step 检查点(save_freq_steps)</td></tr>
+<tr><td><code>eval_epoch(loader, reset_streaming_metrics=)</code></td><td>gather → compute_metric_func → 流式聚合（reset 受控）→ 返回 meters</td></tr>
+<tr><td><code>_compute_streaming_metrics(stage, reset=)</code></td><td>聚合 metric_modules：compute_epoch + 条件 reset</td></tr>
+</table>
+<h3>两套 eval 节奏（互斥）</h3>
+<div class="diagram"><div class="mermaid">
+flowchart TD
+  G{"eval_freq_steps<br/>是否设置?"}
+  G -- "None（未设）" --> EP["epoch 级：每 eval_freq epoch → eval_epoch<br/>→ best + by-epoch lr（在 train() 里）"]
+  G -- "非空（已设）" --> ST["步级：每 eval_freq_steps 步 → eval_epoch（在 train_epoch 里）<br/>→ best + latest + by-epoch lr；并关闭 epoch 级"]
+</div></div>
+<h3>检查点与分布式</h3>
+<ul>
+<li>前缀：<code>best</code>（<code>_determine_best_metric</code>）、<code>latest</code>（save_freq / 步级 eval）、<code>step_N</code>（save_freq_steps）。</li>
+<li><code>save_load.save_checkpoint</code> 仅 rank0 写；多卡 cache 构建后 <code>dist.barrier()</code> 同步。</li>
+<li>步级 <code>step_N</code> 检查点在 batch 循环顶层独立判断（不依赖 eval 命中）。</li>
+</ul>
+<h3>lr / AMP / 累积</h3>
+<ul>
+<li><code>ReduceOnPlateau</code> 按 <code>indicator/indicator_name</code> 取值 step；其他调度器直接 step。</li>
+<li>AMP：<code>paddle.amp.GradScaler</code> + <code>amp.decorate</code>；梯度累积按 <code>gradient_accumulation_steps</code>。</li>
+</ul>
+
+<h2 id="m-cache">3.5 缓存子系统（密度数据集）</h2>
+<ul>
+<li>首次构建把 field/graph 序列化到 <code>&lt;cache&gt;/fields|graphs/{idx:010d}.pkl</code>；后续直读。</li>
+<li>校验：比 <code>build_field_cfg.pkl</code> / <code>build_graph_cfg.pkl</code> / <code>graph_vocab.pkl</code>（<code>is_equal</code>）。</li>
+<li>多进程：<code>ProcessPoolExecutor(spawn)</code> + worker initializer，避免继承 CUDA 状态。</li>
+<li>MD17 子类：FFT→CUBE 物化（首次），复用 base cache（见 §Ⅰ/Ⅱ 的数据契约）。</li>
+</ul>
+<div class="warn">维护注意：缓存键当前不含 split 内容指纹；改 split 顺序需 <code>overwrite=True</code> 或清缓存。mmap 在某些网络 FS 不可用（原版即如此）。</div>
+
+<h2 id="m-confsys">3.6 配置系统</h2>
+<ul>
+<li><code>OmegaConf.load → merge(dotlist) → to_container(resolve=True)</code>。</li>
+<li><code>${a.b}</code> 插值在 resolve 阶段展开；CLI 用 dotlist <code>A.b.c=v</code>。</li>
+<li>rank0 把最终 config 存 <code>&lt;output_dir&gt;/&lt;name&gt;.yaml</code> 快照。</li>
+<li>未知键：构造函数用 <code>**kwargs</code> 吞掉或 <code>strict_unused</code> 报错（build_model）。</li>
+</ul>
+
+<h2 id="m-download">3.7 下载与注册表</h2>
+<ul>
+<li><code>download.get_datasets_path_from_url(url, md5)</code> / <code>get_weights_path_from_url</code>：下到 DATASETS_HOME/WEIGHTS_HOME，md5 校验，自动解压。</li>
+<li><code>MODEL_REGISTRY</code>（models/__init__.py）：name → BCE 权重 url；<code>VOCAB_REGISTRY</code>（vocab）：name → 词表 url + md5。</li>
+<li>数据集子类用类属性 <code>url/md5</code> 声明下载源；<code>split_url/split_md5</code> 为预留字段。</li>
+</ul>
+
+<h2 id="m-package">3.8 预训练模型包契约</h2>
+<p>注册的预训练模型须用固定 archive 布局（见 <code>docs/model_package.md</code>）：</p>
+<pre><code>&lt;model_name&gt;.zip
+└── &lt;model_name&gt;/
+    ├── &lt;model_name&gt;.yaml      # 配置
+    └── checkpoints/
+        └── best.pdparams       # 权重</code></pre>
+<p>包名、顶层目录、配置文件名须与 <code>MODEL_REGISTRY</code> 的 key 一致。<code>FieldPredictor</code> 等按此布局解析。</p>
+
+<h2 id="m-test">3.9 测试</h2>
+<ul>
+<li><code>test/</code>：pytest，覆盖 spherenet/scatter/md17_dataset/download 等基础路径。</li>
+<li>建议补：collate 行为、cache 命中/未命中、模型 forward 契约（<code>loss_dict/pred_dict</code>）。</li>
+<li>运行：<code>python -m pytest test/ -q</code>（注意某些环境对 mmap/网络挂载敏感）。</li>
+<li>Cython 扩展（如 mattersim）需先 <code>setup.py build_ext --inplace</code> 再跑相关测试。</li>
+</ul>
+
+<h2 id="m-release">3.10 依赖与发布</h2>
+<ul>
+<li><code>requirements.txt</code>：运行时依赖（<code>setup.py</code> 读取并去重）。<code>pyproject.toml</code>：构建/开发依赖。</li>
+<li><code>setup.py</code>：Cython 扩展编译 + <code>setuptools-scm</code> 版本。</li>
+<li><code>.pre-commit-config.yaml</code>：black / ruff / eof / yaml / 大小写等钩子；提交前 <code>pre-commit run</code>。</li>
+<li>新增运行时 import 的三方库（如 plotly/matplotlib/kaleido）须同时进 requirements。</li>
+</ul>
+
+<h2 id="m-style">3.11 代码风格约定</h2>
+<ul>
+<li>节点特征键名：<code>cart_coords</code> / <code>atom_types</code> / <code>x</code>（勿再用旧 <code>pos</code>/<code>atomic_number</code>）。</li>
+<li>模型统一 <code>forward→{loss_dict,pred_dict}</code> 契约。</li>
+<li>组件走 <code>__class_name__/__init_params__</code> 注册；类 import 进对应 <code>__init__.py</code>。</li>
+<li>日志用 <code>ppmat.utils.logger</code>；分布式写盘只 rank0。</li>
+<li>用户输入校验抛 <code>ValueError/TypeError</code>（勿用 <code>assert</code>）。</li>
+<li>遵循 black/ruff；行宽 88。</li>
+</ul>
+
+<h2 id="m-maintain">3.12 维护注意事项（演进时）</h2>
+<ul>
+<li>改 forward 契约 / 节点特征键名 / 注册模式属<strong>破坏性变更</strong>，需同步所有模型与测试。</li>
+<li>改缓存布局或校验键会失效旧缓存——升 <code>schema_version</code> 或文档说明清缓存。</li>
+<li>改 <code>build_*</code> 签名注意向后兼容（vocab 等可选注入）。</li>
+<li>eval 节奏 / 检查点时序的改动要有测试覆盖（易出静默不存盘/指标污染）。</li>
+<li>预训练权重 / 词表 URL 改动要同步 <code>MODEL_REGISTRY</code> / <code>VOCAB_REGISTRY</code> 的 md5。</li>
+<li>新增依赖同步 requirements + 文档；重模型/数据 import 避免放到包 <code>__init__</code> 顶层（影响 import 时延）。</li>
+</ul>
+
+
+
+</main>
+</div>
+
+<a class="nav-top" href="#" onclick="document.documentElement.scrollTop=0;document.body.scrollTop=0;return false;">↑ 顶部</a>
+
+<script>
+// active TOC link on scroll
+const links = [...document.querySelectorAll('aside a')];
+const secs = links.map(a => document.getElementById(a.getAttribute('href').slice(1))).filter(Boolean);
+const byId = {};
+links.forEach((a,i)=>{ const s=secs[i]; if(s) byId[s.id]=a; });
+const io = new IntersectionObserver((entries)=>{
+  entries.forEach(e=>{ if(e.isIntersecting){
+    links.forEach(a=>a.classList.remove('active'));
+    const a = byId[e.target.id]; if(a) a.classList.add('active');
+  }});
+},{rootMargin:'-20% 0px -70% 0px', threshold:0});
+secs.forEach(s=>io.observe(s));
+</script>
+</body>
+</html>

@@ -1,0 +1,163 @@
+Global:
+  prim_eager_enabled: true
+  prim_backward_white_list: [concat_grad]
+  do_train: True
+  do_eval: False
+  do_test: False
+
+  label_names:
+    - energy_per_atom
+    - force
+    - stress
+
+  graph_converter:
+    __class_name__: SevenNetGraphConverter
+    __init_params__:
+      cutoff: 4.5
+
+
+Trainer:
+  compute_metric_during_train: false
+  max_epochs: 300
+  seed: 1
+  output_dir: ./output/sevennet_mptrj
+
+  save_freq: 50
+  log_freq: 20
+
+  eval_freq: 1
+  start_eval_epoch: 1
+
+  pretrained_model_path: null
+
+  use_amp: False
+
+
+Model:
+  __class_name__: SevenNet
+  __init_params__:
+
+    model_config:
+
+      chemical_species: universal
+
+      cutoff: 4.5
+
+      channel: 32
+
+      lmax: 1
+
+      lmax_edge: -1
+
+      lmax_node: -1
+
+      is_parity: True
+
+      num_convolution_layer: 3
+
+      radial_basis:
+        radial_basis_name: bessel
+
+      cutoff_function:
+        cutoff_function_name: poly_cut
+
+      act_radial: silu
+
+      act_scalar:
+        e: silu
+        o: tanh
+
+      act_gate:
+        e: silu
+        o: tanh
+
+      weight_nn_hidden_neurons:
+        - 64
+        - 64
+
+      conv_denominator: 20.0
+
+      shift: 0.0
+
+      scale: 1.0
+
+      self_connection_type: nequip
+
+      interaction_type: nequip
+
+      use_bias_in_linear: False
+
+      train_shift_scale: False
+
+      train_denominator: False
+
+      readout_as_fcn: False
+
+      _normalize_sph: True
+
+      use_flash_tp: False
+
+
+    parallel: False
+    auto_batch: True
+
+    property_names:
+      - energy_per_atom
+      - force
+      - stress
+
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    lr: 0.001
+
+
+Metric:
+
+  energy_per_atom:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+
+  force:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+
+  stress:
+    __class_name__: IgnoreNanMetricWrapper
+    __init_params__:
+      __class_name__: paddle.nn.L1Loss
+      __init_params__: {}
+
+
+Dataset:
+
+  train:
+    dataset:
+      __class_name__: MPTrjDataset
+      __init_params__:
+        path: "./data/MPtrj_2022.9_full/train.json"
+
+        property_names: ${Global.label_names}
+
+        build_graph_cfg: ${Global.graph_converter}
+
+        filter_unvalid: False
+
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: True
+        batch_size: 6
+
+
+Predict:
+
+  graph_converter: ${Global.graph_converter}
+
+  eval_with_no_grad: False

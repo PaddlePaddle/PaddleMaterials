@@ -18,12 +18,17 @@ import collections
 import copy
 import re
 
+import numpy as np
 import paddle
 
 # from .paddle_utils import *
 # from ppmat.utils.paddle_aux import *
 
-__num_nodes_warn_msg__ = "The number of nodes in your data object can only be inferred by its {} indices, and hence may result in unexpected batch-wise behavior, e.g., in case there exists isolated nodes. Please consider explicitly setting the number of nodes for this data object by assigning it to data.num_nodes."
+__num_nodes_warn_msg__ = (
+    "The number of nodes in your data object can only be inferred by its {} "
+    "indices, and hence may result in unexpected batch-wise behavior, e.g., "
+    "in case there exists isolated nodes. Please set data.num_nodes explicitly."
+)
 
 
 def size_repr(key, item, indent=0):
@@ -32,6 +37,10 @@ def size_repr(key, item, indent=0):
         out = item.item()
     elif paddle.is_tensor(x=item):
         out = str(list(tuple(item.shape)))
+    elif isinstance(item, np.ndarray) and item.ndim == 0:
+        out = item.item()
+    elif isinstance(item, np.ndarray):
+        out = str(list(item.shape))
     elif isinstance(item, list) or isinstance(item, tuple):
         out = str([len(item)])
     elif isinstance(item, dict):
@@ -49,20 +58,20 @@ class Data(object):
     (optional) attributes:
 
     Args:
-        x (Tensor, optional): Node feature matrix with shape :obj:`[num_nodes,
-            num_node_features]`. (default: :obj:`None`)
-        edge_index (LongTensor, optional): Graph connectivity in COO format
-            with shape :obj:`[2, num_edges]`. (default: :obj:`None`)
-        edge_attr (Tensor, optional): Edge feature matrix with shape
+        x (Tensor or numpy.ndarray, optional): Node feature matrix with shape
+            :obj:`[num_nodes, num_node_features]`. (default: :obj:`None`)
+        edge_index (Tensor or numpy.ndarray, optional): Graph connectivity in
+            COO format with shape :obj:`[2, num_edges]`. (default: :obj:`None`)
+        edge_attr (Tensor or numpy.ndarray, optional): Edge feature matrix with shape
             :obj:`[num_edges, num_edge_features]`. (default: :obj:`None`)
-        y (Tensor, optional): Graph or node targets with arbitrary shape.
-            (default: :obj:`None`)
-        pos (Tensor, optional): Node position matrix with shape
+        y (Tensor or numpy.ndarray, optional): Graph or node targets with
+            arbitrary shape. (default: :obj:`None`)
+        pos (Tensor or numpy.ndarray, optional): Node position matrix with shape
             :obj:`[num_nodes, num_dimensions]`. (default: :obj:`None`)
-        normal (Tensor, optional): Normal vector matrix with shape
+        normal (Tensor or numpy.ndarray, optional): Normal vector matrix with shape
             :obj:`[num_nodes, num_dimensions]`. (default: :obj:`None`)
-        face (LongTensor, optional): Face adjacency matrix with shape
-            :obj:`[3, num_faces]`. (default: :obj:`None`)
+        face (Tensor or numpy.ndarray, optional): Face adjacency matrix with
+            shape :obj:`[3, num_faces]`. (default: :obj:`None`)
 
     The data object is not restricted to these attributes and can be extended
     by any other additional data.
@@ -98,14 +107,18 @@ class Data(object):
             else:
                 self[key] = item
 
-        if edge_index is not None and not paddle.is_tensor(edge_index):
+        if edge_index is not None and not isinstance(
+            edge_index, (paddle.Tensor, np.ndarray)
+        ):
             raise ValueError(
-                f"Argument `edge_index` needs to be a paddle.Tensor but found type `{type(edge_index)}`"
+                "Argument `edge_index` needs to be a paddle.Tensor or "
+                f"numpy.ndarray but found type `{type(edge_index)}`"
             )
 
-        if face is not None and not paddle.is_tensor(face):
+        if face is not None and not isinstance(face, (paddle.Tensor, np.ndarray)):
             raise ValueError(
-                f"Argument `face` needs to be a paddle.Tensor but found type `{type(face)}`"
+                "Argument `face` needs to be a paddle.Tensor or numpy.ndarray "
+                f"but found type `{type(face)}`"
             )
 
     @classmethod
@@ -249,7 +262,7 @@ class Data(object):
         """Returns the number of features per node in the graph."""
         if self.x is None:
             return 0
-        return 1 if self.x.dim() == 1 else self.x.shape[1]
+        return 1 if len(self.x.shape) == 1 else self.x.shape[1]
 
     @property
     def num_features(self):
@@ -261,7 +274,7 @@ class Data(object):
         """Returns the number of features per edge in the graph."""
         if self.edge_attr is None:
             return 0
-        return 1 if self.edge_attr.dim() == 1 else self.edge_attr.shape[1]
+        return 1 if len(self.edge_attr.shape) == 1 else self.edge_attr.shape[1]
 
     def __apply__(self, item, func):
         if paddle.is_tensor(x=item):
@@ -326,84 +339,97 @@ class Data(object):
 
     def debug(self):
         if self.edge_index is not None:
-            if self.edge_index.dtype != "int64":
+            expected_dtype = (
+                np.dtype("int64")
+                if isinstance(self.edge_index, np.ndarray)
+                else paddle.int64
+            )
+            if self.edge_index.dtype != expected_dtype:
                 raise RuntimeError(
                     "Expected edge indices of dtype {}, but found dtype  {}".format(
                         "int64", self.edge_index.dtype
                     )
                 )
         if self.face is not None:
-            if self.face.dtype != "int64":
+            expected_dtype = (
+                np.dtype("int64") if isinstance(self.face, np.ndarray) else paddle.int64
+            )
+            if self.face.dtype != expected_dtype:
                 raise RuntimeError(
                     "Expected face indices of dtype {}, but found dtype  {}".format(
                         "int64", self.face.dtype
                     )
                 )
         if self.edge_index is not None:
-            if self.edge_index.dim() != 2 or self.edge_index.shape[0] != 2:
+            if len(self.edge_index.shape) != 2 or self.edge_index.shape[0] != 2:
                 raise RuntimeError(
-                    "Edge indices should have shape [2, num_edges] but found shape {}".format(
-                        tuple(self.edge_index.shape)
-                    )
+                    "Edge indices should have shape [2, num_edges], but found "
+                    f"shape {tuple(self.edge_index.shape)}"
                 )
         if self.edge_index is not None and self.num_nodes is not None:
-            if self.edge_index.size > 0:
-                min_index = self.edge_index.min_func()
-                max_index = self.edge_index.max_func()
+            if isinstance(self.edge_index, np.ndarray):
+                if self.edge_index.size > 0:
+                    min_index = self.edge_index.min()
+                    max_index = self.edge_index.max()
+                else:
+                    min_index = max_index = 0
+            elif int(self.edge_index.numel()) > 0:
+                min_index = self.edge_index.min().item()
+                max_index = self.edge_index.max().item()
             else:
                 min_index = max_index = 0
             if min_index < 0 or max_index > self.num_nodes - 1:
                 raise RuntimeError(
-                    "Edge indices must lay in the interval [0, {}] but found them in the interval [{}, {}]".format(
-                        self.num_nodes - 1, min_index, max_index
-                    )
+                    f"Edge indices must lie in [0, {self.num_nodes - 1}], but "
+                    f"found [{min_index}, {max_index}]."
                 )
         if self.face is not None:
-            if self.face.dim() != 2 or self.face.shape[0] != 3:
+            if len(self.face.shape) != 2 or self.face.shape[0] != 3:
                 raise RuntimeError(
-                    "Face indices should have shape [3, num_faces] but found shape {}".format(
-                        tuple(self.face.shape)
-                    )
+                    "Face indices should have shape [3, num_faces], but found "
+                    f"shape {tuple(self.face.shape)}"
                 )
         if self.face is not None and self.num_nodes is not None:
-            if self.face.size > 0:
-                min_index = self.face.min_func()
-                max_index = self.face.max_func()
+            if isinstance(self.face, np.ndarray):
+                if self.face.size > 0:
+                    min_index = self.face.min()
+                    max_index = self.face.max()
+                else:
+                    min_index = max_index = 0
+            elif int(self.face.numel()) > 0:
+                min_index = self.face.min().item()
+                max_index = self.face.max().item()
             else:
                 min_index = max_index = 0
             if min_index < 0 or max_index > self.num_nodes - 1:
                 raise RuntimeError(
-                    "Face indices must lay in the interval [0, {}] but found them in the interval [{}, {}]".format(
-                        self.num_nodes - 1, min_index, max_index
-                    )
+                    f"Face indices must lie in [0, {self.num_nodes - 1}], but "
+                    f"found [{min_index}, {max_index}]."
                 )
         if self.edge_index is not None and self.edge_attr is not None:
             if self.edge_index.shape[1] != self.edge_attr.shape[0]:
                 raise RuntimeError(
-                    "Edge indices and edge attributes hold a differing number of edges, found {} and {}".format(
-                        tuple(self.edge_index.shape), tuple(self.edge_attr.shape)
-                    )
+                    "Edge indices and edge attributes contain different numbers "
+                    f"of edges: {tuple(self.edge_index.shape)} and "
+                    f"{tuple(self.edge_attr.shape)}."
                 )
         if self.x is not None and self.num_nodes is not None:
             if self.x.shape[0] != self.num_nodes:
                 raise RuntimeError(
-                    "Node features should hold {} elements in the first dimension but found {}".format(
-                        self.num_nodes, self.x.shape[0]
-                    )
+                    f"Node features should contain {self.num_nodes} rows, but "
+                    f"found {self.x.shape[0]}."
                 )
         if self.pos is not None and self.num_nodes is not None:
             if self.pos.shape[0] != self.num_nodes:
                 raise RuntimeError(
-                    "Node positions should hold {} elements in the first dimension but found {}".format(
-                        self.num_nodes, self.pos.shape[0]
-                    )
+                    f"Node positions should contain {self.num_nodes} rows, but "
+                    f"found {self.pos.shape[0]}."
                 )
         if self.normal is not None and self.num_nodes is not None:
             if self.normal.shape[0] != self.num_nodes:
                 raise RuntimeError(
-                    "Node normals should hold {} elements in the first dimension but found {}".format(
-                        self.num_nodes, self.normal.shape[0]
-                    )
+                    f"Node normals should contain {self.num_nodes} rows, but "
+                    f"found {self.normal.shape[0]}."
                 )
 
     def __repr__(self):

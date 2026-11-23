@@ -5,7 +5,7 @@ Global:
   # Number of training timesteps for diffusion scheduler
   num_train_timesteps: 500
 
-  molecule_converter:
+  build_molecule_cfg:
     format: "smiles"
     sanitize: False
     add_hs: False
@@ -16,23 +16,17 @@ Global:
   graph_converter:
     __class_name__: MolecularGraphConverter
     __init_params__:
-        atom_vocab: {"C": 0, "N":1, "O": 2, "F": 3, "P": 4, "S": 5, "Cl": 6, "Br": 7, "I": 8} # {H: 0, C: 1, N: 2, O: 3, F: 4, P: 5, S: 6, Cl: 7, Br: 8, I: 9}
-        bond_vocab: {"SINGLE": 0, "DOUBLE": 1, "TRIPLE": 2, "AROMATIC": 3}
         remove_h: true
         add_self_loops: false
         edge_mode: bidirectional
         num_cpus: 10
 
-  spectrum_converter:
-    __class_name__: BuildSpectrumNMR
-    __init_params__:
-        seq_len_H1: 20                  # 1H spectrum sequence length
-        seq_len_C13: 75                 # 13C spectrum sequence length
-        j_len: 6                        # J-coupling dimension
-        integral_offset: 1              # Integral offset
-        unk_token: "<unk>"              # Unknown token identifier
-        dtype: "float32"                # Data type
-        num_cpus: 10                    # Number of parallel threads
+  build_spectrum_cfg:
+    seq_len_H1: 20                  # 1H spectrum sequence length
+    seq_len_C13: 75                 # 13C spectrum sequence length
+    j_len: 6                        # J-coupling dimension
+    dtype: "float32"                # Data type
+    num_cpus: 10                    # Number of parallel threads
 
 Trainer:
   # Max epochs to train
@@ -51,7 +45,7 @@ Trainer:
   # Evaluation frequency [epoch], for example, eval_freq=1 means evaluate every 1 epoch
   eval_freq: 1 # set 0 to disable evaluation during training
   # Pretrained model path, if null, no pretrained model will be loaded
-  pretrained_model_path: ./pretrained/DiffNMR_DiffGraphFormer_nless15_init.pdparams # please set your pretrained model path here when run trainer.test
+  pretrained_model_path: ./checkpoints/DiffNMR_DiffGraphFormer_nless15_init.pdparams # please set your pretrained model path here when run trainer.test
   # Resume from checkpoint path, useful for resuming training
   resume_from_checkpoint: null
   # whether use automatic mixed precision
@@ -99,12 +93,11 @@ Sampler:
   chains_to_save: 5 # less sample batch size, select representative sample in sample batch for visualize
   number_chain_steps: 10 # Number of frames in each gif
   sample_batch_iters: 1 # Number of sample batches
-  flag_retrival_sampling: False
+  flag_retrieval_sampling: False
   flag_use_formula: False
-  flag_retrival_initilization: False
+  flag_retrieval_initialization: False
   num_candidates: 1
-  retrival_database_path: ./spectrum_elucidation/retrival_database/mol_rep_15.csv
-  pretrained_model_path: ./pretrained/DiffNMR_DiffGraphFormer_nless15_best.pdparams
+  pretrained_model_path: ./checkpoints/DiffNMR_DiffGraphFormer_nless15_best.pdparams
   output_dir: ./output/DiffNMR/DiffGraphFormer/sample
   out_dict: {"Accuracy"}
   data:
@@ -112,14 +105,12 @@ Sampler:
       __class_name__: MSDnmrDataset
       __init_params__:
         path: "./data/MSD_nmr/test.csv"
-        vocab_peakwidth_path: "./spectrum_elucidation/vocab/nless15/H1_statistic/delta_distribution.csv"
-        vocab_split_path: "./spectrum_elucidation/vocab/nless15/H1_statistic/split_type_distribution.csv"
         cache: True
         data_flag: "n<15"
         max_atoms: 15
-        build_molecule_cfg: ${Global.molecule_converter}
+        build_molecule_cfg: ${Global.build_molecule_cfg}
         build_graph_cfg: ${Global.graph_converter}
-        build_spectrum_cfg: ${Global.spectrum_converter}
+        build_spectrum_cfg: ${Global.build_spectrum_cfg}
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -174,11 +165,13 @@ Model:
       conditdim: 512
       flag_use_formula: ${Sampler.flag_use_formula}
 
+Vocabulary: diffnmr_msdnmr_nless15
+
 CLIP:
     __class_name__: NMRNetCLIP
     __init_params__:
       spectrum_encoder:
-        pretrained_model_path: "./pretrained/DiffNMR_NMRNet_nless15_best.pdparams"
+        pretrained_model_path: "./checkpoints/DiffNMR_NMRNet_nless15_best.pdparams"
         dim_enc_H: 1024
         dimff_enc_H: 2048
         dim_enc_C: 256
@@ -187,12 +180,8 @@ CLIP:
         n_head: 8
         n_layers: 3
         drop_prob: 0.1 # 0.0
-        seq_len_H1: 20
-        seq_len_C13: 75
-        peakwidthemb_num: 70
-        integralemb_num: 26
       graph_encoder:
-        pretrained_model_path: "./pretrained/DiffNMR_DiffGraphFormer_nless15_best.pdparams"
+        pretrained_model_path: "./checkpoints/DiffNMR_DiffGraphFormer_nless15_best.pdparams"
         n_layers_GT: 5
         hidden_mlp_dims: {
           "X": 256,
@@ -234,14 +223,12 @@ Dataset:
       __init_params__:
         path: "./data/MSD_nmr/train.csv"
         datadir: "./data/MSD_nmr"
-        vocab_peakwidth_path: "./spectrum_elucidation/vocab/nless15/H1_statistic/delta_distribution.csv"
-        vocab_split_path: "./spectrum_elucidation/vocab/nless15/H1_statistic/split_type_distribution.csv"
         cache: True
         data_flag: "n<15"
         max_atoms: 15
-        build_molecule_cfg: ${Global.molecule_converter}
+        build_molecule_cfg: ${Global.build_molecule_cfg}
         build_graph_cfg: ${Global.graph_converter}
-        build_spectrum_cfg: ${Global.spectrum_converter}
+        build_spectrum_cfg: ${Global.build_spectrum_cfg}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -256,14 +243,12 @@ Dataset:
       __class_name__: MSDnmrDataset
       __init_params__:
         path: "./data/MSD_nmr/val.csv"
-        vocab_peakwidth_path: "./spectrum_elucidation/vocab/nless15/H1_statistic/delta_distribution.csv"
-        vocab_split_path: "./spectrum_elucidation/vocab/nless15/H1_statistic/split_type_distribution.csv"
         cache: True
         data_flag: "n<15"
         max_atoms: 15
-        build_molecule_cfg: ${Global.molecule_converter}
+        build_molecule_cfg: ${Global.build_molecule_cfg}
         build_graph_cfg: ${Global.graph_converter}
-        build_spectrum_cfg: ${Global.spectrum_converter}
+        build_spectrum_cfg: ${Global.build_spectrum_cfg}
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -275,14 +260,12 @@ Dataset:
       __class_name__: MSDnmrDataset
       __init_params__:
         path: "./data/MSD_nmr/test.csv"
-        vocab_peakwidth_path: "./spectrum_elucidation/vocab/nless15/H1_statistic/delta_distribution.csv"
-        vocab_split_path: "./spectrum_elucidation/vocab/nless15/H1_statistic/split_type_distribution.csv"
         cache: True
         data_flag: "n<15"
         max_atoms: 15
-        build_molecule_cfg: ${Global.molecule_converter}
+        build_molecule_cfg: ${Global.build_molecule_cfg}
         build_graph_cfg: ${Global.graph_converter}
-        build_spectrum_cfg: ${Global.spectrum_converter}
+        build_spectrum_cfg: ${Global.build_spectrum_cfg}
     sampler:
       __class_name__: BatchSampler
       __init_params__:

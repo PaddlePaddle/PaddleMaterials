@@ -41,7 +41,7 @@ class GaussianSmearing(paddle.nn.Layer):
         self.register_buffer("offset", offset)
 
     def forward(self, dist: Tensor) -> Tensor:
-        dist = dist.view(-1, 1) - self.offset.view(1, -1)
+        dist = dist.reshape([-1, 1]) - self.offset.reshape([1, -1])
         return paddle.exp(self.coeff * paddle.pow(dist, 2))
 
 

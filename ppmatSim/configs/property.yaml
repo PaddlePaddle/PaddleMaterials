@@ -1,5 +1,5 @@
 # @package _global_
-device: cuda
+device: gpu
 
 defaults:
   - /Run: default

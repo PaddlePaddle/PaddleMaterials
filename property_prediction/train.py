@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import argparse
-import datetime
 import os
 import os.path as osp
 
@@ -29,6 +28,7 @@ from ppmat.optimizer import build_optimizer
 from ppmat.trainer.base_trainer import BaseTrainer
 from ppmat.utils import logger
 from ppmat.utils import misc
+from ppmat.utils.io import append_timestamp_to_output_dir
 
 
 def read_independent_dataloader_config(config):
@@ -91,10 +91,7 @@ if __name__ == "__main__":
     misc.set_random_seed(seed)
     logger.info(f"Set random seed to {seed}")
 
-    # add timestamp to output_dir
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_output_dir = config["Trainer"]["output_dir"]
-    config["Trainer"]["output_dir"] = f"{base_output_dir}_t_{timestamp}_s_{seed}"
+    append_timestamp_to_output_dir(config)
 
     # save config to output_dir, only rank 0 process will do this
     if dist.get_rank() == 0:
@@ -184,6 +181,7 @@ if __name__ == "__main__":
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
         compute_metric_func_dict=metric_func,
+        execution_config=config.get("Execution"),
     )
 
     if config["Global"].get("do_train", True):

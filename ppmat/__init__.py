@@ -11,20 +11,26 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from ppmat import calculator  # noqa
 from ppmat import datasets  # noqa
 from ppmat import losses  # noqa
 from ppmat import metrics  # noqa
 from ppmat import models  # noqa
 from ppmat import optimizer  # noqa
+from ppmat import predictor  # noqa
+from ppmat import sampler  # noqa
 from ppmat import schedulers  # noqa
 from ppmat import trainer  # noqa
 from ppmat import utils  # noqa
-from ppmat import sampler  # noqa
+from ppmat import vocab  # noqa
 
 __all__ = [
+    "calculator",
     "models",
     "trainer",
+    "predictor",
     "sampler",
+    "vocab",
 ]
 
 try:

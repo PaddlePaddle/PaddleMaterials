@@ -24,6 +24,9 @@ import paddle
 import paddle.nn as nn
 
 from ppmat.models.common.message_passing.message_passing import MessagePassing
+from ppmat.models.common.runtime import RuntimeMixin
+from ppmat.models.common.runtime import runtime_boundary
+from ppmat.utils.pgl_compat import graph_count
 from ppmat.utils.scatter import scatter
 
 
@@ -312,7 +315,7 @@ def bond_cosine(r1, r2):
     return bond_cosine
 
 
-class iComformer(nn.Layer):
+class iComformer(RuntimeMixin, nn.Layer):
     """Complete and Efficient Graph Transformers for Crystal Material Property
     Prediction,  https://arxiv.org/pdf/2403.11857
 
@@ -339,6 +342,9 @@ class iComformer(nn.Layer):
             Defaults to 1.0.
         loss_type (str, optional): Loss type, can be 'mse_loss' or 'l1_loss'. Defaults
             to "mse_loss".
+        execution_backend (str, optional): Numerical execution backend. Use
+            ``"eager"`` or ``"cinn"``. Defaults to ``"eager"``.
+        runtime_options (dict, optional): Per-backend runtime options.
     """
 
     def __init__(
@@ -357,8 +363,11 @@ class iComformer(nn.Layer):
         data_mean: float = 0.0,
         data_std: float = 1.0,
         loss_type: str = "mse_loss",
+        execution_backend: str = "eager",
+        runtime_options: dict | None = None,
     ):
         super().__init__()
+        self._init_runtime(execution_backend, runtime_options)
         self.conv_layers = conv_layers
         self.edge_layers = edge_layers
         self.atom_input_features = atom_input_features
@@ -429,23 +438,22 @@ class iComformer(nn.Layer):
     def unnormalize(self, tensor):
         return tensor * self.data_std + self.data_mean
 
+    @runtime_boundary("forward")
     def _forward(self, data) -> paddle.Tensor:
         #  The data in data['graph'] is numpy.ndarray, convert it to paddle.Tensor
-        data["graph"] = data["graph"].tensor()
+        graph = data["graph"].tensor()
 
-        batch_idx = data["graph"].graph_node_id
-        edges = data["graph"].edges.T.contiguous()
+        batch_idx = graph.graph_node_id
+        edges = graph.edges.T.contiguous()
 
         node_features = self.atom_embedding(
-            data["graph"].node_feat["node_feat"].cast("float32")
+            graph.node_feat["node_feat"].cast("float32")
         )
-        edge_feat = -0.75 / paddle.linalg.norm(x=data["graph"].edge_feat["r"], axis=1)
-        edge_nei_len = -0.75 / paddle.linalg.norm(
-            x=data["graph"].edge_feat["nei"], axis=-1
-        )
+        edge_feat = -0.75 / paddle.linalg.norm(x=graph.edge_feat["r"], axis=1)
+        edge_nei_len = -0.75 / paddle.linalg.norm(x=graph.edge_feat["nei"], axis=-1)
         edge_nei_angle = bond_cosine(
-            data["graph"].edge_feat["nei"],
-            data["graph"].edge_feat["r"].unsqueeze(1).tile(repeat_times=[1, 3, 1]),
+            graph.edge_feat["nei"],
+            graph.edge_feat["r"].unsqueeze(1).tile(repeat_times=[1, 3, 1]),
         )
         num_edge = tuple(edge_feat.shape)[0]
         edge_features = self.rbf(edge_feat)
@@ -461,7 +469,9 @@ class iComformer(nn.Layer):
         for i in range(1, len(self.att_layers)):
             node_features = self.att_layers[i](node_features, edges, edge_features)
 
-        features = scatter(node_features, batch_idx, dim=0, reduce="mean")
+        features = scatter(
+            node_features, batch_idx, dim=0, dim_size=graph_count(graph), reduce="mean"
+        )
         features = self.fc(features)
         result = self.fc_out(features)
         return result
@@ -489,25 +499,13 @@ class iComformer(nn.Layer):
         return {"loss_dict": loss_dict, "pred_dict": prediction}
 
     @paddle.no_grad()
-    def predict(self, graphs):
-        if isinstance(graphs, list):
-            results = []
-            for graph in graphs:
-                result = self._forward(
-                    {
-                        "graph": graph,
-                    }
-                )
-                result = self.unnormalize(result).numpy()[0, 0]
-                result = {self.property_name: result}
-                results.append(result)
-            return results
+    def predict(self, samples):
+        is_list = isinstance(samples, list)
+        samples = samples if is_list else [samples]
 
-        else:
-            data = {
-                "graph": graphs,
-            }
-            result = self._forward(data)
+        results = []
+        for sample in samples:
+            result = self._forward({"graph": sample})
             result = self.unnormalize(result).numpy()[0, 0]
-            result = {self.property_name: result}
-            return result
+            results.append({self.property_name: result})
+        return results if is_list else results[0]

@@ -107,7 +107,14 @@ class TensorProduct(paddle.nn.Layer):
                     ),
                 }[connection_mode],
             )
-            for i_in1, i_in2, i_out, connection_mode, has_weight, path_weight in instructions
+            for (
+                i_in1,
+                i_in2,
+                i_out,
+                connection_mode,
+                has_weight,
+                path_weight,
+            ) in instructions
         ]
         if in1_var is None:
             in1_var = [(1.0) for _ in range(len(self.irreps_in1))]
@@ -267,7 +274,11 @@ class TensorProduct(paddle.nn.Layer):
 
     def __repr__(self):
         npath = sum(prod(i.path_shape) for i in self.instructions)
-        return f"{self.__class__.__name__}({self.irreps_in1.simplify()} x {self.irreps_in2.simplify()} -> {self.irreps_out.simplify()} | {npath} paths | {self.weight_numel} weights)"
+        return (
+            f"{self.__class__.__name__}({self.irreps_in1.simplify()} x "
+            f"{self.irreps_in2.simplify()} -> {self.irreps_out.simplify()} | "
+            f"{npath} paths | {self.weight_numel} weights)"
+        )
 
     def _prep_weights_python(
         self, weight: Optional[Union[paddle.Tensor, List[paddle.Tensor]]]
@@ -298,7 +309,8 @@ class TensorProduct(paddle.nn.Layer):
         if weight is None:
             if self.weight_numel > 0 and not self.internal_weights:
                 raise RuntimeError(
-                    "Weights must be provided when the TensorProduct does not have `internal_weights`"
+                    "Weights must be provided when the TensorProduct does not "
+                    "have `internal_weights`"
                 )
             if self.weight is None:
                 dtype = getattr(like, "dtype", None)
@@ -307,9 +319,7 @@ class TensorProduct(paddle.nn.Layer):
             return self.weight
 
         if self.shared_weights:
-            assert tuple(weight.shape) == (
-                self.weight_numel,
-            ), "Invalid weight shape"
+            assert tuple(weight.shape) == (self.weight_numel,), "Invalid weight shape"
         else:
             assert tuple(weight.shape)[-1] == self.weight_numel, "Invalid weight shape"
             assert (
@@ -318,9 +328,10 @@ class TensorProduct(paddle.nn.Layer):
         return weight
 
     def right(self, y, weight=None):
-        assert (
-            self._tp_right is not None
-        ), "The right function is not compiled, please set compile_right=True when creating the TensorProduct."
+        assert self._tp_right is not None, (
+            "The right function is not compiled, please set compile_right=True "
+            "when creating the TensorProduct."
+        )
         assert (
             tuple(y.shape)[-1] == self.irreps_in2.dim
         ), f"The last dimension of y should be{self.irreps_in2.dim}"
@@ -328,9 +339,10 @@ class TensorProduct(paddle.nn.Layer):
         return self._tp_right(y, real_weight)
 
     def forward(self, x, y, weight=None):
-        assert (
-            self._tp_forward is not None
-        ), "The forward function is not complied, please set compile_left_right=True when creating the TensorProduct"
+        assert self._tp_forward is not None, (
+            "The forward function is not complied, please set "
+            "compile_left_right=True when creating the TensorProduct"
+        )
         assert (
             tuple(x.shape)[-1] == self.irreps_in1.dim
         ), f"The last dimension of x should be {self.irreps_in1.dim}"
@@ -561,12 +573,17 @@ setattr(paddle.Tensor, "reshape", reshape)
 
 def view(self, *args, **kwargs):
     if args:
-        if len(args) == 1 and isinstance(args[0], (tuple, list, str)):
+        if len(args) == 1 and isinstance(args[0], str):
             return paddle.view(self, args[0])
+        if len(args) == 1 and isinstance(args[0], (tuple, list)):
+            return paddle.reshape(self, args[0])
         else:
-            return paddle.view(self, list(args))
+            return paddle.reshape(self, list(args))
     elif kwargs:
-        return paddle.view(self, shape_or_dtype=list(kwargs.values())[0])
+        shape_or_dtype = list(kwargs.values())[0]
+        if isinstance(shape_or_dtype, str):
+            return paddle.view(self, shape_or_dtype)
+        return paddle.reshape(self, shape=shape_or_dtype)
 
 
 setattr(paddle.Tensor, "view", view)

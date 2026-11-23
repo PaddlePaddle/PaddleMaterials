@@ -1,0 +1,150 @@
+Global:
+  label_names:
+    - energy
+  do_train: true
+  do_eval: true
+  do_test: false
+  energy_mean: -97195.78877997817
+
+  build_molecule_cfg:
+    format: dict
+    sanitize: false
+    add_hs: false
+    remove_hs: false
+    kekulize: false
+    num_cpus: 10
+
+  graph_converter:
+    __class_name__: RadiusGraphConverter
+    __init_params__:
+      cutoff: 5.0
+      max_num_neighbors: 32
+      return_triplet_indices: true
+      num_cpus: 10
+
+Trainer:
+  max_epochs: 600
+  seed: 47
+  output_dir: ./output/spherenet_ethanol
+  save_freq: 601
+  log_freq: 10
+  start_eval_epoch: 200
+  eval_freq: 50
+  use_amp: false
+  eval_with_no_grad: false
+  gradient_accumulation_steps: 1
+  best_metric_indicator: eval_loss
+  name_for_best_metric: loss
+  greater_is_better: false
+  compute_metric_during_train: false
+  metric_strategy_during_eval: step
+  pretrained_model_path:
+Model:
+  __class_name__: SphereNet
+  __init_params__:
+    derivative_properties: [force]
+    cutoff: 5.0
+    num_layers: 4
+    hidden_channels: 128
+    out_channels: 1
+    int_emb_size: 64
+    basis_emb_size_dist: 8
+    basis_emb_size_angle: 8
+    basis_emb_size_torsion: 8
+    out_emb_channels: 256
+    num_spherical: 3
+    num_radial: 6
+    envelope_exponent: 5
+    num_before_skip: 1
+    num_after_skip: 2
+    num_output_layers: 3
+    output_init: glorot_orthogonal
+    property_name: energy
+    data_mean: ${Global.energy_mean}
+    data_std: 1.0
+    loss_weights_dict:
+      energy: 1.0
+      force: 100.0
+
+Metric:
+  energy:
+    __class_name__: paddle.nn.L1Loss
+    __init_params__: {}
+  force:
+    __class_name__: paddle.nn.L1Loss
+    __init_params__: {}
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    lr:
+      __class_name__: Step
+      __init_params__:
+        learning_rate: 0.0005
+        step_size: 200
+        gamma: 0.5
+        by_epoch: true
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MD17Dataset
+      __init_params__:
+        path: ./data/md17/md17_ethanol.npz
+        name: ethanol
+        split: train
+        build_molecule_cfg: ${Global.build_molecule_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+    loader:
+      num_workers: 4
+      use_shared_memory: false
+      collate_fn: RadiusGraphCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 1
+        shuffle: true
+        drop_last: true
+  val:
+    dataset:
+      __class_name__: MD17Dataset
+      __init_params__:
+        path: ./data/md17/md17_ethanol.npz
+        name: ethanol
+        split: val
+        build_molecule_cfg: ${Global.build_molecule_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+    loader:
+      num_workers: 4
+      use_shared_memory: false
+      collate_fn: RadiusGraphCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 8
+        shuffle: false
+        drop_last: false
+  test:
+    dataset:
+      __class_name__: MD17Dataset
+      __init_params__:
+        path: ./data/md17/md17_ethanol.npz
+        name: ethanol
+        split: test
+        build_molecule_cfg: ${Global.build_molecule_cfg}
+        build_graph_cfg: ${Global.graph_converter}
+    loader:
+      num_workers: 4
+      use_shared_memory: false
+      collate_fn: RadiusGraphCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 8
+        shuffle: false
+        drop_last: false
+
+Predict:
+  eval_with_no_grad: false
+  graph_converter: ${Global.graph_converter}

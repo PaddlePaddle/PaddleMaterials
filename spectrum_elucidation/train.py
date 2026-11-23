@@ -17,43 +17,87 @@ import os
 import os.path as osp
 
 import paddle.distributed as dist
+import paddle.distributed.fleet as fleet
 from omegaconf import OmegaConf
 
 from ppmat.datasets import build_dataloader
 from ppmat.datasets import build_dataset_infos
 from ppmat.datasets import set_signal_handlers
-from ppmat.datasets.msd_nmr_dataset import DataLoaderCollection
-from ppmat.metrics import build_metric
 from ppmat.models import build_model
-from ppmat.models.diffnmr.extra_features_graph import DummyExtraFeatures
-from ppmat.models.diffnmr.extra_features_graph import ExtraFeatures
-from ppmat.models.diffnmr.extra_features_molecular_graph import ExtraMolecularFeatures
 from ppmat.optimizer import build_optimizer
 from ppmat.trainer.base_trainer import BaseTrainer
 from ppmat.utils import logger
 from ppmat.utils import misc
-from ppmat.utils.visualization import MolecularVisualization
+from ppmat.utils.io import append_timestamp_to_output_dir
+from ppmat.vocab import build_vocab
 
-if dist.get_world_size() > 1:
-    dist.fleet.init(is_collective=True)
 
-if __name__ == "__main__":
-    # parse arguments
+def read_independent_dataloader_config(config, vocab=None):
+    do_train = config["Global"].get("do_train", True)
+    do_eval = config["Global"].get("do_eval", False)
+    do_test = config["Global"].get("do_test", False)
+    if not any((do_train, do_eval, do_test)):
+        raise ValueError(
+            "At least one of Global.do_train, Global.do_eval, or Global.do_test "
+            "must be True."
+        )
+
+    # DiffNMR dataset statistics and novelty metrics use the training SMILES even
+    # during evaluation-only and test-only runs.
+    train_data_cfg = config["Dataset"].get("train")
+    assert (
+        train_data_cfg is not None
+    ), "train_data_cfg must be defined for DiffNMR train/eval/test."
+    train_loader = build_dataloader(train_data_cfg, vocab=vocab)
+
+    if do_eval or do_train:
+        val_data_cfg = config["Dataset"].get("val")
+        if val_data_cfg is None and do_eval:
+            raise ValueError("val_data_cfg must be defined when do_eval is true.")
+        if val_data_cfg is None:
+            logger.info("No validation dataset defined.")
+            val_loader = None
+        else:
+            val_loader = build_dataloader(val_data_cfg, vocab=vocab)
+    else:
+        val_loader = None
+
+    if do_test:
+        test_data_cfg = config["Dataset"].get("test")
+        assert (
+            test_data_cfg is not None
+        ), "test_data_cfg must be defined, when do_test is true"
+        test_loader = build_dataloader(test_data_cfg, vocab=vocab)
+    else:
+        test_loader = None
+    return train_loader, val_loader, test_loader
+
+
+def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "-c",
         "--config",
         type=str,
-        default="./spectrum_elucidation/configs/DiffNMR.yaml",
+        default="./spectrum_elucidation/configs/diffnmr/DiffNMR.yaml",
         help="Path to config file",
     )
+    return parser.parse_known_args()
 
-    args, dynamic_args = parser.parse_known_args()
+
+if __name__ == "__main__":
+    if dist.get_world_size() > 1:
+        fleet.init(is_collective=True)
+
+    args, dynamic_args = parse_args()
 
     # load config and merge with cli args
     config = OmegaConf.load(args.config)
     cli_config = OmegaConf.from_dotlist(dynamic_args)
     config = OmegaConf.merge(config, cli_config)
+
+    seed = config["Trainer"].get("seed", 42)
+    append_timestamp_to_output_dir(config)
 
     # save config to output_dir, only rank 0 process will do this
     if dist.get_rank() == 0:
@@ -69,93 +113,45 @@ if __name__ == "__main__":
     logger.info(f"Logger saved to {logger_path}")
 
     # set random seed
-    seed = config["Trainer"].get("seed", 42)
     misc.set_random_seed(seed)
     logger.info(f"Set random seed to {seed}")
 
+    vocab = build_vocab(config.get("Vocabulary"))
+
     # load dataloader from config
     set_signal_handlers()
-    if config["Global"].get("do_train", True):
-        train_data_cfg = config["Dataset"].get("train")
-        assert (
-            train_data_cfg is not None
-        ), "train_data_cfg must be defined, when do_train is true"
-        train_loader = build_dataloader(train_data_cfg)
-    else:
-        train_loader = None
-
-    if config["Global"].get("do_eval", False) or config["Global"].get("do_train", True):
-        val_data_cfg = config["Dataset"].get("val")
-        if val_data_cfg is not None:
-            val_loader = build_dataloader(val_data_cfg)
-        else:
-            logger.info("No validation dataset defined.")
-            val_loader = None
-    else:
-        val_loader = None
-
-    if config["Global"].get("do_test", False):
-        test_data_cfg = config["Dataset"].get("test")
-        assert (
-            test_data_cfg is not None
-        ), "test_data_cfg must be defined, when do_test is true"
-        test_loader = build_dataloader(test_data_cfg)
-    else:
-        test_loader = None
+    train_loader, val_loader, test_loader = read_independent_dataloader_config(
+        config, vocab=vocab
+    )
 
     # build datasetinfo
-    dataloaders = DataLoaderCollection(train_loader, val_loader, test_loader)
+    dataloaders = {
+        "train": train_loader,
+        "val": val_loader,
+        "test": test_loader,
+    }
     dataset_infos = build_dataset_infos(
-        dataloaders=dataloaders, cfg=config, recompute_statistics=False
+        dataloaders=dataloaders,
+        cfg=config,
+        vocab=vocab,
+        recompute_statistics=False,
     )
-    train_smiles = dataset_infos.train_smiles
-
-    # extra features
-    if config.get("DataInfo", None) is not None:
-        extra_features = ExtraFeatures(
-            config["DataInfo"]["extra_features"],
-            dataset_infos=dataset_infos,
-        )
-        domain_features = ExtraMolecularFeatures(
-            dataset_infos=dataset_infos,
-        )
-        fallback_loader = train_loader or val_loader or test_loader
-        dataset_infos.compute_input_output_dims(
-            dataloader=fallback_loader,
-            extra_features=extra_features,
-            domain_features=domain_features,
-            conditionDim=config["DataInfo"]["conditdim"],
-        )
-    else:
-        extra_features = DummyExtraFeatures()
-        domain_features = DummyExtraFeatures()
-
-    # CLIP for sample metric
+    # Optional models are built independently and injected through model config.
     if config.get("CLIP", None) is not None:
-        model_cfg = config["CLIP"]
         clip_module = build_model(
-            model_cfg,
-            extra_features=extra_features,
-            domain_features=domain_features,
+            config["CLIP"],
+            vocab=vocab,
             dataset_infos=dataset_infos,
         )
     else:
         clip_module = None
 
-    # visualization tools
-    visualization_tools = MolecularVisualization(
-        dataset_infos=dataset_infos,
-        output_dir=config["Trainer"]["output_dir"],
-    )
-
     # build model from config
     model_cfg = config["Model"]
     model = build_model(
         model_cfg,
-        extra_features=extra_features,
-        domain_features=domain_features,
+        vocab=vocab,
         dataset_infos=dataset_infos,
-        visualization_tools=visualization_tools,
         clip=clip_module,
     )
 
@@ -176,12 +172,7 @@ if __name__ == "__main__":
     else:
         optimizer, lr_scheduler = None, None
 
-    # build metric from config
     metric_cfg = config.get("Metric")
-    if metric_cfg is not None:
-        metric_func = build_metric(metric_cfg)
-    else:
-        metric_func = None
 
     # initialize trainer
     trainer = BaseTrainer(
@@ -192,12 +183,12 @@ if __name__ == "__main__":
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
         compute_metric_func_dict=None,
+        execution_config=config.get("Execution"),
     )
 
     trainer.attach_metrics(
         metric_cfg,
         dataset_infos=dataset_infos,
-        train_smiles=train_smiles,
         clip=clip_module,
         model=model,
     )

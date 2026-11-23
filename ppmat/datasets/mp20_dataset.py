@@ -128,6 +128,7 @@ class MP20Dataset(Dataset):
         self.path = path
         if isinstance(property_names, str):
             property_names = [property_names]
+        self.property_names = property_names if property_names is not None else []
 
         if build_structure_cfg is None:
             build_structure_cfg = {
@@ -141,7 +142,6 @@ class MP20Dataset(Dataset):
                 f"configs: {build_structure_cfg}"
             )
 
-        self.property_names = property_names if property_names is not None else []
         self.build_structure_cfg = build_structure_cfg
         self.build_graph_cfg = build_graph_cfg
         self.transforms = transforms

@@ -26,6 +26,7 @@ class H1nmr_encoder(nn.Layer):
         num_layers,
         drop_prob,
         peakwidthemb_num,
+        splitemb_num,
         integralemb_num,
     ):
         super(H1nmr_encoder, self).__init__()
@@ -37,6 +38,7 @@ class H1nmr_encoder(nn.Layer):
             dim=d_model,
             drop_prob=drop_prob,
             peakwidthemb_num=peakwidthemb_num,
+            splitemb_num=splitemb_num,
             integralemb_num=integralemb_num,
         )
 
@@ -176,8 +178,8 @@ class NMR_fusion(nn.Layer):
         tensor_Cnmr = tensor_Cnmr[:, : int(max_len_C), :]
 
         # project to uniform dimension
-        H_aligned = self.proj_h(tensor_Hnmr) # [B, Lh, D]
-        C_aligned = self.proj_c(tensor_Cnmr) # [B, Lc, D]
+        H_aligned = self.proj_h(tensor_Hnmr)  # [B, Lh, D]
+        C_aligned = self.proj_c(tensor_Cnmr)  # [B, Lc, D]
 
         # bidirectonal cross-attention
         pad_mask_H = mask_H == 1
@@ -239,19 +241,20 @@ class NMR_fusion(nn.Layer):
         # cross-modal fusion (obtained spectrum_embedding)
         if self.crossmodal_fusion == "concat_linear":
             merged = paddle.concat([global_H, global_C], axis=-1)  # [B, 2D*]
-            global_output = self.concat_linear(merged)             # [B, D]
+            global_output = self.concat_linear(merged)  # [B, D]
         elif self.crossmodal_fusion == "weighted_sum":
             merged = paddle.concat([global_H, global_C], axis=-1)
             # option
             # merged = global_H + global_C
-            gate = F.sigmoid(self.weighted_sum(merged))             # [B, 1]
-            global_output = gate * global_H + (1 - gate) * global_C # [B, D*]
+            gate = F.sigmoid(self.weighted_sum(merged))  # [B, 1]
+            global_output = gate * global_H + (1 - gate) * global_C  # [B, D*]
         else:
-            global_output = (global_H, global_C)                    
+            global_output = (global_H, global_C)
 
-
-        spectrum_token_enc = paddle.concat([fused_H, fused_C], axis=1) # [B, Lh+Lc, D or 2*D]
-        spectrum_token_mask = paddle.concat([mask_H, mask_C], axis=1) # [B, Lh+Lc]
+        spectrum_token_enc = paddle.concat(
+            [fused_H, fused_C], axis=1
+        )  # [B, Lh+Lc, D or 2*D]
+        spectrum_token_mask = paddle.concat([mask_H, mask_C], axis=1)  # [B, Lh+Lc]
 
         return global_output, (spectrum_token_enc, spectrum_token_mask)
 
@@ -324,6 +327,7 @@ class NMR_encoder(nn.Layer):
         num_layers,
         drop_prob,
         peakwidthemb_num,
+        splitemb_num,
         integralemb_num,
     ):
         super(NMR_encoder, self).__init__()
@@ -334,6 +338,7 @@ class NMR_encoder(nn.Layer):
             num_layers=num_layers,
             drop_prob=drop_prob,
             peakwidthemb_num=peakwidthemb_num,
+            splitemb_num=splitemb_num,
             integralemb_num=integralemb_num,
         )
 
@@ -392,6 +397,7 @@ class NMR_encoder_H(nn.Layer):
         num_layers,
         drop_prob,
         peakwidthemb_num,
+        splitemb_num,
         integralemb_num,
     ):
         super(NMR_encoder_H, self).__init__()
@@ -402,6 +408,7 @@ class NMR_encoder_H(nn.Layer):
             num_layers=num_layers,
             drop_prob=drop_prob,
             peakwidthemb_num=peakwidthemb_num,
+            splitemb_num=splitemb_num,
             integralemb_num=integralemb_num,
         )
 
@@ -513,8 +520,10 @@ class H1nmr_embedding(nn.Layer):
         hidden=1024,
         dim=1024,
         drop_prob=0.1,
-        peakwidthemb_num=70,
-        integralemb_num=26,
+        *,
+        peakwidthemb_num,
+        splitemb_num,
+        integralemb_num,
     ):
         super(H1nmr_embedding, self).__init__()
 
@@ -526,9 +535,7 @@ class H1nmr_embedding(nn.Layer):
             peakwidthemb_num, peakwidth_dim, padding_idx=0
         )
 
-        self.split_emb = nn.Embedding(
-            116, split_dim, padding_idx=0
-        )  # Supports 116 split patterns
+        self.split_emb = nn.Embedding(splitemb_num, split_dim, padding_idx=0)
 
         self.integral_emb = nn.Embedding(integralemb_num, integral_dim, padding_idx=0)
 
@@ -557,7 +564,7 @@ class H1nmr_embedding(nn.Layer):
         h_shift_emb = self.shift_emb(h_shift) * src_mask.unsqueeze(-1)
         peakwidth_emb = self.peakwidth_emb(peakwidth.astype("int64"))
         split_emb = self.split_emb(split.astype("int64"))
-        integral_emb = self.integral_emb((integral + 1).astype("int64"))
+        integral_emb = self.integral_emb(integral.astype("int64"))
 
         J_emb = self.J_emb(j_couple)
         J_emb = paddle.sum(J_emb, axis=-2) * src_mask.unsqueeze(-1)

@@ -65,7 +65,7 @@ Refer to the [install doc](../../Install.md) to install PaddleMaterials.
 
 #### 1. Generate new 2D materials:
    ```bash
-   python structure_generation/sample.py --model_name='mattergen_ml2ddb' --mode='by_dataloader' --save_path='results_mattergen_ml2ddb'
+   python structure_generation/sample.py --model_name='mattergen_ml2ddb' --mode='by_dataloader' --output_path='results_mattergen_ml2ddb'
    ```
    You can download the pre-trained model from [here](https://paddle-org.bj.bcebos.com/paddlematerial/workflow/ml2ddb/mattergen_ml2ddb.zip) and modify the `total_num` parameter in the configuration file to generate more structures.
 
@@ -80,13 +80,13 @@ Refer to the [install doc](../../Install.md) to install PaddleMaterials.
    ```
    Then you can generate more structures:
    ```bash
-   python structure_generation/sample.py --config_path='your config path after modify' --checkpoint_path='your downloaded checkpoint path(*.pdparams)'  --mode='by_dataloader' --save_path='results_mattergen_ml2ddb'
+   python structure_generation/sample.py --config_path='your config path after modify' --checkpoint_path='your downloaded checkpoint path(*.pdparams)'  --mode='by_dataloader' --output_path='results_mattergen_ml2ddb'
    ```
 
 
 #### 2. Generate new 2D materials with specific chemical system:
    ```bash
-   python structure_generation/sample.py --model_name='mattergen_ml2ddb_chemical_system' --mode='by_dataloader' --save_path='results_mattergen_ml2ddb_chemical_system'
+   python structure_generation/sample.py --model_name='mattergen_ml2ddb_chemical_system' --mode='by_dataloader' --output_path='results_mattergen_ml2ddb_chemical_system'
    ```
    The above command will generate structures with specific chemical system `Si` and `Mo`, if you want to generate structures with other chemical systems, you can download the pre-trained model from [here](https://paddle-org.bj.bcebos.com/paddlematerial/workflow/ml2ddb/mattergen_ml2ddb_chemical_system.zip) and modify the `prop_values` parameter in the configuration file.
 
@@ -101,13 +101,13 @@ Refer to the [install doc](../../Install.md) to install PaddleMaterials.
    ```
    Then you can generate structures with specific chemical system:
    ```bash
-   python structure_generation/sample.py --config_path='your config path after modify' --checkpoint_path='your downloaded checkpoint path(*.pdparams)'  --mode='by_dataloader' --save_path='results_mattergen_ml2ddb_chemical_system'
+   python structure_generation/sample.py --config_path='your config path after modify' --checkpoint_path='your downloaded checkpoint path(*.pdparams)'  --mode='by_dataloader' --output_path='results_mattergen_ml2ddb_chemical_system'
    ```
 
 
 #### 3. Generate new 2D materials with specific space group:
    ```bash
-   python structure_generation/sample.py --model_name='mattergen_ml2ddb_space_group' --mode='by_dataloader' --save_path='results_mattergen_ml2ddb_space_group'
+   python structure_generation/sample.py --model_name='mattergen_ml2ddb_space_group' --mode='by_dataloader' --output_path='results_mattergen_ml2ddb_space_group'
    ```
    The above command will generate structures with specific space group `11`, if you want to generate structures with other space groups, you can download the pre-trained model from [here](https://paddle-org.bj.bcebos.com/paddlematerial/workflow/ml2ddb/mattergen_ml2ddb_space_group.zip) and modify the `prop_values` parameter in the configuration file.
 
@@ -122,7 +122,7 @@ Refer to the [install doc](../../Install.md) to install PaddleMaterials.
    ```
    Then you can generate structures with specific space group:
    ```bash
-   python structure_generation/sample.py --config_path='your config path after modify' --checkpoint_path='your downloaded checkpoint path(*.pdparams)'  --mode='by_dataloader' --save_path='results_mattergen_ml2ddb_space_group'
+   python structure_generation/sample.py --config_path='your config path after modify' --checkpoint_path='your downloaded checkpoint path(*.pdparams)'  --mode='by_dataloader' --output_path='results_mattergen_ml2ddb_space_group'
    ```
 
 

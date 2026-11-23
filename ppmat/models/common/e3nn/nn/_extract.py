@@ -49,30 +49,114 @@ class Extract(paddle.nn.Layer):
     def forward(self, x):
         assert x.shape[-1] == self.irreps_in.dim, "invalid input shape"
 
+        # Avoid Tensor slice assignment here.
+        #
+        # The previous implementation first created zero tensors and then
+        # filled slices with:
+        #
+        #     out[i][...] = x_slice
+        #
+        # Paddle lowers that operation to set_value_with_tensor. Its gradient
+        # currently has no second-order gradient implementation, which blocks
+        # force/stress training where SevenNet requires higher-order autograd.
+        #
+        # Each output consists only of selected, ordered slices of the input,
+        # so it is mathematically equivalent to concatenate those slices.
         out = []
-        for irreps in self.irreps_outs:
-            out.append(paddle.zeros(list(x.shape[:-1]) + [irreps.dim], dtype=x.dtype))
-        for i, (irreps_out, ins) in enumerate(zip(self.irreps_outs, self.instructions)):
-            if ins == tuple(range(len(self.irreps_in))):
-                out[i] = paddle.assign(x)
-            else:
-                for s_out, i_in in zip(irreps_out.slices(), ins):
-                    i_start = self.irreps_in[:i_in].dim
-                    i_len = self.irreps_in[i_in].dim
-                    x_slice = x.slice([-1], [i_start], [i_start + i_len])
-                    if len(out[i].shape) == 1:
-                        out[i][s_out.start : s_out.stop] = x_slice
-                    else:
-                        idx = [slice(None)] * (
-                            len(out[i].shape) - 1
-                        )  
-                        idx.append(
-                            slice(s_out.start, s_out.stop)
-                        )  
-                        out[i][tuple(idx)] = x_slice
 
-        if self.squeeze_out and len(out) == 1:
+        full_instruction = tuple(
+            range(
+                len(
+                    self.irreps_in
+                )
+            )
+        )
+
+        for irreps_out, ins in zip(
+            self.irreps_outs,
+            self.instructions,
+        ):
+
+            if ins == full_instruction:
+
+                # No copy or assignment is required for the identity case.
+                out_tensor = x
+
+            else:
+
+                pieces = []
+
+                for i_in in ins:
+
+                    i_start = (
+                        self.irreps_in[
+                            :i_in
+                        ].dim
+                    )
+
+                    i_len = (
+                        self.irreps_in[
+                            i_in
+                        ].dim
+                    )
+
+                    x_slice = x.slice(
+                        [-1],
+                        [i_start],
+                        [
+                            i_start
+                            + i_len
+                        ],
+                    )
+
+                    pieces.append(
+                        x_slice
+                    )
+
+                if len(pieces) == 0:
+
+                    out_tensor = paddle.zeros(
+                        list(
+                            x.shape[:-1]
+                        )
+                        + [
+                            irreps_out.dim
+                        ],
+                        dtype=x.dtype,
+                    )
+
+                elif len(pieces) == 1:
+
+                    out_tensor = pieces[0]
+
+                else:
+
+                    out_tensor = paddle.concat(
+                        pieces,
+                        axis=-1,
+                    )
+
+            if (
+                out_tensor.shape[-1]
+                != irreps_out.dim
+            ):
+
+                raise RuntimeError(
+                    "Extract output dimension mismatch: "
+                    f"expected {irreps_out.dim}, "
+                    f"got {out_tensor.shape[-1]}"
+                )
+
+            out.append(
+                out_tensor
+            )
+
+        if (
+            self.squeeze_out
+            and len(out) == 1
+        ):
             return out[0]
+
         return tuple(out)
 
 

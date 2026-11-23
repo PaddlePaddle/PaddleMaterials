@@ -57,7 +57,7 @@ def get_structure_from_ase(system):
     logger.info(f"Using ASE provided structures (count: {len(structures)})")
     return files, structures
 
-
+# TODO: need to refactor later
 def build_init_structures(config, predictor):
     """
     Loads structure data from either file or ASE interface according to system config
@@ -73,5 +73,7 @@ def build_init_structures(config, predictor):
     elif system["interface"] == "ase":
         files, structures = get_structure_from_ase(system)
     else:
-        pass
+        raise ValueError(
+            f"Unsupported System.interface: {system['interface']!r} now."
+        )
     return files, structures

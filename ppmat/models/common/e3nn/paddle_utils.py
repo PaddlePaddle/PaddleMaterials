@@ -175,12 +175,17 @@ setattr(paddle.Tensor, "divide", div)
 
 def view(self, *args, **kwargs):
     if args:
-        if len(args) == 1 and isinstance(args[0], (tuple, list, str)):
+        if len(args) == 1 and isinstance(args[0], str):
             return paddle.view(self, args[0])
+        if len(args) == 1 and isinstance(args[0], (tuple, list)):
+            return paddle.reshape(self, args[0])
         else:
-            return paddle.view(self, list(args))
+            return paddle.reshape(self, list(args))
     elif kwargs:
-        return paddle.view(self, shape_or_dtype=list(kwargs.values())[0])
+        shape_or_dtype = list(kwargs.values())[0]
+        if isinstance(shape_or_dtype, str):
+            return paddle.view(self, shape_or_dtype)
+        return paddle.reshape(self, shape=shape_or_dtype)
 
 
 setattr(paddle.Tensor, "view", view)

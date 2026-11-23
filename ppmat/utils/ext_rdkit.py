@@ -27,14 +27,69 @@ allowed_bonds = {
     "Bi": [3, 5],
     "Se": [2, 4, 6],
 }
-bond_dict = [
-    None,
-    Chem.rdchem.BondType.SINGLE,
-    Chem.rdchem.BondType.DOUBLE,
-    Chem.rdchem.BondType.TRIPLE,
-    Chem.rdchem.BondType.AROMATIC,
-]
+BOND_TYPES = {
+    "SINGLE": Chem.rdchem.BondType.SINGLE,
+    "DOUBLE": Chem.rdchem.BondType.DOUBLE,
+    "TRIPLE": Chem.rdchem.BondType.TRIPLE,
+    "AROMATIC": Chem.rdchem.BondType.AROMATIC,
+}
+bond_dict = [None, *BOND_TYPES.values()]
 ATOM_VALENCY = {6: 4, 7: 3, 8: 2, 9: 1, 15: 3, 16: 2, 17: 1, 35: 1, 53: 1}
+
+
+def bond_types_from_vocab(bond_vocab=None):
+    if bond_vocab is None:
+        return {
+            index: bond_type for index, bond_type in enumerate(BOND_TYPES.values(), 1)
+        }
+    return {
+        index: BOND_TYPES[token]
+        for token, index in bond_vocab["token_to_id"].items()
+        if token in BOND_TYPES
+    }
+
+
+def iter_bonds(adjacency_matrix, bond_vocab=None):
+    if hasattr(adjacency_matrix, "numpy"):
+        adjacency_matrix = adjacency_matrix.numpy()
+    adjacency_matrix = np.asarray(adjacency_matrix)
+    bond_types = bond_types_from_vocab(bond_vocab)
+    for source in range(adjacency_matrix.shape[0]):
+        for target in range(source + 1, adjacency_matrix.shape[1]):
+            bond_type = bond_types.get(int(adjacency_matrix[source, target]))
+            if bond_type is None:
+                bond_type = bond_types.get(int(adjacency_matrix[target, source]))
+            if bond_type is not None:
+                yield source, target, bond_type
+
+
+def mol_from_graphs(atom_decoder, node_list, adjacency_matrix, bond_decoder=None):
+    """Convert a standard discrete molecular graph to an RDKit molecule."""
+
+    if hasattr(node_list, "numpy"):
+        node_list = node_list.numpy()
+    node_list = np.asarray(node_list).reshape(-1)
+
+    molecule = Chem.RWMol()
+    node_to_idx = {}
+    for index, node in enumerate(node_list):
+        node = int(node)
+        if node == -1:
+            continue
+        node_to_idx[index] = molecule.AddAtom(Chem.Atom(atom_decoder[node]))
+
+    for source, target, bond_type in iter_bonds(adjacency_matrix, bond_decoder):
+        if source not in node_to_idx or target not in node_to_idx:
+            continue
+        try:
+            molecule.AddBond(node_to_idx[source], node_to_idx[target], bond_type)
+        except Exception:
+            return None
+
+    try:
+        return molecule.GetMol()
+    except Exception:
+        return None
 
 
 class BasicMolecularMetrics(object):
@@ -45,6 +100,7 @@ class BasicMolecularMetrics(object):
     def __init__(self, dataset_info, train_smiles=None):
         self.atom_decoder = dataset_info.atom_decoder
         self.dataset_info = dataset_info
+        self.bond_decoder = dataset_info.vocab["bond"]
         # Retrieve dataset smiles only for qm9 currently
         self.dataset_smiles_list = train_smiles
 
@@ -57,11 +113,13 @@ class BasicMolecularMetrics(object):
         all_smiles = []
         for graph in generated:
             atom_types, edge_types = graph
-            atom_types = paddle.to_tensor(atom_types)
-            edge_types = paddle.to_tensor(edge_types)
-            mol = build_molecule(atom_types, edge_types, self.dataset_info.atom_decoder)
-            smiles = mol2smiles(mol)
             try:
+                mol = mol_from_graphs(
+                    self.atom_decoder,
+                    atom_types,
+                    edge_types,
+                    bond_decoder=self.bond_decoder,
+                )
                 mol_frags = Chem.rdmolops.GetMolFrags(
                     mol, asMols=True, sanitizeFrags=True
                 )
@@ -73,12 +131,6 @@ class BasicMolecularMetrics(object):
                     all_smiles.append(smiles)
             except Exception as e:
                 logger.debug(f"Error in GetMolFrags: {e}")
-                all_smiles.append(None)
-            except Chem.rdchem.AtomValenceException:
-                logger.debug("Valence error in GetmolFrags")
-                all_smiles.append(None)
-            except Chem.rdchem.KekulizeException:
-                logger.debug("Can't kekulize molecule")
                 all_smiles.append(None)
             else:
                 if smiles is None:
@@ -107,12 +159,15 @@ class BasicMolecularMetrics(object):
             atom_types, edge_types = graph
             atom_types = paddle.to_tensor(atom_types)
             edge_types = paddle.to_tensor(edge_types)
-            mol = build_molecule_with_partial_charges(
-                atom_types, edge_types, self.dataset_info.atom_decoder
-            )
-            smiles = mol2smiles(mol)
-            if smiles is not None:
-                try:
+            try:
+                mol = build_molecule_with_partial_charges(
+                    atom_types,
+                    edge_types,
+                    self.atom_decoder,
+                    bond_decoder=self.bond_decoder,
+                )
+                smiles = mol2smiles(mol)
+                if smiles is not None:
                     mol_frags = Chem.rdmolops.GetMolFrags(
                         mol, asMols=True, sanitizeFrags=True
                     )
@@ -120,11 +175,10 @@ class BasicMolecularMetrics(object):
                         mol_frags, default=mol, key=lambda m: m.GetNumAtoms()
                     )
                     smiles = mol2smiles(largest_mol)
-                    valid.append(smiles)
-                except Chem.rdchem.AtomValenceException:
-                    logger.info("Valence error in GetmolFrags")
-                except Chem.rdchem.KekulizeException:
-                    logger.info("Can't kekulize molecule")
+                    if smiles is not None:
+                        valid.append(smiles)
+            except Exception as error:
+                logger.debug(f"Error in relaxed molecule construction: {error}")
         return valid, len(valid) / len(generated)
 
     def evaluate(self, generated):
@@ -156,84 +210,60 @@ class BasicMolecularMetrics(object):
 
 
 def mol2smiles(mol):
+    if mol is None:
+        return None
     try:
         Chem.SanitizeMol(mol)
-    except ValueError:
+    except Exception:
         return None
     return Chem.MolToSmiles(mol)
 
 
-def build_molecule(atom_types, edge_types, atom_decoder, verbose=False):
+def build_molecule(
+    atom_types, edge_types, atom_decoder, verbose=False, bond_decoder=None
+):
     if verbose:
         print("building new molecule")
     mol = Chem.RWMol()
     for atom in atom_types:
-        a = Chem.Atom(atom_decoder[atom.item()])
+        atom_id = int(atom.item())
+        a = Chem.Atom(atom_decoder[atom_id])
         mol.AddAtom(a)
         if verbose:
-            print("Atom added: ", atom.item(), atom_decoder[atom.item()])
-    edge_types = paddle.triu(x=edge_types)
-    all_bonds = paddle.nonzero(x=edge_types)
-    for i, bond in enumerate(all_bonds):
-        if bond[0].item() != bond[1].item():
-            mol.AddBond(
-                bond[0].item(),
-                bond[1].item(),
-                bond_dict[edge_types[bond[0], bond[1]].item()],
-            )
-            if verbose:
-                print(
-                    "bond added:",
-                    bond[0].item(),
-                    bond[1].item(),
-                    edge_types[bond[0], bond[1]].item(),
-                    bond_dict[edge_types[bond[0], bond[1]].item()],
-                )
+            print("Atom added: ", atom_id, atom_decoder[atom_id])
+    for source, target, bond_type in iter_bonds(edge_types, bond_decoder):
+        mol.AddBond(source, target, bond_type)
+        if verbose:
+            print("bond added:", source, target, bond_type)
     return mol
 
 
 def build_molecule_with_partial_charges(
-    atom_types, edge_types, atom_decoder, verbose=False
+    atom_types, edge_types, atom_decoder, verbose=False, bond_decoder=None
 ):
     if verbose:
         print("\nbuilding new molecule")
     mol = Chem.RWMol()
     for atom in atom_types:
-        a = Chem.Atom(atom_decoder[atom.item()])
+        atom_id = int(atom.item())
+        a = Chem.Atom(atom_decoder[atom_id])
         mol.AddAtom(a)
         if verbose:
-            print("Atom added: ", atom.item(), atom_decoder[atom.item()])
-    edge_types = paddle.triu(x=edge_types)
-    all_bonds = paddle.nonzero(x=edge_types)
-    for i, bond in enumerate(all_bonds):
-        if bond[0].item() != bond[1].item():
-            mol.AddBond(
-                bond[0].item(),
-                bond[1].item(),
-                bond_dict[edge_types[bond[0], bond[1]].item()],
-            )
-            if verbose:
-                print(
-                    "bond added:",
-                    bond[0].item(),
-                    bond[1].item(),
-                    edge_types[bond[0], bond[1]].item(),
-                    bond_dict[edge_types[bond[0], bond[1]].item()],
-                )
-            flag, atomid_valence = check_valency(mol)
-            if verbose:
-                print("flag, valence", flag, atomid_valence)
-            if flag:
-                continue
-            else:
-                assert len(atomid_valence) == 2
-                idx = atomid_valence[0]
-                v = atomid_valence[1]
-                an = mol.GetAtomWithIdx(idx).GetAtomicNum()
-                if verbose:
-                    print("atomic num of atom with a large valence", an)
-                if an in (7, 8, 16) and v - ATOM_VALENCY[an] == 1:
-                    mol.GetAtomWithIdx(idx).SetFormalCharge(1)
+            print("Atom added: ", atom_id, atom_decoder[atom_id])
+    for source, target, bond_type in iter_bonds(edge_types, bond_decoder):
+        mol.AddBond(source, target, bond_type)
+        if verbose:
+            print("bond added:", source, target, bond_type)
+        flag, atomid_valence = check_valency(mol)
+        if verbose:
+            print("flag, valence", flag, atomid_valence)
+        if flag:
+            continue
+        assert len(atomid_valence) == 2
+        idx, valence = atomid_valence
+        atomic_number = mol.GetAtomWithIdx(idx).GetAtomicNum()
+        if atomic_number in (7, 8, 16) and valence - ATOM_VALENCY[atomic_number] == 1:
+            mol.GetAtomWithIdx(idx).SetFormalCharge(1)
     return mol
 
 
@@ -296,25 +326,38 @@ def valid_mol_can_with_seg(m, largest_connected_comp=True):
 
 
 def check_stability(
-    atom_types, edge_types, dataset_info, debug=False, atom_decoder=None
+    atom_types,
+    edge_types,
+    dataset_info,
+    debug=False,
+    atom_decoder=None,
+    bond_decoder=None,
 ):
     if atom_decoder is None:
         atom_decoder = dataset_info.atom_decoder
-    n_bonds = np.zeros(len(atom_types), dtype="int")
-    for i in range(len(atom_types)):
-        for j in range(i + 1, len(atom_types)):
-            n_bonds[i] += abs((edge_types[i, j] + edge_types[j, i]) / 2)
-            n_bonds[j] += abs((edge_types[i, j] + edge_types[j, i]) / 2)
+    if bond_decoder is None:
+        bond_decoder = dataset_info.vocab["bond"]
+    bond_orders = {
+        Chem.rdchem.BondType.SINGLE: 1.0,
+        Chem.rdchem.BondType.DOUBLE: 2.0,
+        Chem.rdchem.BondType.TRIPLE: 3.0,
+        Chem.rdchem.BondType.AROMATIC: 1.5,
+    }
+    n_bonds = np.zeros(len(atom_types), dtype=np.float64)
+    for source, target, bond_type in iter_bonds(edge_types, bond_decoder):
+        n_bonds[source] += bond_orders[bond_type]
+        n_bonds[target] += bond_orders[bond_type]
     n_stable_bonds = 0
     for atom_type, atom_n_bond in zip(atom_types, n_bonds):
+        atom_type = int(atom_type.item())
         possible_bonds = allowed_bonds[atom_decoder[atom_type]]
         if type(possible_bonds) == int:
-            is_stable = possible_bonds == atom_n_bond
+            is_stable = bool(np.isclose(possible_bonds, atom_n_bond))
         else:
-            is_stable = atom_n_bond in possible_bonds
+            is_stable = any(np.isclose(value, atom_n_bond) for value in possible_bonds)
         if not is_stable and debug:
             logger.info(
-                "Invalid bonds for molecule %s with %d bonds"
+                "Invalid bonds for molecule %s with %.3f bonds"
                 % (atom_decoder[atom_type], atom_n_bond)
             )
         n_stable_bonds += int(is_stable)
@@ -332,12 +375,15 @@ def compute_molecular_metrics(molecule_list, train_smiles, dataset_info):
         n_molecules = len(molecule_list)
         for i, mol in enumerate(molecule_list):
             atom_types, edge_types = mol
-            validity_results = check_stability(atom_types, edge_types, dataset_info)
+            try:
+                validity_results = check_stability(atom_types, edge_types, dataset_info)
+            except (IndexError, KeyError, TypeError, ValueError):
+                continue
             molecule_stable += int(validity_results[0])
             nr_stable_bonds += int(validity_results[1])
             n_atoms += int(validity_results[2])
         fraction_mol_stable = molecule_stable / float(n_molecules)
-        fraction_atm_stable = nr_stable_bonds / float(n_atoms)
+        fraction_atm_stable = nr_stable_bonds / float(max(n_atoms, 1))
         validity_dict = {
             "mol_stable": fraction_mol_stable,
             "atm_stable": fraction_atm_stable,
