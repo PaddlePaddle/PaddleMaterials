@@ -49,114 +49,30 @@ class Extract(paddle.nn.Layer):
     def forward(self, x):
         assert x.shape[-1] == self.irreps_in.dim, "invalid input shape"
 
-        # Avoid Tensor slice assignment here.
-        #
-        # The previous implementation first created zero tensors and then
-        # filled slices with:
-        #
-        #     out[i][...] = x_slice
-        #
-        # Paddle lowers that operation to set_value_with_tensor. Its gradient
-        # currently has no second-order gradient implementation, which blocks
-        # force/stress training where SevenNet requires higher-order autograd.
-        #
-        # Each output consists only of selected, ordered slices of the input,
-        # so it is mathematically equivalent to concatenate those slices.
         out = []
-
-        full_instruction = tuple(
-            range(
-                len(
-                    self.irreps_in
-                )
-            )
-        )
-
-        for irreps_out, ins in zip(
-            self.irreps_outs,
-            self.instructions,
-        ):
-
-            if ins == full_instruction:
-
-                # No copy or assignment is required for the identity case.
-                out_tensor = x
-
+        input_slices = self.irreps_in.slices()
+        for irreps_out, instructions in zip(self.irreps_outs, self.instructions):
+            if instructions == tuple(range(len(input_slices))):
+                out.append(paddle.assign(x))
+                continue
+            # Building the output from slices avoids slice assignment, whose
+            # backward op cannot be differentiated for force losses.
+            parts = [
+                x.slice([-1], [input_slices[i].start], [input_slices[i].stop])
+                for i in instructions
+            ]
+            if not parts:
+                result = x.slice([-1], [0], [0])
+            elif len(parts) == 1:
+                result = parts[0]
             else:
+                result = paddle.concat(parts, axis=-1)
+            if result.shape[-1] != irreps_out.dim:
+                raise ValueError("Extract instructions do not match output irreps")
+            out.append(result)
 
-                pieces = []
-
-                for i_in in ins:
-
-                    i_start = (
-                        self.irreps_in[
-                            :i_in
-                        ].dim
-                    )
-
-                    i_len = (
-                        self.irreps_in[
-                            i_in
-                        ].dim
-                    )
-
-                    x_slice = x.slice(
-                        [-1],
-                        [i_start],
-                        [
-                            i_start
-                            + i_len
-                        ],
-                    )
-
-                    pieces.append(
-                        x_slice
-                    )
-
-                if len(pieces) == 0:
-
-                    out_tensor = paddle.zeros(
-                        list(
-                            x.shape[:-1]
-                        )
-                        + [
-                            irreps_out.dim
-                        ],
-                        dtype=x.dtype,
-                    )
-
-                elif len(pieces) == 1:
-
-                    out_tensor = pieces[0]
-
-                else:
-
-                    out_tensor = paddle.concat(
-                        pieces,
-                        axis=-1,
-                    )
-
-            if (
-                out_tensor.shape[-1]
-                != irreps_out.dim
-            ):
-
-                raise RuntimeError(
-                    "Extract output dimension mismatch: "
-                    f"expected {irreps_out.dim}, "
-                    f"got {out_tensor.shape[-1]}"
-                )
-
-            out.append(
-                out_tensor
-            )
-
-        if (
-            self.squeeze_out
-            and len(out) == 1
-        ):
+        if self.squeeze_out and len(out) == 1:
             return out[0]
-
         return tuple(out)
 
 

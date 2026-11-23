@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 
 import paddle
+from pgl import Graph
 
 from ppmat.models.sevennet import _keys as KEY
 from ppmat.models.sevennet.model_build import build_E3_equivariant_model
@@ -250,181 +251,39 @@ class SevenNet(paddle.nn.Layer):
 
         return self._manual_batch_mode
 
-    def _prepare_data(
-        self,
-        data,
-    ):
-        """Extract and tensorize SevenNet graph fields.
-
-        Dataset/cache graphs may contain NumPy arrays. The internal SevenNet
-        core receives Paddle tensors only.
-        """
-
-        if isinstance(
-            data,
-            Mapping,
-        ):
-
-            if "graph" in data:
-
-                graph = data[
-                    "graph"
-                ]
-
-                if hasattr(
-                    graph,
-                    "to_dict",
-                ):
-                    prepared = dict(
-                        graph.to_dict()
-                    )
-
-                elif isinstance(
-                    graph,
-                    Mapping,
-                ):
-                    prepared = dict(
-                        graph
-                    )
-
-                else:
-                    raise TypeError(
-                        "data['graph'] must be a PaddleMaterials "
-                        "Data/Batch object or mapping, "
-                        f"but got {type(graph).__name__}."
-                    )
-
+    def _prepare_data(self, data):
+        """Map the shared PGL graph fields to the SevenNet core input."""
+        graph = data["graph"] if isinstance(data, Mapping) and "graph" in data else data
+        if isinstance(graph, Graph):
+            graph = graph.tensor()
+            lattice = graph.node_feat["lattice"]
+            prepared = {
+                KEY.ATOMIC_NUMBERS: graph.node_feat["atom_types"].reshape([-1]),
+                KEY.EDGE_IDX: graph.edges.transpose([1, 0]),
+                KEY.EDGE_VEC: graph.edge_feat["bond_vec"],
+                KEY.NUM_ATOMS: graph.node_feat["num_atoms"].reshape([-1]),
+                KEY.CELL_VOLUME: paddle.abs(paddle.linalg.det(lattice)).reshape([-1]),
+            }
+            if graph.num_graph > 1:
+                prepared[KEY.BATCH] = graph.graph_node_id
             else:
-                prepared = dict(
-                    data
-                )
-
-        elif hasattr(
-            data,
-            "to_dict",
-        ):
-
-            prepared = dict(
-                data.to_dict()
-            )
-
+                prepared[KEY.CELL_VOLUME] = prepared[KEY.CELL_VOLUME].squeeze(0)
+        elif isinstance(graph, Mapping):
+            prepared = dict(graph)
+        elif hasattr(graph, "to_dict"):
+            prepared = graph.to_dict()
         else:
+            raise TypeError("SevenNet requires a PGL graph or a graph mapping.")
 
-            raise TypeError(
-                "SevenNet expects a mapping or PaddleMaterials "
-                "Data/Batch, "
-                f"but got {type(data).__name__}."
-            )
-
-
-        # These names are the actual SevenNet graph fields.
-        integer_keys = (
-            "x",
-            "edge_index",
-            "atomic_numbers",
-            "batch",
-            "ptr",
-            "num_atoms",
-        )
-
-        float_keys = (
-            "pos",
-            "edge_vec",
-            "cell_volume",
-        )
-
-
-        for key in integer_keys:
-
-            if (
-                key not in prepared
-                or prepared[key] is None
-            ):
-                continue
-
-            value = prepared[
-                key
-            ]
-
-            if not isinstance(
-                value,
-                paddle.Tensor,
-            ):
-
-                value = paddle.to_tensor(
-                    value,
-                    dtype="int64",
-                )
-
-            elif value.dtype != paddle.int64:
-
-                value = value.astype(
-                    "int64"
-                )
-
-            prepared[
-                key
-            ] = value
-
-
-        for key in float_keys:
-
-            if (
-                key not in prepared
-                or prepared[key] is None
-            ):
-                continue
-
-            value = prepared[
-                key
-            ]
-
-            if not isinstance(
-                value,
-                paddle.Tensor,
-            ):
-
-                value = paddle.to_tensor(
-                    value,
-                    dtype="float32",
-                )
-
-            elif value.dtype != paddle.float32:
-
-                value = value.astype(
-                    "float32"
-                )
-
-            prepared[
-                key
-            ] = value
-
-
-        if "edge_vec" not in prepared:
-
-            raise KeyError(
-                "SevenNet input requires 'edge_vec'."
-            )
-
-
-        edge_vec = prepared[
-            "edge_vec"
-        ]
-
-
-        # SevenNet derives forces and stresses through edge_vec.
-        if edge_vec.stop_gradient:
-
-            edge_vec = edge_vec.detach()
-
-            edge_vec.stop_gradient = False
-
-
-        prepared[
-            "edge_vec"
-        ] = edge_vec
-
-
+        # Clone only the derivative input so prediction does not mutate the
+        # cached graph or interfere with another model using the same graph.
+        edge_vec = prepared[KEY.EDGE_VEC]
+        if isinstance(edge_vec, paddle.Tensor):
+            edge_vec = edge_vec.astype("float32").detach()
+        else:
+            edge_vec = paddle.to_tensor(edge_vec, dtype="float32")
+        edge_vec.stop_gradient = False
+        prepared[KEY.EDGE_VEC] = edge_vec
         return prepared
 
     def _forward(
@@ -554,74 +413,13 @@ class SevenNet(paddle.nn.Layer):
             [-1]
         )
 
-        # Resolve graph fields from either the legacy flat graph mapping or
-        # the standard PaddleMaterials {"graph": Batch, labels...} format.
-        if isinstance(
-            data,
-            Mapping,
-        ) and KEY.NUM_ATOMS in data:
-
-            num_atoms = data[
-                KEY.NUM_ATOMS
-            ]
-
-        elif (
-            isinstance(data, Mapping)
-            and "graph" in data
-        ):
-
-            graph = data[
-                "graph"
-            ]
-
-            if hasattr(
-                graph,
-                "to_dict",
-            ):
-                graph_data = graph.to_dict()
-
-            elif isinstance(
-                graph,
-                Mapping,
-            ):
-                graph_data = graph
-
-            else:
-                raise TypeError(
-                    "data['graph'] must be a PaddleMaterials Data/Batch "
-                    "object or a mapping."
-                )
-
-            if KEY.NUM_ATOMS not in graph_data:
-                raise KeyError(
-                    f"SevenNet training requires '{KEY.NUM_ATOMS}' "
-                    "in data['graph']."
-                )
-
-            num_atoms = graph_data[
-                KEY.NUM_ATOMS
-            ]
-
-        elif hasattr(
-            data,
-            "to_dict",
-        ):
-
-            graph_data = data.to_dict()
-
-            if KEY.NUM_ATOMS not in graph_data:
-                raise KeyError(
-                    f"SevenNet training requires '{KEY.NUM_ATOMS}'."
-                )
-
-            num_atoms = graph_data[
-                KEY.NUM_ATOMS
-            ]
-
+        graph = data.get("graph", data) if isinstance(data, Mapping) else data
+        if isinstance(graph, Graph):
+            num_atoms = graph.node_feat["num_atoms"]
+        elif isinstance(graph, Mapping):
+            num_atoms = graph[KEY.NUM_ATOMS]
         else:
-            raise KeyError(
-                f"SevenNet training requires '{KEY.NUM_ATOMS}'."
-            )
+            num_atoms = graph.to_dict()[KEY.NUM_ATOMS]
 
         if not isinstance(
             num_atoms,

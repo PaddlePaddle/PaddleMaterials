@@ -141,6 +141,7 @@ Dataset:
       __class_name__: MPTrjDataset
       __init_params__:
         path: "./data/MPtrj_2022.9_full/train.json"
+        cache_path: "./output/sevennet_mptrj_pgl_cache"
 
         property_names: ${Global.label_names}
 

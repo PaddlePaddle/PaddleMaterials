@@ -1,15 +1,13 @@
 import copy
-import os
-import warnings
 from collections import OrderedDict
-from typing import Any, Dict, List, Literal, Tuple, Type, Union, overload
+from typing import Any, Dict, List, Tuple, Type, Union
 
 from ppmat.models.sevennet import _const as _const
 from ppmat.models.sevennet import _keys as KEY
 from ppmat.models.sevennet import util as util
+from ppmat.models.common.e3nn.math import normalize2mom
 from ppmat.models.common.e3nn.o3 import Irreps
 
-from .nn.convolution import IrrepsConvolution
 from .nn.edge_embedding import (BesselBasis, EdgeEmbedding, PolynomialCutoff,
                                 SphericalEncoding, XPLORCutoff)
 from .nn.force_output import ForceStressOutputFromEdge
@@ -21,24 +19,6 @@ from .nn.self_connection import (SelfConnectionIntro,
                                  SelfConnectionLinearIntro,
                                  SelfConnectionOutro)
 from .nn.sequential import AtomGraphSequential
-
-warnings.filterwarnings(
-    "ignore",
-    message="The TorchScript type system doesn't support instance-level annotations",
-)
-
-
-def _insert_after(module_name_after, key_module_pair, layers):
-    idx = -1
-    for i, (key, _) in enumerate(layers):
-        if key == module_name_after:
-            idx = i
-            break
-    if idx == -1:
-        return layers
-    layers.insert(idx + 1, key_module_pair)
-    return layers
-
 
 def init_self_connection(config: Dict[str, Any]) -> List[Tuple[Type, Type]]:
     self_connection_type_list = config[KEY.SELF_CONNECTION_TYPE]
@@ -166,217 +146,9 @@ def init_shift_scale(
     return rescale_module
 
 
-def patch_modality(layers: OrderedDict, config: Dict[str, Any]) -> OrderedDict:
-    """
-    Postprocess 7net-model to multimodal model.
-    1. prepend modality one-hot embedding layer
-    2. patch modalities of IrrepsLinear layers
-    Modality aware shift scale is handled by init_shift_scale, not here
-    """
-    cfg = config
-    if not cfg.get(KEY.USE_MODALITY, False):
-        return layers
-    _layers = list(layers.items())
-    _layers = _insert_after(
-        "onehot_idx_to_onehot",
-        (
-            "one_hot_modality",
-            OnehotEmbedding(
-                num_classes=config[KEY.NUM_MODALITIES],
-                data_key_x=KEY.MODAL_TYPE,
-                data_key_out=KEY.MODAL_ATTR,
-                data_key_save=None,
-                data_key_additional=None,
-            ),
-        ),
-        _layers,
-    )
-    layers = OrderedDict(_layers)
-    num_modal = config[KEY.NUM_MODALITIES]
-    for k, module in layers.items():
-        if not isinstance(module, IrrepsLinear):
-            continue
-        if (
-            cfg[KEY.USE_MODAL_NODE_EMBEDDING]
-            and k.endswith("onehot_to_feature_x")
-            or cfg[KEY.USE_MODAL_SELF_INTER_INTRO]
-            and k.endswith("self_interaction_1")
-            or cfg[KEY.USE_MODAL_SELF_INTER_OUTRO]
-            and k.endswith("self_interaction_2")
-            or cfg[KEY.USE_MODAL_OUTPUT_BLOCK]
-            and k == "reduce_input_to_hidden"
-        ):
-            module.set_num_modalities(num_modal)
-    return layers
-
-
-def patch_cue(layers: OrderedDict, config: Dict[str, Any]) -> OrderedDict:
-    cue_cfg = copy.deepcopy(config.get(KEY.CUEQUIVARIANCE_CONFIG, {}))
-    if not cue_cfg.pop("use", False):
-        return layers
-    class _UnsupportedCueHelper:
-        def __getattr__(self, name):
-            raise NotImplementedError(
-                "cuEquivariance is not supported by the pure Paddle SevenNet port."
-            )
-
-    cue_helper = _UnsupportedCueHelper()
-
-    if not cue_helper.is_cue_available():
-        warnings.warn(
-            "cuEquivariance is requested, but the package is not installed. "
-            + "Fallback to e3nn."
-        )
-        return layers
-    if not cue_helper.is_cue_cuda_available_model(config):
-        return layers
-    use_scatter_fusion = os.environ.get("CUEQ_USE_SCATTER_FUSION") or cue_cfg.pop(
-        "use_scatter_fusion", True
-    )
-    if isinstance(use_scatter_fusion, str):
-        use_scatter_fusion = use_scatter_fusion.lower() in ("1", "true", "yes")
-    tp_method = os.environ.get("CUEQ_TP_METHOD") or cue_cfg.pop(
-        "cueq_tp_method", "uniform_1d"
-    )
-    assert tp_method in ("uniform_1d", "naive", "fused_tp", "indexed_linear")
-    group = "O3" if config[KEY.IS_PARITY] else "SO3"
-    cueq_patch_kwargs = dict(layout="mul_ir")
-    cueq_patch_kwargs.update(cue_cfg)
-    updates = {}
-    for k, module in layers.items():
-        if isinstance(module, (IrrepsLinear, SelfConnectionLinearIntro)):
-            continue
-            """
-            if k == 'reduce_hidden_to_energy':  # TODO: has bug with 0 shape
-                continue
-            module_patched = cue_helper.patch_linear(
-                module, group, **cueq_patch_kwargs
-            )
-            updates[k] = module_patched
-            """
-        elif isinstance(module, SelfConnectionIntro):
-            continue
-            """
-            module_patched = cue_helper.patch_fully_connected(
-                module, group, **cueq_patch_kwargs
-            )
-            updates[k] = module_patched
-            """
-        elif isinstance(module, IrrepsConvolution):
-            module_patched = cue_helper.patch_convolution(
-                module,
-                group,
-                use_scatter_fusion=use_scatter_fusion,
-                tp_method=tp_method,
-                **cueq_patch_kwargs,
-            )
-            updates[k] = module_patched
-    layers.update(updates)
-    return layers
-
-
-def patch_flash_tp(
-    layers: OrderedDict,
-    config: Dict[str, Any],
-) -> OrderedDict:
-    """Disable optional FlashTP optimization in the pure Paddle port.
-
-    The standard PaddleMaterials e3nn tensor-product implementation is used.
-    """
-    return layers
-
-def patch_modules(layers: OrderedDict, config: Dict[str, Any]) -> OrderedDict:
-    layers = patch_modality(layers, config)
-    layers = patch_cue(layers, config)
-    layers = patch_flash_tp(layers, config)
-    return layers
-
-
-def _to_parallel_model(
-    layers: OrderedDict, config: Dict[str, Any]
-) -> List[OrderedDict]:
-    num_classes = layers["onehot_idx_to_onehot"].num_classes
-    one_hot_irreps = Irreps(f"{num_classes}x0e")
-    irreps_node_zero = layers["onehot_to_feature_x"].irreps_out
-    _layers = list(layers.items())
-    layers_list = []
-    num_convolution_layer = config[KEY.NUM_CONVOLUTION]
-
-    def slice_until_this(module_name, layers):
-        idx = -1
-        for i, (key, _) in enumerate(layers):
-            if key == module_name:
-                idx = i
-                break
-        first_to = layers[: idx + 1]
-        remain = layers[idx + 1 :]
-        return first_to, remain
-
-    _layers = _insert_after(
-        "onehot_to_feature_x",
-        (
-            "one_hot_ghost",
-            OnehotEmbedding(
-                data_key_x=KEY.NODE_FEATURE_GHOST,
-                num_classes=num_classes,
-                data_key_save=None,
-                data_key_additional=None,
-            ),
-        ),
-        _layers,
-    )
-    _layers = _insert_after(
-        "one_hot_ghost",
-        (
-            "ghost_onehot_to_feature_x",
-            IrrepsLinear(
-                irreps_in=one_hot_irreps,
-                irreps_out=irreps_node_zero,
-                data_key_in=KEY.NODE_FEATURE_GHOST,
-                biases=config[KEY.USE_BIAS_IN_LINEAR],
-            ),
-        ),
-        _layers,
-    )
-    _layers = _insert_after(
-        "0_self_interaction_1",
-        (
-            "ghost_0_self_interaction_1",
-            IrrepsLinear(
-                irreps_node_zero,
-                irreps_node_zero,
-                data_key_in=KEY.NODE_FEATURE_GHOST,
-                biases=config[KEY.USE_BIAS_IN_LINEAR],
-            ),
-        ),
-        _layers,
-    )
-    for i in range(1, num_convolution_layer):
-        sliced, _layers = slice_until_this(f"{i}_self_interaction_1", _layers)
-        layers_list.append(OrderedDict(sliced))
-        _layers.insert(0, ("edge_embedding", init_edge_embedding(config)))
-    layers_list.append(OrderedDict(_layers))
-    del layers_list[-1]["force_output"]
-    return layers_list
-
-
-@overload
-def build_E3_equivariant_model(
-    config: dict, parallel: Literal[False] = False
-) -> AtomGraphSequential:
-    ...
-
-
-@overload
-def build_E3_equivariant_model(
-    config: dict, parallel: Literal[True]
-) -> List[AtomGraphSequential]:
-    ...
-
-
 def build_E3_equivariant_model(
     config: dict, parallel: bool = False
-) -> Union[AtomGraphSequential, List[AtomGraphSequential]]:
+) -> AtomGraphSequential:
     """
     output shapes (w/o batch)
 
@@ -387,6 +159,8 @@ def build_E3_equivariant_model(
 
     for data w/o cell volume, pred_stress has garbage values
     """
+    if parallel or config.get(KEY.USE_MODALITY, False):
+        raise NotImplementedError("SevenNet supports single-model, single-fidelity execution")
     layers = OrderedDict()
     cutoff = config[KEY.CUTOFF]
     num_species = config[KEY.NUM_SPECIES]
@@ -520,11 +294,19 @@ def build_E3_equivariant_model(
         else True,
         "data_key_grad": grad_key,
     }
-    if parallel:
-        layers_list = _to_parallel_model(layers, config)
-        return [
-            AtomGraphSequential(patch_modules(layers, config), **common_args)
-            for layers in layers_list
-        ]
-    else:
-        return AtomGraphSequential(patch_modules(layers, config), **common_args)
+    model = AtomGraphSequential(layers, **common_args)
+    # Upstream e3nn uses a different random stream to estimate these
+    # constants. Apply its values only to this model, including radial MLPs.
+    factors = {
+        "silu": 1.679176792398942,
+        "tanh": 1.5937334472592695,
+        "relu": 1.4163393446331367,
+        "abs": 1.001110600838467,
+    }
+    for layer in model.sublayers():
+        if isinstance(layer, normalize2mom):
+            name = getattr(layer.f, "__name__", layer.f.__class__.__name__).lower()
+            if name in factors:
+                layer.cst = factors[name]
+                layer._is_id = abs(layer.cst - 1.0) < 1e-4
+    return model

@@ -2,7 +2,11 @@
 
 SevenNet predicts total energy, atomic forces, and stress for periodic crystal
 structures. This PaddleMaterials port uses the shared MLIP trainer and
-PotentialPredictor. The pretrained package contains weights converted from
+PotentialPredictor. Data preparation uses the existing MPTrjDataset
+structure/graph cache and the shared FindPointsInSpheres PGL converter.
+SevenNet keeps the e3nn Gate, linear layer, and tensor product from
+PaddleMaterials. The shared e3nn fixes cover irreps sorting and the specific
+contractions needed to differentiate force/stress losses. The pretrained package contains weights converted from
 upstream SevenNet-0.
 
 ## Environment
@@ -51,6 +55,8 @@ The MPtrj recipe uses three convolution layers, a 4.5 Å cutoff, Adam
 with a learning rate of 0.001, and a batch size of 6. To launch full-dataset
 training, use the same YAML without the overrides after preparing train.json.
 The sample run does not establish full-dataset training accuracy.
+For separate dataset splits or custom paths, set a distinct cache_path.
+Caches from the earlier SevenNet graph representation must be regenerated.
 
 ## Pretrained prediction
 
@@ -83,7 +89,7 @@ python -m pytest -q test/models/sevennet test/test_scatter.py
 | --- | --- | --- | --- |
 | Repository fixture | 3 HfO2 structures | 1 epoch, 2 optimizer steps | sevennet-smoke-train.log |
 | MPtrj sample | 15 training frames | 1 epoch, 3 optimizer steps | sevennet-mptrj-sample-train.log |
-| SevenNet-0 conversion | 8 structures | Maximum absolute differences: 1.53e-5 eV, 3.16e-6 eV/Å, 1.19e-7 eV/Å³ | sevennet0.zip and sevennet0-parity.log |
+| SevenNet-0 conversion | 8 structures | Maximum absolute differences: 1.53e-5 eV, 3.64e-6 eV/Å, 8.94e-8 eV/Å³ | sevennet0.zip and sevennet0-parity.log |
 
 The parity comparison checks the converted checkpoint against upstream
 predictions. It reports neither test-set MAE nor from-scratch replication

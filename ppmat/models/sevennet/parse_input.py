@@ -1,7 +1,5 @@
 from copy import deepcopy
 
-import yaml
-
 from ppmat.models.sevennet import _const as _const
 from ppmat.models.sevennet import _keys as KEY
 from . import util
@@ -53,30 +51,3 @@ def init_model_config(config):
 
 
     return model_meta
-
-
-
-def read_config_yaml_global(filename):
-
-    with open(filename,"r") as f:
-        inputs=yaml.safe_load(f)
-
-
-    model_config = init_model_config(
-        inputs["model"]
-    )
-
-
-    # 保留train/data以后使用
-    if "train" in inputs:
-        model_config.update(
-            inputs["train"]
-        )
-
-    if "data" in inputs:
-        model_config.update(
-            inputs["data"]
-        )
-
-
-    return model_config

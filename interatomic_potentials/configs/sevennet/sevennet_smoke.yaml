@@ -141,7 +141,7 @@ Dataset:
       __init_params__:
         path: "./test/data/sevennet/mini_mptrj.json"
 
-        cache_path: "./output/sevennet_smoke_cache"
+        cache_path: "./output/sevennet_smoke_pgl_cache"
 
         property_names: ${Global.label_names}
 
