@@ -144,15 +144,17 @@ def build_workflow(model_name: str, backend: str):
         sampler = MolecularSampler(
             model_name=model_name,
             weights_name="best.pdparams",
-            config_overrides=[
-                *overrides,
-                "Sampler.data.dataset.__init_params__.total_num=1",
-                "Sampler.data.dataset.__init_params__.seed=2026",
-                "Sampler.model_sample_params.num_inference_steps=2",
-            ],
+            config_overrides=overrides,
         )
-        batch = next(iter(sampler._sample_loader))
-        return sampler, lambda: sampler.sample(batch), "two_step_molecule_sampling"
+        # Drive flowmol from a fixed atom count so the benchmark injects no
+        # model-config values; flowmol.sample reads only num_atoms. Fewer
+        # reverse-diffusion steps keep the timed call cheap.
+        batch = {"structure_array": {"num_atoms": np.array([8], dtype="int64")}}
+        return (
+            sampler,
+            lambda: sampler.sample(batch, sample_params={"num_inference_steps": 2}),
+            "two_step_molecule_sampling",
+        )
 
     if model_name.startswith(("diffcsp_", "mattergen_")):
         sampler = StructureSampler(
