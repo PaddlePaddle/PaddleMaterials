@@ -1,36 +1,11 @@
+# Sampling configuration for the released GEOM-Drugs checkpoint.
 Global:
-  do_train: False
-  do_eval: False
-  do_test: False
   # Atom type ordering of the released model
   atom_map: ["C", "H", "N", "O", "F", "P", "S", "Cl", "Br", "I"]
-  # Fake-atom dropout probability shared by the model and the dataset
+  # Enable the fake-atom category used by the released checkpoint
   fake_atom_p: 0.3
   # Number of integration steps used during sampling
   num_inference_steps: 250
-
-Trainer:
-  max_epochs: 20
-  seed: 42
-  output_dir: ./output/flowmol3
-  save_freq: 0
-  log_freq: 10
-  start_eval_epoch: 1
-  eval_freq: 0
-  pretrained_model_path: null
-  resume_from_checkpoint: null
-  use_amp: False
-  amp_level: 'O1'
-  eval_with_no_grad: True
-  gradient_accumulation_steps: 1
-  best_metric_indicator: 'eval_loss'
-  name_for_best_metric: "loss"
-  greater_is_better: False
-  compute_metric_during_train: False
-  metric_strategy_during_eval: 'epoch'
-  use_visualdl: False
-  use_wandb: False
-  use_tensorboard: False
 
 Model:
   __class_name__: FlowMol
@@ -91,11 +66,10 @@ Model:
     execution_backend: eager
     runtime_options: null
 
-Dataset:
-  train: null
-  val: null
-
 Sampler:
+  __class_name__: MolecularSampler
+  __init_params__: {}
+  save_samples: True
   data:
     dataset:
       __class_name__: FlowMol3GeomSamplingDataset

@@ -12,7 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
+
 from ppmat.sampler.molecular_sampler import MolecularSampler
 from ppmat.sampler.structure_sampler import StructureSampler
 
-__all__ = ["MolecularSampler", "StructureSampler"]
+__all__ = ["MolecularSampler", "StructureSampler", "build_sampler"]
+
+
+def build_sampler(cfg):
+    """Build sampler.
+
+    Args:
+        cfg (Dict): Sampler class name and constructor parameters.
+
+    Returns:
+        Sampler: Configured sampler object.
+    """
+    cfg = copy.deepcopy(cfg)
+    class_name = cfg.pop("__class_name__")
+    init_params = cfg.pop("__init_params__")
+    sampler = eval(class_name)(**init_params)
+    return sampler

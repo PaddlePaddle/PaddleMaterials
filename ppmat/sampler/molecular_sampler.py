@@ -50,12 +50,20 @@ from ppmat.vocab import build_vocab
 class MolecularSampler:
     """Sample molecular-generation models through a common model contract.
 
+    StructureSampler converts ``result`` entries to periodic structures and CIF
+    files. Molecular outputs carry model-specific atom and bond representations;
+    this sampler preserves them for aggregation, metrics, and optional export.
+
     A molecular model used by this sampler must expose ``sample(data, **kwargs)``.
     Dataloader sampling additionally expects that method to return a mapping with a
     ``pred`` sequence. Models can optionally return ``true``, ``num_samples``,
     ``node_counts``, ``conditions``, ``atom_decoder``, ``node_onehot``, and
     ``edge_onehot``. This keeps model-specific generation inside the model while the
     sampler owns model loading, iteration, result aggregation, and metrics.
+
+    ``Sampler.save_samples=True`` additionally calls the model's
+    ``save_samples(molecules, output_dir)`` after dataloader sampling. It is
+    disabled by default; models opting in must implement that method.
 
     Two initialization modes are supported:
 
@@ -85,6 +93,10 @@ class MolecularSampler:
         checkpoint_path (Optional[str], optional): Path to model checkpoint file
             (.pdparams) for custom models. Required when not using predefined
             `model_name`. Defaults to None.
+
+        input_path (Optional[str], optional): Sampling dataset path. Overrides
+            the YAML and config_overrides before resolving interpolations.
+            Defaults to None.
     """
 
     def __init__(
@@ -94,8 +106,8 @@ class MolecularSampler:
         config_path: Optional[str] = None,
         checkpoint_path: Optional[str] = None,
         config_overrides: Optional[List[str]] = None,
+        input_path: Optional[str] = None,
     ):
-        package_config_dir = None
         if model_name is None:
             assert config_path is not None and checkpoint_path is not None, (
                 "config_path and checkpoint_path must be provided when model_name is "
@@ -110,34 +122,29 @@ class MolecularSampler:
                 if checkpoint_path and os.path.isdir(checkpoint_path)
                 else None
             )
-            config = OmegaConf.load(config_path)
-            if config_overrides:
-                cli_config = OmegaConf.from_dotlist(config_overrides)
-                config = OmegaConf.merge(config, cli_config)
-            config = OmegaConf.to_container(config, resolve=True)
-            self._resolve_package_paths(
-                config,
-                config_base_dir=config_base_dir,
-                checkpoint_dir=checkpoint_dir,
-            )
         else:
             logger.info(f"Loading registered model: {model_name}")
             extracted_path = download.get_weights_path_from_url(
                 MODEL_REGISTRY[model_name]
             )
-            package_config_dir = resolve_model_package_dir(model_name, extracted_path)
-            config_path = get_model_config_path(model_name, package_config_dir)
-            checkpoint_path = package_config_dir
-            config = OmegaConf.load(config_path)
-            if config_overrides:
-                cli_config = OmegaConf.from_dotlist(config_overrides)
-                config = OmegaConf.merge(config, cli_config)
-            config = OmegaConf.to_container(config, resolve=True)
-            self._resolve_package_paths(
-                config,
-                config_base_dir=package_config_dir,
-                checkpoint_dir=None,
+            config_base_dir = resolve_model_package_dir(model_name, extracted_path)
+            config_path = get_model_config_path(model_name, config_base_dir)
+            checkpoint_path = config_base_dir
+            checkpoint_dir = None
+
+        config = OmegaConf.load(config_path)
+        if config_overrides:
+            config = OmegaConf.merge(config, OmegaConf.from_dotlist(config_overrides))
+        if input_path is not None:
+            OmegaConf.update(
+                config, "Sampler.data.dataset.__init_params__.path", input_path
             )
+        config = OmegaConf.to_container(config, resolve=True)
+        self._resolve_package_paths(
+            config,
+            config_base_dir=config_base_dir,
+            checkpoint_dir=checkpoint_dir,
+        )
 
         model_config = config.get("Model", None)
         assert model_config is not None, "Model config must be provided."
@@ -514,6 +521,8 @@ class MolecularSampler:
                         else f" | {k}(metric): {v:.5f}"
                     )
             logger.info(msg)
+        if self.rank == 0 and self.sample_config.get("save_samples", False):
+            self.model.save_samples(self.last_samples["pred"], self.output_dir)
         return metric_dict if self.metric_modules else self.last_samples
 
     @paddle.no_grad()

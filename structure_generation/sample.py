@@ -13,20 +13,27 @@
 # limitations under the License.
 
 import argparse
+import json
 
 from omegaconf import OmegaConf
 
 from ppmat.sampler import StructureSampler
+from ppmat.sampler import build_sampler
 from ppmat.utils import logger
 
 __all__ = ["StructureSampler", "build_parser", "main"]
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Crystal structure sampling")
+    parser = argparse.ArgumentParser(description="Structure and molecular sampling")
     model_source = parser.add_mutually_exclusive_group(required=True)
     model_source.add_argument("--model_name", help="Registered model name.")
     model_source.add_argument("--config_path", help="Path to a local config file.")
+    parser.add_argument(
+        "--sampler",
+        choices=["StructureSampler", "MolecularSampler"],
+        help="Sampler class; defaults to the local YAML selection or StructureSampler.",
+    )
     parser.add_argument(
         "--weights_name",
         help="Weight filename in a registered model package.",
@@ -81,18 +88,49 @@ def main():
     ]
     if invalid_overrides:
         parser.error("unrecognized arguments: " + " ".join(invalid_overrides))
+    class_name = "StructureSampler"
+    init_params = {}
+    if args.config_path is not None:
+        config = OmegaConf.load(args.config_path)
+        config = OmegaConf.merge(config, OmegaConf.from_dotlist(config_overrides))
+        sampler_cfg = config.get("Sampler", {})
+        class_name = sampler_cfg.get("__class_name__", class_name)
+        if "__init_params__" in sampler_cfg:
+            init_params = OmegaConf.to_container(
+                sampler_cfg["__init_params__"], resolve=True
+            )
+    if args.sampler is not None:
+        class_name = args.sampler
     if args.input_path is not None:
-        config_overrides.append(
-            f"Sample.data.dataset.__init_params__.path={args.input_path}"
+        if class_name == "StructureSampler":
+            config_overrides.append(
+                "Sample.data.dataset.__init_params__.path="
+                + json.dumps(args.input_path)
+            )
+        else:
+            init_params["input_path"] = args.input_path
+    init_params.update(
+        (name, value)
+        for name, value in (
+            ("model_name", args.model_name),
+            ("weights_name", args.weights_name),
+            ("config_path", args.config_path),
+            ("checkpoint_path", args.checkpoint_path),
         )
-
-    sampler = StructureSampler(
-        model_name=args.model_name,
-        weights_name=args.weights_name,
-        config_path=args.config_path,
-        checkpoint_path=args.checkpoint_path,
-        config_overrides=config_overrides,
+        if value is not None
     )
+    init_params["config_overrides"] = [
+        *init_params.get("config_overrides", []),
+        *config_overrides,
+    ]
+    sampler = build_sampler(
+        {"__class_name__": class_name, "__init_params__": init_params}
+    )
+    method_name = (
+        "compute_metric" if args.mode == "compute_metric" else f"sample_{args.mode}"
+    )
+    if not callable(getattr(sampler, method_name, None)):
+        parser.error(f"{type(sampler).__name__} does not support mode {args.mode!r}")
     if args.mode == "compute_metric":
         metric_result = sampler.compute_metric(save_path=args.output_path)
         for metric_name, metric_value in metric_result.items():

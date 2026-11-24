@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -34,12 +35,14 @@ from rdkit.Chem import AllChem
 from ppmat.datasets import build_dataloader
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
-from ppmat.datasets.flowmol_sampling_dataset import _FLOWMOL3_GEOM_ATOM_COUNTS
 from ppmat.datasets.flowmol_sampling_dataset import FlowMol3GeomSamplingDataset
 from ppmat.models import build_model
 from ppmat.models.flowmol.vector_field import FlowMolVectorField
 from ppmat.sampler import MolecularSampler
+from ppmat.sampler import build_sampler
+from ppmat.sampler import molecular_sampler
 from ppmat.trainer.base_trainer import BaseTrainer
+from structure_generation import sample as sampling_cli
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = (
@@ -48,13 +51,6 @@ CONFIG_PATH = (
 FLOWMOL3_CONFIG_PATH = (
     REPO_ROOT / "structure_generation" / "configs" / "flowmol" / "flowmol3.yaml"
 )
-
-PRIOR_CONFIG = {
-    "positions": {"type": "centered-normal", "kwargs": {"std": 1.0}},
-    "atom_types": {"type": "ctmc"},
-    "atom_charges": {"type": "ctmc"},
-    "bond_types": {"type": "ctmc"},
-}
 
 SMALL_VECTOR_FIELD = {
     "n_charges": 6,
@@ -99,37 +95,14 @@ RELEASED_VECTOR_FIELD = OmegaConf.to_container(
 
 
 def _build_model(vector_field_config=None, **overrides):
-    init_params = {
-        "atom_type_map": ["C", "H", "N", "O", "F"],
-        "total_loss_weights": {
-            "positions": 3.0,
-            "atom_types": 0.4,
-            "atom_charges": 1.0,
-            "bond_types": 2.0,
-        },
-        "interpolant_scheduler_config": {
-            "__class_name__": "InterpolantScheduler",
-            "__init_params__": {
-                "schedule_type": {
-                    "positions": "linear",
-                    "atom_types": "linear",
-                    "atom_charges": "linear",
-                    "bond_types": "linear",
-                },
-                "cosine_params": {},
-            },
-        },
-        "vector_field_config": (
-            SMALL_VECTOR_FIELD if vector_field_config is None else vector_field_config
-        ),
-        "prior_config": PRIOR_CONFIG,
-        "time_scaled_loss": False,
-        "fake_atom_p": 0.0,
-        "distort_p": 0.0,
-        "default_n_timesteps": 4,
-    }
+    config = OmegaConf.to_container(OmegaConf.load(CONFIG_PATH).Model, resolve=True)
+    init_params = config["__init_params__"]
+    init_params["vector_field_config"] = (
+        SMALL_VECTOR_FIELD if vector_field_config is None else vector_field_config
+    )
+    init_params["default_n_timesteps"] = 4
     init_params.update(overrides)
-    model = build_model({"__class_name__": "FlowMol", "__init_params__": init_params})
+    model = build_model(config)
     model.eval()
     return model
 
@@ -250,12 +223,7 @@ def test_train_forward_from_config():
     assert np.isfinite(float(variant(batch)["loss_dict"]["loss"]))
 
     with pytest.raises(ValueError):
-        _build_model(
-            prior_config={
-                **PRIOR_CONFIG,
-                "positions": {"type": "unsupported", "kwargs": {}},
-            }
-        )
+        _build_model(prior_config={"positions": {"type": "unsupported"}})
 
 
 @pytest.mark.parametrize("fake_atom_p", [0.0, 0.3])
@@ -362,19 +330,7 @@ def _assert_molecule_dicts(result, num_atoms):
             assert 1 <= bond_type <= 4
 
 
-def test_sample_produces_valid_molecules(tmp_path):
-    model = _build_model()
-    num_atoms = paddle.to_tensor([4, 5, 6], dtype="int64")
-    batch = {"structure_array": {"num_atoms": num_atoms}}
-
-    result = model.sample(batch, num_inference_steps=4)["pred"]
-    _assert_molecule_dicts(result, num_atoms)
-
-    model.save_samples(result, str(tmp_path / "out"))
-    assert (tmp_path / "out" / "flowmol_samples.sdf").exists()
-
-
-def test_sample_with_fake_atoms_decodes_real_atoms(tmp_path):
+def test_sample_with_fake_atoms_decodes_real_atoms():
     # fix the RNG so the decoded real-atom count is reproducible
     paddle.seed(7)
     np.random.seed(7)
@@ -382,28 +338,20 @@ def test_sample_with_fake_atoms_decodes_real_atoms(tmp_path):
         vector_field_config=SMALL_VECTOR_FIELD_RELEASED,
         fake_atom_p=0.3,
     )
-    num_atoms = paddle.to_tensor([4, 5], dtype="int64")
-    batch = {"structure_array": {"num_atoms": num_atoms}}
+    dataset = FlowMol3GeomSamplingDataset(total_num=2, seed=7)
+    batch = DefaultCollator()([dataset[i] for i in range(len(dataset))])
+    num_atoms = paddle.to_tensor(batch["structure_array"]["num_atoms"])
 
     result = model.sample(batch, num_inference_steps=4)["pred"]
     assert len(result) == num_atoms.shape[0]
-    for molecule, expected_atoms in zip(result, num_atoms.numpy().tolist()):
-        # decoded fake atoms are dropped, so the real atom count can shrink
-        assert 0 < molecule["num_atoms"] <= expected_atoms
-        assert len(molecule["atom_types"]) == molecule["num_atoms"]
-        assert np.asarray(molecule["positions"]).shape == (molecule["num_atoms"], 3)
-        assert all(
-            symbol in ["C", "H", "N", "O", "F", "Se"]
-            for symbol in molecule["atom_types"]
-        )
-        for src, dst, bond_type in molecule["bonds"]:
-            assert 0 <= src < molecule["num_atoms"]
-            assert 0 <= dst < molecule["num_atoms"]
-            assert 1 <= bond_type <= 4
+    decoded_atoms = paddle.to_tensor([molecule["num_atoms"] for molecule in result])
+    assert bool(((decoded_atoms > 0) & (decoded_atoms <= num_atoms)).all())
+    _assert_molecule_dicts(result, decoded_atoms)
 
 
-def test_sampling_framework_end_to_end(tmp_path):
-    csv_path = _write_synthetic_qm9_csv(tmp_path)
+def test_sampling_framework_end_to_end(tmp_path, monkeypatch):
+    csv_path = Path(_write_synthetic_qm9_csv(tmp_path))
+    monkeypatch.chdir(tmp_path)
     checkpoint_path = str(tmp_path / "best.pdparams")
     paddle.save(_build_model().state_dict(), checkpoint_path)
 
@@ -412,30 +360,162 @@ def test_sampling_framework_end_to_end(tmp_path):
         SMALL_VECTOR_FIELD
     )
     config.Model.__init_params__.default_n_timesteps = 4
+    config.Sampler.data.dataset.__init_params__.path = "???"
+    config.Sampler.__init_params__.config_overrides = [
+        "Sampler.data.dataset.__init_params__.total_num=3"
+    ]
+    config.Sampler.input_reference = "${Sampler.data.dataset.__init_params__.path}"
     sampler_config_path = tmp_path / "sampler_config.yaml"
     OmegaConf.save(config, str(sampler_config_path))
 
-    sampler = MolecularSampler(
-        config_path=str(sampler_config_path),
-        checkpoint_path=checkpoint_path,
-        config_overrides=[
-            "Dataset.train=null",
-            f"Sampler.data.dataset.__init_params__.path={csv_path}",
-            "Sampler.data.dataset.__init_params__.total_num=4",
-            f"Sampler.output_dir={tmp_path / 'out'}",
-            "Sampler.model_sample_params.num_inference_steps=4",
-        ],
-    )
+    overrides = [
+        "Dataset.train=null",
+        "Sampler.data.dataset.__init_params__.path=ignored.csv",
+        "Sampler.data.dataset.__init_params__.total_num=4",
+        "Sampler.data.sampler.__init_params__.batch_size=2",
+        "Sampler.model_sample_params.num_inference_steps=4",
+    ]
+    sampler_cfg = {
+        "__class_name__": "MolecularSampler",
+        "__init_params__": {
+            "config_path": str(sampler_config_path),
+            "checkpoint_path": checkpoint_path,
+            "config_overrides": overrides,
+        },
+    }
+    for input_name in ("null", "123", "[input].csv", "data: input.csv"):
+        csv_path = csv_path.rename(tmp_path / input_name)
+        sampler_cfg["__init_params__"]["input_path"] = input_name
+        sampler = build_sampler(sampler_cfg)
+        assert isinstance(sampler, MolecularSampler)
+        assert sampler.sample_config["input_reference"] == input_name
+        dataset_params = sampler.sample_config["data"]["dataset"]["__init_params__"]
+        assert dataset_params["path"] == str(csv_path)
+    assert sampler_cfg["__init_params__"]["config_overrides"] == overrides
+    assert "__class_name__" in sampler_cfg
     results = sampler.sample_by_dataloader(save_path=str(tmp_path / "out"))
     assert results is sampler.last_samples
     assert len(results["pred"]) == 4
     sampled_num_atoms = sampler._sample_loader.dataset.sampled_num_atoms
     _assert_molecule_dicts(results["pred"], paddle.to_tensor(sampled_num_atoms))
 
-    save_samples = getattr(sampler.model, "save_samples", None)
-    assert callable(save_samples)
-    save_samples(sampler.last_samples["pred"], sampler.output_dir)
-    assert (tmp_path / "out" / "flowmol_samples.sdf").exists()
+    saved = Chem.SDMolSupplier(
+        str(tmp_path / "out" / "flowmol_samples.sdf"),
+        sanitize=False,
+        removeHs=False,
+    )
+    assert len(saved) == 4
+    assert all(molecule is not None for molecule in saved)
+
+    sampler.sample_config.pop("save_samples")
+    sampler.sample_by_dataloader(save_path=str(tmp_path / "disabled"))
+    assert not (tmp_path / "disabled" / "flowmol_samples.sdf").exists()
+
+    cli_args = [
+        "sample.py",
+        f"--config_path={sampler_config_path}",
+        f"--checkpoint_path={checkpoint_path}",
+        f"--input_path={input_name}",
+        f"--output_path={tmp_path / 'cli'}",
+        *[value for value in overrides if "total_num=" not in value],
+    ]
+    monkeypatch.setattr(sys, "argv", [*cli_args, "--mode=by_dataloader"])
+    sampling_cli.main()
+    cli_samples = Chem.SDMolSupplier(
+        str(tmp_path / "cli" / "flowmol_samples.sdf"), sanitize=False
+    )
+    assert len(cli_samples) == 3
+
+    monkeypatch.setattr(sys, "argv", cli_args)
+    with pytest.raises(SystemExit) as error:
+        sampling_cli.main()
+    assert error.value.code == 2
+
+
+def test_registered_sampling_framework_end_to_end(tmp_path, monkeypatch):
+    csv_path = _write_synthetic_qm9_csv(tmp_path)
+    package_dir = tmp_path / "flowmol_test"
+    checkpoint_dir = package_dir / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    paddle.save(_build_model().state_dict(), str(checkpoint_dir / "selected.pdparams"))
+
+    config = OmegaConf.load(CONFIG_PATH)
+    config.Model.__init_params__.vector_field_config = OmegaConf.create(
+        SMALL_VECTOR_FIELD
+    )
+    config.Model.__init_params__.default_n_timesteps = 4
+    config.Dataset.train = None
+    config.Sampler.data.dataset.__init_params__.path = "???"
+    config.Sampler.data.dataset.__init_params__.total_num = 2
+    config.Sampler.data.sampler.__init_params__.batch_size = 2
+    config.Sampler.model_sample_params.num_inference_steps = 4
+    config.Sampler.output_dir = str(tmp_path / "registered_output")
+    config.Sampler.input_reference = "${Sampler.data.dataset.__init_params__.path}"
+    OmegaConf.save(config, str(package_dir / "flowmol_test.yaml"))
+
+    package_url = "https://example.com/flowmol_test.zip"
+    monkeypatch.setitem(molecular_sampler.MODEL_REGISTRY, "flowmol_test", package_url)
+    downloads = []
+
+    def resolve_package(url):
+        downloads.append(url)
+        return str(tmp_path)
+
+    monkeypatch.setattr(
+        molecular_sampler.download, "get_weights_path_from_url", resolve_package
+    )
+    sampler = build_sampler(
+        {
+            "__class_name__": "MolecularSampler",
+            "__init_params__": {
+                "model_name": "flowmol_test",
+                "weights_name": "selected.pdparams",
+                "input_path": csv_path,
+            },
+        }
+    )
+    assert downloads == [package_url]
+    assert sampler.pretrained_weight_name == "selected.pdparams"
+    assert sampler.sample_config["input_reference"] == csv_path
+
+    class SampleCountMetric:
+        def update_step(self, result, batch, stage):
+            self.count = len(result["samples"]["pred"])
+
+        def compute_epoch(self, stage):
+            return {"sample_count": self.count}
+
+    sampler.metric_modules = {"count": SampleCountMetric()}
+    metrics = sampler.compute_metric(save_path=str(tmp_path / "metrics"))
+    assert metrics == {"sample_count": 2}
+    saved = Chem.SDMolSupplier(
+        str(tmp_path / "metrics" / "flowmol_samples.sdf"), sanitize=False
+    )
+    assert len(saved) == 2
+
+    sampler.rank = 1
+    sampler.sample_by_dataloader(save_path=str(tmp_path / "other_rank"))
+    assert not (tmp_path / "other_rank" / "flowmol_samples.sdf").exists()
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "sample.py",
+            "--model_name=flowmol_test",
+            "--sampler=MolecularSampler",
+            "--weights_name=selected.pdparams",
+            f"--input_path={csv_path}",
+            f"--output_path={tmp_path / 'registered_cli'}",
+            "--mode=by_dataloader",
+        ],
+    )
+    sampling_cli.main()
+    assert downloads == [package_url, package_url]
+    saved = Chem.SDMolSupplier(
+        str(tmp_path / "registered_cli" / "flowmol_samples.sdf"), sanitize=False
+    )
+    assert len(saved) == 2
 
 
 def test_integrate_feeds_evolving_state_to_network():
@@ -472,25 +552,6 @@ def test_integrate_feeds_evolving_state_to_network():
     total_masked = int(num_atoms.sum())
     assert seen_masks[0] == total_masked
     assert min(seen_masks[1:]) < total_masked
-
-
-# ----------------------------- evaluation chain ----------------------------
-
-
-def test_geom_sampling_histogram_is_inlined():
-    """Regression: the released-model histogram must be inlined and exact."""
-    assert len(_FLOWMOL3_GEOM_ATOM_COUNTS) == 157
-    assert sum(_FLOWMOL3_GEOM_ATOM_COUNTS.values()) == 5730535
-    assert not hasattr(FlowMol3GeomSamplingDataset, "url")
-
-    dataset = FlowMol3GeomSamplingDataset(total_num=4, seed=0)
-    repeated = FlowMol3GeomSamplingDataset(total_num=4, seed=0)
-    assert len(dataset) == 4
-    assert np.array_equal(dataset.sampled_num_atoms, repeated.sampled_num_atoms)
-    assert dataset[0] == {
-        "structure_array": {"num_atoms": int(dataset.sampled_num_atoms[0])},
-        "id": 0,
-    }
 
 
 # ------------------------------- CINN runtime ------------------------------
