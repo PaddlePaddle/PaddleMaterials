@@ -4,12 +4,20 @@ Global:
   do_test: True
   use_voxel: False
   graph_converter:
-    __class_name__: RadiusGraphConverter
+    __class_name__: GPWNOGraphConverter
     __init_params__:
-      cutoff: 3.0
+      pbc: ${Model.__init_params__.pbc}
+      cutoff: ${Model.__init_params__.cutoff}
       max_num_neighbors: 32
       inclusive_cutoff: true
       include_distance: false
+  transforms:
+    - __class_name__: AddFourierGrid
+      __init_params__:
+        shape:
+          - ${Model.__init_params__.num_fourier}
+          - ${Model.__init_params__.num_fourier}
+          - ${Model.__init_params__.num_fourier}
   build_field_cfg:
     format: cube
     name: density
@@ -102,6 +110,7 @@ Dataset:
         path: ./data/data_md/benzene/benzene_train
         split: "train"
         build_graph_cfg: ${Global.graph_converter}
+        transforms: ${Global.transforms}
         grid_sampler_cfg:
           n_samples: 2048
           sampling_mode: random
@@ -122,6 +131,7 @@ Dataset:
         path: ./data/data_md/benzene/benzene_test
         split: "validation"
         build_graph_cfg: ${Global.graph_converter}
+        transforms: ${Global.transforms}
         grid_sampler_cfg:
           n_samples: 2048
           sampling_mode: random
@@ -142,6 +152,7 @@ Dataset:
         path: ./data/data_md/benzene/benzene_test
         split: "test"
         build_graph_cfg: ${Global.graph_converter}
+        transforms: ${Global.transforms}
     sampler:
       __class_name__: BatchSampler
       __init_params__:
@@ -154,6 +165,7 @@ Dataset:
       collate_fn: DensityCollator
 
 Predict:
+  transforms: ${Global.transforms}
   graph_converter: ${Global.graph_converter}
   build_field_cfg: ${Global.build_field_cfg}
   grid_batch_size: 4096

@@ -17,7 +17,6 @@ import json
 import numpy as np
 import paddle
 
-from ppmat.datasets.build_grid import BuildGrid
 from ppmat.datasets.graph_utils.infgcn_graph_utils import radius
 from ppmat.models.common.activation import NormActivation
 from ppmat.models.common.activation import ScalarActivation
@@ -579,6 +578,27 @@ class GPWNO(paddle.nn.Layer):
         atom_types = graph.node_feat["x"]
         atom_coord = graph.node_feat["cart_coords"]
         graph_batch = graph.graph_node_id.astype("int64")
+        edge_index = graph.edges.t()
+        if "fourier_grid" not in data:
+            raise ValueError("GPWNO requires fourier_grid from its input transforms.")
+        fourier_grid = data["fourier_grid"]
+        if not isinstance(fourier_grid, paddle.Tensor):
+            fourier_grid = paddle.to_tensor(fourier_grid)
+        if fourier_grid.ndim == 4:
+            fourier_grid = fourier_grid.unsqueeze(0)
+        expected = [
+            grid.shape[0],
+            self.num_fourier,
+            self.num_fourier,
+            self.num_fourier,
+            3,
+        ]
+        if list(fourier_grid.shape) != expected:
+            raise ValueError(
+                f"Expected fourier_grid shape {expected}, "
+                f"got {list(fourier_grid.shape)}"
+            )
+        fourier_grid = fourier_grid.astype(atom_coord.dtype).to(atom_coord.place)
         info = data.get("info")
 
         chunk_size = data.get("grid_batch_size")
@@ -592,6 +612,8 @@ class GPWNO(paddle.nn.Layer):
                     grid[:, start : start + chunk_size],
                     graph_batch,
                     info,
+                    edge_index,
+                    fourier_grid,
                 )
                 predictions.append(prediction)
             return paddle.concat(predictions, axis=1), aux
@@ -602,6 +624,8 @@ class GPWNO(paddle.nn.Layer):
             grid,
             graph_batch,
             info,
+            edge_index,
+            fourier_grid,
         )
 
     def forward(self, data, return_loss=True, return_prediction=True):
@@ -673,95 +697,9 @@ class GPWNO(paddle.nn.Layer):
             )
         return loss, mae
 
-    @staticmethod
-    def _expand_boundary_atoms(atom_types, atom_coord, batch_idx, cell):
-        """Restore the closed-cell boundary images used to train MP weights.
-
-        The legacy reader copied atoms on lower cell faces to the corresponding
-        upper faces, not to a full 27-cell supercell. Shared field readers now
-        return only the original atoms. Keep this compatibility step local to
-        GPWNO and skip images already present in the input. NumPy selects the
-        discrete image topology; tensor gathers retain coordinate/cell gradients.
-        """
-        fractional = paddle.bmm(
-            atom_coord.unsqueeze(1), paddle.linalg.inv(cell)[batch_idx]
-        ).squeeze(1)
-        fractional_np = fractional.detach().numpy()
-        types_np = atom_types.numpy()
-        batches_np = batch_idx.numpy()
-        directions = np.asarray(
-            [
-                [0, 0, 0],
-                [1, 0, 0],
-                [0, 1, 0],
-                [0, 0, 1],
-                [0, 1, 1],
-                [1, 0, 1],
-                [1, 1, 0],
-                [1, 1, 1],
-            ],
-            dtype=np.int64,
-        )
-        tolerance = 1e-6
-
-        existing = {}
-        for index, position in enumerate(fractional_np):
-            key = (int(batches_np[index]), int(types_np[index]))
-            existing.setdefault(key, []).append(position)
-        sources, shifts = [], []
-        for index, position in enumerate(fractional_np):
-            key = (int(batches_np[index]), int(types_np[index]))
-            for direction in directions:
-                shifted = position + direction
-                if direction.any():
-                    if np.any(shifted > 1.0 + tolerance):
-                        continue
-                    if np.any(
-                        np.all(
-                            np.isclose(existing[key], shifted, atol=tolerance, rtol=0),
-                            axis=1,
-                        )
-                    ):
-                        continue
-                    existing[key].append(shifted)
-                sources.append(index)
-                shifts.append(direction)
-        if len(sources) == atom_coord.shape[0]:
-            return atom_types, atom_coord, batch_idx
-
-        sources = paddle.to_tensor(sources, dtype="int64", place=atom_coord.place)
-        shifts = paddle.to_tensor(
-            np.asarray(shifts), dtype=atom_coord.dtype, place=atom_coord.place
-        )
-        expanded_batch = batch_idx[sources]
-        offset = paddle.bmm(shifts.unsqueeze(1), cell[expanded_batch]).squeeze(1)
-        return atom_types[sources], atom_coord[sources] + offset, expanded_batch
-
-    @paddle.no_grad()
-    def _build_atom_graph(self, atom_coord, batch_idx):
-        """Keep the historical loop-free, nearest-32 atom graph convention."""
-        # The shared bipartite search includes self, so request one extra source.
-        dst, src = radius(atom_coord, atom_coord, self.cutoff, batch_idx, batch_idx, 33)
-        keep = src != dst
-        src, dst = src[keep], dst[keep]
-        distances = (atom_coord[src] - atom_coord[dst]).square().sum(axis=-1)
-        order = paddle.argsort(distances, stable=True)
-        order = order[paddle.argsort(dst[order], stable=True)]
-        src, dst = src[order], dst[order]
-        # With coincident atoms, self may fall outside the first 33 sources.
-        # Cap again after removing self, with source-index tie breaking.
-        counts = paddle.bincount(dst, minlength=atom_coord.shape[0])
-        starts = paddle.cumsum(counts) - counts
-        ranks = paddle.cumsum(paddle.ones_like(src)) - 1
-        ranks = ranks - paddle.repeat_interleave(starts, counts)
-        keep = ranks < 32
-        src, dst = src[keep], dst[keep]
-        num_atoms = atom_coord.shape[0]
-        key = (batch_idx[src] * num_atoms + src) * num_atoms + dst
-        order = paddle.argsort(key, stable=True)
-        return paddle.stack([src[order], dst[order]])
-
-    def _forward_density(self, atom_types, atom_coord, grid, batch_idx, info):
+    def _forward_density(
+        self, atom_types, atom_coord, grid, batch_idx, info, edge_index, fourier_grid
+    ):
         device = atom_coord.place
 
         cell = None
@@ -777,9 +715,6 @@ class GPWNO(paddle.nn.Layer):
         if self.pbc:
             if cell is None:
                 raise ValueError("Periodic GPWNO requires info['cell'].")
-            atom_types, atom_coord, batch_idx = self._expand_boundary_atoms(
-                atom_types, atom_coord, batch_idx, cell
-            )
 
         feat = self.embedding(atom_types)
         n_graph, n_sample = grid.shape[0], grid.shape[1]
@@ -788,7 +723,6 @@ class GPWNO(paddle.nn.Layer):
             atom_center = scatter(atom_coord, batch_idx, dim=0, reduce="mean")
             atom_coord = atom_coord - atom_center[batch_idx]
             grid = grid - atom_center.unsqueeze(1)
-        edge_index = self._build_atom_graph(atom_coord, batch_idx)
         src, dst = edge_index
         edge_vec = atom_coord[src] - atom_coord[dst]
         edge_len = edge_vec.norm(dim=-1) + 1e-08
@@ -1096,7 +1030,6 @@ class GPWNO(paddle.nn.Layer):
                 grid.size(0), self.num_fourier, self.num_fourier, self.num_fourier, 10
             )
             probe_feat = paddle.cat([probe_feat, atomic_dist_probe], dim=-1)
-        fourier_grid = self.get_grid(probe_feat.shape, probe_feat.device)
         probe_feat = self.PWNO(probe_feat, fourier_grid)
         probe_feat = probe_feat.reshape(-1, probe_feat.size(-1))
         sample_flat = grid.reshape(-1, 3)
@@ -1234,21 +1167,3 @@ class GPWNO(paddle.nn.Layer):
         }
 
         return density, aux
-
-    def get_grid(self, shape, device):
-        """Build normalized Fourier coordinates, including both axis endpoints."""
-        spatial_shape = tuple(shape[1:4])
-        grid = BuildGrid(format="array")(
-            {
-                "shape": spatial_shape,
-                "voxel_vectors": np.diag(
-                    [1.0 / max(size - 1, 1) for size in spatial_shape]
-                ),
-            }
-        )
-        coordinates = paddle.to_tensor(
-            grid.cartesian_coordinates(), dtype=paddle.get_default_dtype()
-        ).to(device)
-        return coordinates.reshape([1, *spatial_shape, 3]).expand(
-            [shape[0], *spatial_shape, 3]
-        )

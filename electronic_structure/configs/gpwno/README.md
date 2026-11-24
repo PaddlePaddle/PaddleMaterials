@@ -27,8 +27,7 @@ The main components are:
 
 With `pbc=true`, GPWNO restores the closed-cell boundary atom images used by
 the original MP training reader: atoms on lower cell faces are copied to the
-corresponding upper faces. This happens inside GPWNO for both training and
-prediction, so shared field readers and other models are unchanged. Images
+corresponding upper faces by `GPWNOGraphConverter` before model input. Images
 already present in the input are not added again. This is boundary completion,
 not a full 27-cell supercell expansion.
 
@@ -121,7 +120,7 @@ $$
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">15hour33min</td>
             <td nowrap="nowrap"><a href="gpwno_md17_benzene.yaml">gpwno_md17_benzene</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_benzene.zip">Checkpoint</a> | <a href="logs/gpwno_md17_benzene.log">Log</a></td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_benzene.zip">Checkpoint | Log</a></td>
         </tr>
         <tr>
             <td nowrap="nowrap">gpwno_md17_ethane</td>
@@ -133,7 +132,7 @@ $$
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">52hour18min</td>
             <td nowrap="nowrap"><a href="gpwno_md17_ethane.yaml">gpwno_md17_ethane</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_ethane.zip">Checkpoint</a> | <a href="logs/gpwno_md17_ethane.log">Log</a></td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_ethane.zip">Checkpoint | Log</a></td>
         </tr>
         <tr>
             <td nowrap="nowrap">gpwno_qm9</td>
@@ -145,7 +144,7 @@ $$
             <td nowrap="nowrap">3</td>
             <td nowrap="nowrap">36hour33min</td>
             <td nowrap="nowrap"><a href="gpwno_qm9.yaml">gpwno_qm9</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_qm9.zip">Checkpoint</a> | <a href="logs/gpwno_qm9.log">Log</a></td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_qm9.zip">Checkpoint | Log</a></td>
         </tr>
         <tr>
             <td nowrap="nowrap">gpwno_mp</td>
@@ -157,49 +156,10 @@ $$
             <td nowrap="nowrap">1</td>
             <td nowrap="nowrap">37hour46min</td>
             <td nowrap="nowrap"><a href="gpwno_mp.yaml">gpwno_mp</a></td>
-            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_mp.zip">Checkpoint</a> | <a href="logs/gpwno_mp.log">Log</a></td>
+            <td nowrap="nowrap"><a href="https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_mp.zip">Checkpoint | Log</a></td>
         </tr>
     </tbody>
 </table>
-
-Each checkpoint link downloads a model package containing a matching YAML and
-`checkpoints/best.pdparams`. The packages contain migrated training checkpoints;
-the historical results above are not a new evaluation of these packages.
-The linked [original training logs](logs/README.md) include the historical
-validation and test summaries. Benzene records 10 completed epochs followed by
-an incomplete epoch 11; the MP and QM9 logs resume at epoch 2. Training times
-are the previously reported totals, not durations reconstructed from these
-partial logs. The validation column uses the epoch-10 training validation for
-benzene and epoch-2 training validation for QM9; ethane and MP use the final
-standalone validation. Validation may vary between passes because grid points
-are sampled.
-Loading and sampled-grid inference have been checked with the current code,
-but these checks do not establish full-grid test accuracy.
-
----
-
-### Preparing model packages
-
-The GPWNO ZIPs must start with an explicit `<model_name>/` directory entry so
-that the existing shared ZIP downloader returns a valid extraction directory.
-To prepare compatible copies without changing the YAML or checkpoint bytes:
-
-```bash
-python electronic_structure/configs/gpwno/prepare_model_packages.py \
-  --source-dir path/to/original_packages \
-  --output-dir path/to/compatible_packages
-```
-
-The output directory must contain no existing ZIPs with these names. The
-[compatible packages for BCE replacement](https://pan.baidu.com/s/1gD1Lfi3VumEfjxxPXfCb9w?pwd=gp26)
-(extraction code: `gp26`) include `SHA256SUMS`. These copies have been uploaded
-to Baidu Netdisk; replacement of the existing BCE packages is still pending.
-Replace the hosted packages with these copies before publishing this change. When
-using an existing cache, remove the corresponding cached ZIP and extracted
-model directory before downloading the replacement. Local configuration and
-checkpoint paths can also be passed directly to the prediction command below.
-
----
 
 ## Command
 
@@ -214,9 +174,6 @@ python -m paddle.distributed.launch --gpus="0,1,2,3" electronic_structure/train.
 
 # QM9_EC multi-gpu training
 python -m paddle.distributed.launch --gpus="0,1,2" electronic_structure/train.py -c electronic_structure/configs/gpwno/gpwno_qm9.yaml
-
-# resume training from checkpoint
-python -m paddle.distributed.launch --gpus="0,1,2" electronic_structure/train.py -c electronic_structure/configs/gpwno/gpwno_qm9.yaml Trainer.resume_from_checkpoint='path/to/checkpoints/latest'
 ```
 
 ### Validation
@@ -259,10 +216,6 @@ python electronic_structure/predict.py \
   --input_format mol \
   --output_path ./results
 ```
-
-The unified `FieldPredictor` also accepts `xyz`, `cif`, `cube`, `chgcar`, and
-`json` inputs. Use `--grid_batch_size` to limit the number of field points in
-each inference pass when needed.
 
 ---
 

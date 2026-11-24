@@ -4,12 +4,20 @@ Global:
   do_test: True
   use_voxel: False
   graph_converter:
-    __class_name__: RadiusGraphConverter
+    __class_name__: GPWNOGraphConverter
     __init_params__:
-      cutoff: 3.0
+      pbc: ${Model.__init_params__.pbc}
+      cutoff: ${Model.__init_params__.cutoff}
       max_num_neighbors: 32
       inclusive_cutoff: true
       include_distance: false
+  transforms:
+    - __class_name__: AddFourierGrid
+      __init_params__:
+        shape:
+          - ${Model.__init_params__.num_fourier}
+          - ${Model.__init_params__.num_fourier}
+          - ${Model.__init_params__.num_fourier}
   build_field_cfg:
     format: chgcar
     name: density
@@ -104,6 +112,7 @@ Dataset:
         split: "train"
         build_field_cfg: ${Global.build_field_cfg}
         build_graph_cfg: ${Global.graph_converter}
+        transforms: ${Global.transforms}
         cache_num_workers: ${Global.cache_num_workers}
         overwrite: false
         grid_sampler_cfg:
@@ -127,6 +136,7 @@ Dataset:
         split: "validation"
         build_field_cfg: ${Global.build_field_cfg}
         build_graph_cfg: ${Global.graph_converter}
+        transforms: ${Global.transforms}
         cache_num_workers: ${Global.cache_num_workers}
         overwrite: false
         grid_sampler_cfg:
@@ -150,6 +160,7 @@ Dataset:
         split: "test"
         build_field_cfg: ${Global.build_field_cfg}
         build_graph_cfg: ${Global.graph_converter}
+        transforms: ${Global.transforms}
         cache_num_workers: ${Global.cache_num_workers}
         overwrite: false
     sampler:
@@ -164,6 +175,7 @@ Dataset:
       collate_fn: DensityCollator
 
 Predict:
+  transforms: ${Global.transforms}
   graph_converter: ${Global.graph_converter}
   build_field_cfg: ${Global.build_field_cfg}
   grid_batch_size: 4096

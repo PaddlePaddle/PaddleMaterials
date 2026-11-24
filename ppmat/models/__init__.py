@@ -37,6 +37,7 @@ from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
 from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
 from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
 from ppmat.models.gpwno.GPWNO import GPWNO
+from ppmat.models.gpwno.graph_converter import GPWNOGraphConverter
 from ppmat.models.infgcn.infgcn import InfGCN
 from ppmat.models.mattergen.mattergen import MatterGen
 from ppmat.models.mattergen.mattergen import MatterGenWithCondition
@@ -75,6 +76,7 @@ __all__ = [
     "DiffNMR",
     "InfGCN",
     "GPWNO",
+    "GPWNOGraphConverter",
     "SFIN",
     "SphereNet",
 ]
