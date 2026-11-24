@@ -36,6 +36,8 @@ from ppmat.models.diffnmr.diffnmr import DiffPrior
 from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
 from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
 from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
+from ppmat.models.gpwno.GPWNO import GPWNO
+from ppmat.models.gpwno.graph_converter import GPWNOGraphConverter
 from ppmat.models.infgcn.infgcn import InfGCN
 from ppmat.models.mattergen.mattergen import MatterGen
 from ppmat.models.mattergen.mattergen import MatterGenWithCondition
@@ -73,6 +75,8 @@ __all__ = [
     "DiffPrior",
     "DiffNMR",
     "InfGCN",
+    "GPWNO",
+    "GPWNOGraphConverter",
     "SFIN",
     "SphereNet",
 ]
@@ -176,6 +180,10 @@ MODEL_REGISTRY = {
     "infgcn_mp": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_mp.zip",
     "infgcn_omol25_mc_5k_trimmed": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_omol25_mc_5k_trimmed.zip",
     "infgcn_qm9": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/infgcn/infgcn_qm9.zip",
+    "gpwno_md17_benzene": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_benzene.zip",
+    "gpwno_md17_ethane": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_md17_ethane.zip",
+    "gpwno_mp": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_mp.zip",
+    "gpwno_qm9": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/electronic_structure/gpwno/gpwno_qm9.zip",
     "diffnmr_msdnmr_nless15": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/spectrum_elucidation/diffnmr/diffnmr_msdnmr_nless15.zip",
 }
 

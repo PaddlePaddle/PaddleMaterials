@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import paddle
+
 from ppmat.models.common.e3nn import o3
+from ppmat.models.common.e3nn.nn import Activation
+from ppmat.models.common.e3nn.nn import Extract
 
 
 def swish(x: paddle.Tensor) -> paddle.Tensor:
@@ -38,6 +41,7 @@ class SiQU(paddle.nn.Layer):
 
     def forward(self, x: paddle.Tensor):
         return x * self._activation(x)
+
 
 class ScalarActivation(paddle.nn.Layer):
     """
@@ -97,7 +101,8 @@ class NormActivation(paddle.nn.Layer):
         """
         :param irreps_in: input representations
         :param act_scalars: scalar activation function
-        :param act_vectors: vector activation function (for the norm of higher order features)
+        :param act_vectors: vector activation function for the norm of higher
+            order features
         """
         super(NormActivation, self).__init__()
         self.irreps_in = o3.Irreps(irreps_in)

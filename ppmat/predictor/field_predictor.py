@@ -15,16 +15,19 @@
 import os
 import os.path as osp
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 from cvve import GridSpec
+from cvve import Structure as CVVEStructure
 from tqdm import tqdm
 
 from ppmat.datasets.build_field import BuildField
 from ppmat.datasets.build_grid import BuildGrid
 from ppmat.datasets.build_molecule import BuildMolecule
 from ppmat.datasets.build_structure import BuildStructure
+from ppmat.datasets.transform import build_transforms
 from ppmat.predictor.base import BasePredictor
 from ppmat.utils import logger
 from ppmat.utils.crystal import atomic_number_from_symbol
@@ -85,6 +88,12 @@ class FieldPredictor(BasePredictor):
             config_overrides=config_overrides,
         )
         self.load_inference_model()
+        self.transforms = build_transforms(self.predict_config.get("transforms"))
+
+    def _run_model(self, data):
+        if self.transforms is not None:
+            data = self.transforms(data)
+        return super()._run_model(data)
 
     def from_structures(
         self,
@@ -93,6 +102,8 @@ class FieldPredictor(BasePredictor):
         grid_batch_size: int | None = None,
     ):
         """Predict a field from a structure on an explicit sampling grid."""
+        if isinstance(structures, CVVEStructure) and structures.lattice is None:
+            structures = replace(structures, lattice=grid.cell_vectors)
         graph = self.graph_converter_fn.from_structure(structures)
         data = {
             "graph": graph,

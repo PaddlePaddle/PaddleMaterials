@@ -23,6 +23,7 @@ from typing import Union
 import numpy as np
 import paddle
 
+from ppmat.datasets.build_grid import BuildGrid
 from ppmat.utils.paddle_aux import dim2perm
 
 __all__ = [
@@ -32,7 +33,29 @@ __all__ = [
     "Scale",
     "Abs",
     "AtomRefShift",
+    "AddFourierGrid",
 ]
+
+
+class AddFourierGrid:
+    """Attach fixed normalized spatial coordinates for a Fourier operator."""
+
+    def __init__(self, shape: Sequence[int]):
+        shape = tuple(int(size) for size in shape)
+        if len(shape) != 3 or min(shape) <= 0:
+            raise ValueError("Fourier grid shape must contain three positive sizes.")
+        grid = BuildGrid(format="array")(
+            {
+                "shape": shape,
+                "voxel_vectors": np.diag([1.0 / max(size - 1, 1) for size in shape]),
+            }
+        )
+        self.coordinates = (
+            grid.cartesian_coordinates().astype("float32").reshape(*shape, 3)
+        )
+
+    def __call__(self, data):
+        return {**data, "fourier_grid": self.coordinates}
 
 
 class Normalize:
