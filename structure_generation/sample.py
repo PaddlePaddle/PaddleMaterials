@@ -20,7 +20,7 @@ from ppmat.sampler import MolecularSampler
 from ppmat.sampler import StructureSampler
 from ppmat.utils import logger
 
-__all__ = ["StructureSampler", "build_parser", "main"]
+__all__ = ["MolecularSampler", "StructureSampler", "build_parser", "main"]
 
 
 def build_parser():

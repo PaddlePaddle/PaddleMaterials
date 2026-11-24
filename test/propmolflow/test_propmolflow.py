@@ -38,6 +38,9 @@ from ppmat.datasets.qm9_dataset import QM9Dataset
 from ppmat.metrics import PropMolFlowMoleculeMetric
 from ppmat.models import PropMolFlowVectorField
 from ppmat.models import build_model
+from ppmat.models.propmolflow.mol_converter import CHARGE_OFFSET
+from ppmat.models.propmolflow.mol_converter import N_BOND_TYPES
+from ppmat.models.propmolflow.mol_converter import N_CHARGES
 from ppmat.optimizer import build_optimizer
 from ppmat.sampler import MolecularSampler
 from ppmat.trainer.base_trainer import BaseTrainer
@@ -227,11 +230,38 @@ def _assert_molecule_dicts(result, num_atoms):
 # ----------------------------- training chain -----------------------------
 
 
-def test_train_forward_from_config():
+def test_train_forward_from_config(monkeypatch):
     config = OmegaConf.load(CONFIG_PATH)
     config = OmegaConf.to_container(config, resolve=True)
     model = build_model(config["Model"])
     model.eval()
+
+    prior = paddle.to_tensor(
+        [
+            [1.0, 2.0, 3.0],
+            [3.0, 2.0, 4.0],
+            [1.0, 5.0, 3.0],
+            [2.0, 3.0, 7.0],
+            [6.0, 1.0, 2.0],
+        ]
+    )
+    rotation = paddle.to_tensor([[0.8, -0.6, 0.0], [0.6, 0.8, 0.0], [0.0, 0.0, 1.0]])
+    destination = prior @ rotation.T + paddle.to_tensor([4.0, 5.0, 6.0])
+    alignment_batch = _build_batch([4, 5])
+    alignment_batch["structure_array"]["positions"] = paddle.concat(
+        [destination[:4], destination], axis=0
+    )
+    with monkeypatch.context() as context:
+        context.setattr(
+            "ppmat.models.propmolflow.propmolflow.centered_normal_prior",
+            lambda n, d, **kwargs: prior[:n].clone(),
+        )
+        prepared = model._prepare_training_batch(alignment_batch)
+        aligned = model._sample_prior_positions(prepared)
+        np.testing.assert_allclose(
+            aligned.numpy(), prepared["positions"].numpy(), atol=2e-6, rtol=1e-6
+        )
+        assert np.isfinite(float(model(alignment_batch)["loss_dict"]["loss"]))
 
     batch = _build_batch([4, 5])
     output = model(batch)
@@ -697,6 +727,15 @@ def test_sampling_framework_end_to_end(tmp_path):
         )
         assert len(molecules) == 4
         assert all(molecule is not None for molecule in molecules)
+
+
+def test_model_channels_match_feature_encoding_contract():
+    """The model's categorical channels must equal the dataset encoding contract."""
+    config = OmegaConf.to_container(OmegaConf.load(CONFIG_PATH), resolve=True)
+    vector_field_cfg = config["Model"]["__init_params__"]["vector_field_config"]
+    assert vector_field_cfg["n_charges"] == N_CHARGES
+    assert vector_field_cfg["n_bond_types"] == N_BOND_TYPES
+    assert vector_field_cfg["charge_offset"] == CHARGE_OFFSET
 
 
 def test_sampling_config_stays_in_sync_with_training_config():

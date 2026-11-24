@@ -127,11 +127,7 @@ def rigid_alignment(x_0: paddle.Tensor, x_1: paddle.Tensor) -> paddle.Tensor:
     u, _, vh = paddle.linalg.svd(h, full_matrices=False)
     v = vh.transpose([1, 0])
     r = paddle.matmul(v, u, transpose_y=True)
-    t = x_1_mean - paddle.matmul(x_0_mean, r, transpose_y=True)
-
-    x_0_aligned = paddle.matmul(x_0_c, r, transpose_y=True)
-    x_0_aligned = x_0_aligned + x_0_mean
-    return x_0_aligned + t
+    return paddle.matmul(x_0_c, r, transpose_y=True) + x_1_mean
 
 
 class NodePositionUpdate(nn.Layer):

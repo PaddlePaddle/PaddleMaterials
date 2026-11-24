@@ -71,6 +71,7 @@ class _QM9Properties:
                 )
             mean = reference[property_name]["mean"]
             std = reference[property_name]["std"]
+            source = "released-checkpoint rQM9 statistics"
         else:
             if not osp.isfile(normalization_source):
                 raise FileNotFoundError(
@@ -82,13 +83,24 @@ class _QM9Properties:
                 raise ValueError("Normalization properties must be nonempty and finite")
             mean = float(values.mean())
             std = float(values.std())
+            source = normalization_source
         if not np.isfinite([mean, std]).all() or std <= 0:
             raise ValueError("Normalization statistics require positive variance")
+        logger.debug(
+            f"Conditioning statistics for {property_name}: "
+            f"mean={mean}, std={std} ({source})"
+        )
         return mean, std
 
 
 class PropMolFlowDataset(_QM9Properties, QM9Dataset):
     """Adapt cached QM9 molecules to complete-graph flow-matching features.
+
+    The parent class caches one RDKit molecule per row; this adapter instead
+    caches one flat array per split, because training iterates over slices of
+    concatenated node and edge arrays rather than per-molecule pickles. The
+    cache key covers the source CSV hash, atom map, RDKit version and property
+    range, so stale features are never reused silently.
 
     ``normalization_source=None`` preserves the released checkpoint statistics.
     An explicit CSV supplies custom training statistics. ``property_range``
@@ -452,7 +464,7 @@ class PropMolFlowSamplingDataset(_QM9Properties, Dataset):
     ):
         rng = np.random.RandomState(seed)
         histograms = {}
-        for n in np.unique(num_atoms_all):
+        for n in np.intersect1d(num_atoms_seq, num_atoms_all):
             values = properties_all[num_atoms_all == n]
             prop_min, prop_max = values.min(), values.max()
             prop_range = prop_max - prop_min + 1e-12

@@ -34,6 +34,7 @@ N_CHARGES = 6
 CHARGE_OFFSET = 2
 N_BOND_TYPES = 5
 BOND_TYPE_INDEX = {bond: index for index, bond in bond_types_from_vocab().items()}
+
 _PERCEPTION_OPTIONS = (
     {"charge": 0},
     {"charge": 0, "allowChargedFragments": False},
