@@ -67,6 +67,8 @@ Validity uses RDKit sanitization. Valid & Unique counts distinct valid canonical
 
 The default property normalization uses the bundled rQM9 training statistics for checkpoint compatibility. The released checkpoint was trained on rQM9_v0; training on the official-QM9 split above uses a different data protocol.
 
+To train from scratch with custom normalization statistics, set `normalization_source` in the dataset `__init_params__` for `Dataset.train`, `Dataset.val`, and `Dataset.test` to the same training CSV. Reuse that CSV as `Sampler.data.dataset.__init_params__.normalization_source` when sampling the resulting checkpoint. Changing `path` alone keeps the bundled statistics; use those statistics when evaluating the released weights.
+
 ---
 
 ## Results
@@ -75,7 +77,7 @@ Converted pretrained weights, evaluated on 1,000 in-distribution samples with `a
 
 | Model | Dataset | Validity (%) | Valid & Unique (%) | Atom Stable (%) | Mol. Stable (%) | Config | Checkpoint / Log |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| propmolflow_qm9_alpha_sum | QM9 | 96.20 | 95.90 | 99.64 | 93.60 | [propmolflow_qm9.yaml](propmolflow_qm9.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_alpha_sum.zip) |
+| propmolflow_qm9_alpha_sum | QM9 | 96.20 | 95.90 | 99.64 | 93.60 | [propmolflow_qm9_sample.yaml](propmolflow_qm9_sample.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_alpha_sum.zip) |
 
 ---
 
@@ -113,14 +115,13 @@ python structure_generation/sample.py --model_name=propmolflow_qm9_alpha_sum --s
 
 `--mode=compute_metric` reports `rdkit_valid`, `valid_and_unique`,
 `close_shell_ratio`, `atom_stable` and `mol_stable`. For a local checkpoint use
-`--config_path` and `--checkpoint_path` instead of `--model_name`, keeping its
-property and fusion method consistent.
+`--config_path=structure_generation/configs/propmolflow/propmolflow_qm9_sample.yaml`
+and `--checkpoint_path` instead of `--model_name`. Match the checkpoint's property,
+fusion method and normalization statistics.
 
-`propmolflow_qm9.yaml` trains and evaluates; `propmolflow_qm9_sample.yaml` only
-swaps in the streaming `Metric` block, because `train.py` reads a top-level
-`Metric` as per-attribute callables. The shared blocks are guarded by
-`test_sampling_config_stays_in_sync_with_training_config`. Samples are molecular
-graphs, so no CIF is written.
+Use `propmolflow_qm9.yaml` for training and loss evaluation, and
+`propmolflow_qm9_sample.yaml` for sampling and generation metrics. Generated
+molecules are saved to `propmolflow_samples.sdf` in the output directory.
 
 ---
 
