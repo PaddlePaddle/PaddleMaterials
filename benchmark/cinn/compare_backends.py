@@ -36,6 +36,7 @@ def family_name(model_name: str) -> str:
         "diffcsp_": "DiffCSP",
         "diffnmr_": "DiffNMR",
         "dimenetpp_": "DimeNet++",
+        "flowmol": "FlowMol",
         "mattergen_": "MatterGen",
         "mattersim_": "MatterSim",
         "megnet_": "MEGNet",

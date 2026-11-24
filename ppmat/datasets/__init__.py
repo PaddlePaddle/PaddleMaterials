@@ -36,6 +36,8 @@ from ppmat.datasets.density_dataset import MPCubicDensityDataset
 from ppmat.datasets.density_dataset import OMol25MC5kDensityDataset
 from ppmat.datasets.density_dataset import OMol25MC5kTrimmedDensityDataset
 from ppmat.datasets.density_dataset import QM9DensityDataset
+from ppmat.datasets.flowmol_sampling_dataset import FlowMol3GeomSamplingDataset
+from ppmat.datasets.flowmol_sampling_dataset import FlowMolSamplingDataset
 from ppmat.datasets.high_level_water_dataset import HighLevelWaterDataset
 from ppmat.datasets.jarvis_dataset import JarvisDataset
 from ppmat.datasets.matbench_dataset import MatbenchDataset
@@ -78,6 +80,8 @@ __all__ = [
     "MD17DensityDataset",
     "SFINDataset",
     "OMol25Dataset",
+    "FlowMolSamplingDataset",
+    "FlowMol3GeomSamplingDataset",
     "MD17Dataset",
 ]
 

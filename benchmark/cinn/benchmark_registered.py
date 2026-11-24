@@ -140,6 +140,22 @@ def build_workflow(model_name: str, backend: str):
         batch = next(iter(sampler._sample_loader))
         return sampler, lambda: sampler.sample(batch), "full_reverse_diffusion"
 
+    if model_name.startswith("flowmol"):
+        sampler = MolecularSampler(
+            model_name=model_name,
+            weights_name="best.pdparams",
+            config_overrides=overrides,
+        )
+        # Drive flowmol from a fixed atom count so the benchmark injects no
+        # model-config values; flowmol.sample reads only num_atoms. Fewer
+        # reverse-diffusion steps keep the timed call cheap.
+        batch = {"structure_array": {"num_atoms": np.array([8], dtype="int64")}}
+        return (
+            sampler,
+            lambda: sampler.sample(batch, sample_params={"num_inference_steps": 2}),
+            "two_step_molecule_sampling",
+        )
+
     if model_name.startswith(("diffcsp_", "mattergen_")):
         sampler = StructureSampler(
             model_name=model_name,

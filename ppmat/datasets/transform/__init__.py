@@ -23,6 +23,7 @@ from ppmat.datasets.transform.dataset import custom_scaling
 from ppmat.datasets.transform.dataset import mean_std_scaling
 from ppmat.datasets.transform.dataset import no_scaling
 from ppmat.datasets.transform.dataset import rmsd_scaling
+from ppmat.datasets.transform.flowmol_structure import FlowMolStructure
 from ppmat.datasets.transform.post_process import PowerData
 from ppmat.datasets.transform.post_process import UnNormalize
 from ppmat.datasets.transform.preprocess import Abs
@@ -42,6 +43,7 @@ __all__ = [
     "Scale",
     "Abs",
     "AtomRefShift",
+    "FlowMolStructure",
     "no_scaling",
     "mean_std_scaling",
     "rmsd_scaling",

@@ -38,6 +38,7 @@ CINN_SUPPORTED_PREFIXES = (
     "diffcsp_",
     "diffnmr_",
     "dimenetpp_",
+    "flowmol",
     "mattergen_",
     "mattersim_",
     "megnet_",
