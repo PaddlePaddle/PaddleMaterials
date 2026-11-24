@@ -36,6 +36,8 @@ class BuildStructure:
             - "array": Crystal data in array format.
             - "cif_file": Crystal data in CIF file path.
             - "dict": Crystal data in dictionary format.
+            - "deeph": DeepH processed sample directory; disable primitive,
+              niggli and canocial to preserve Hamiltonian lattice coordinates.
         primitive (bool, optional): Whether to return the primitive or conventional
             unit cell. Defaults to False.
         niggli (bool, optional): Whether to reduce the lattice using Niggli's
@@ -56,6 +58,7 @@ class BuildStructure:
             "cif_str_by_CifParser",
             "jarvis",
             "ase_atoms",
+            "deeph",
         ],
         primitive: bool = False,
         niggli: bool = True,
@@ -108,6 +111,10 @@ class BuildStructure:
             )[0]
         elif format == "jarvis":
             crystal = jAtoms.from_dict(crystal_data).pymatgen_converter()
+        elif format == "deeph":
+            from ppmat.datasets.graph_utils.deeph_io import load_deeph_structure
+
+            crystal = load_deeph_structure(crystal_data)
         elif format == "ase_atoms":
             crystal = AseAtomsAdaptor.get_structure(crystal_data)
         else:
