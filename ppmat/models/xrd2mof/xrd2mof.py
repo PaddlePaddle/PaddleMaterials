@@ -23,104 +23,60 @@ from ppmat.models.common.runtime import runtime_boundary
 from ppmat.models.common.time_embedding import SinusoidalTimeEmbeddings
 from ppmat.models.common.time_embedding import uniform_sample_t
 from ppmat.schedulers import build_scheduler
+from ppmat.schedulers.scheduling_sde_ve import d_log_p_wrapped_normal
 from ppmat.utils.crystal import lattice_params_to_matrix_paddle
 from ppmat.utils.scatter import scatter_mean
 
-
-def p_wrapped_normal(x, sigma, N=10, T=1.0):
-    p_ = 0
-    for i in range(-N, N + 1):
-        p_ += paddle.exp(x=-((x + T * i) ** 2) / 2 / sigma**2)
-    return p_
-
-
-def d_log_p_wrapped_normal(x, sigma, N=10, T=1.0):
-    p_ = 0
-    for i in range(-N, N + 1):
-        exp1 = paddle.exp(x=-((x + T * i) ** 2) / 2 / sigma**2)
-        p_ += (x + T * i) / sigma**2 * exp1
-    return p_ / p_wrapped_normal(x, sigma, N, T)
+_NUM_SPATIAL_DIMS = 3
+_NUM_LATTICE_MATRIX_ELEMENTS = _NUM_SPATIAL_DIMS * _NUM_SPATIAL_DIMS
 
 
 class SinusoidsEmbedding(paddle.nn.Layer):
-    def __init__(self, n_frequencies=10, n_space=3):
+    def __init__(self, n_frequencies=10):
         super().__init__()
         self.n_frequencies = n_frequencies
-        self.n_space = n_space
         self.frequencies = 2 * math.pi * paddle.arange(end=self.n_frequencies)
-        self.dim = self.n_frequencies * 2 * self.n_space
+        self.dim = self.n_frequencies * 2 * _NUM_SPATIAL_DIMS
 
     def forward(self, x):
         emb = x.unsqueeze(axis=-1) * self.frequencies[None, None, :]
-        emb = emb.reshape([-1, self.n_frequencies * self.n_space])
-        emb = paddle.concat(x=(emb.sin(), emb.cos()), axis=-1)
-        return emb
+        emb = emb.reshape([-1, self.n_frequencies * _NUM_SPATIAL_DIMS])
+        return paddle.concat(x=(emb.sin(), emb.cos()), axis=-1)
 
 
 class CSPLayer(paddle.nn.Layer):
     """Message passing layer for the coarse-grained MOF CSPNet."""
 
-    def __init__(
-        self,
-        hidden_dim=512,
-        act_fn=None,
-        dis_emb=None,
-        ln=False,
-        ip=True,
-    ):
-        super(CSPLayer, self).__init__()
-        if act_fn is None:
-            act_fn = paddle.nn.Silu()
-        self.dis_dim = 3
+    def __init__(self, hidden_dim, dis_emb):
+        super().__init__()
         self.dis_emb = dis_emb
-        self.ip = ip
-        if dis_emb is not None:
-            self.dis_dim = dis_emb.dim
         self.edge_mlp = paddle.nn.Sequential(
             paddle.nn.Linear(
-                in_features=hidden_dim * 2 + 9 + self.dis_dim, out_features=hidden_dim
+                in_features=hidden_dim * 2 + _NUM_LATTICE_MATRIX_ELEMENTS + dis_emb.dim,
+                out_features=hidden_dim,
             ),
-            act_fn,
+            paddle.nn.Silu(),
             paddle.nn.Linear(in_features=hidden_dim, out_features=hidden_dim),
-            act_fn,
+            paddle.nn.Silu(),
         )
         self.node_mlp = paddle.nn.Sequential(
             paddle.nn.Linear(in_features=hidden_dim * 2, out_features=hidden_dim),
-            act_fn,
+            paddle.nn.Silu(),
             paddle.nn.Linear(in_features=hidden_dim, out_features=hidden_dim),
-            act_fn,
+            paddle.nn.Silu(),
         )
-        self.ln = ln
-        if self.ln:
-            self.layer_norm = paddle.nn.LayerNorm(normalized_shape=hidden_dim)
+        self.layer_norm = paddle.nn.LayerNorm(normalized_shape=hidden_dim)
 
-    def edge_model(
-        self,
-        node_features,
-        frac_coords,
-        lattices,
-        edge_index,
-        edge2graph,
-        frac_diff=None,
-    ):
+    def edge_model(self, node_features, lattices, edge_index, edge2graph, frac_diff):
         hi, hj = node_features[edge_index[0]], node_features[edge_index[1]]
-        if frac_diff is None:
-            xi, xj = frac_coords[edge_index[0]], frac_coords[edge_index[1]]
-            frac_diff = (xj - xi) % 1.0
-        if self.dis_emb is not None:
-            frac_diff = self.dis_emb(frac_diff)
-        if self.ip:
-            lattice_ips = paddle.matmul(lattices, lattices, transpose_y=True)
-        else:
-            lattice_ips = lattices
-
-        lattice_ips_flatten = lattice_ips.reshape([-1, 9])
+        frac_diff = self.dis_emb(frac_diff)
+        lattice_ips = paddle.matmul(lattices, lattices, transpose_y=True)
+        lattice_ips_flatten = lattice_ips.reshape([-1, _NUM_LATTICE_MATRIX_ELEMENTS])
         lattice_ips_flatten_edges = lattice_ips_flatten[edge2graph]
         edges_input = paddle.concat(
             x=[hi, hj, lattice_ips_flatten_edges, frac_diff], axis=1
         )
-        edge_features = self.edge_mlp(edges_input)
-        return edge_features
+        return self.edge_mlp(edges_input)
 
     def node_model(self, node_features, edge_features, edge_index):
         agg = scatter_mean(
@@ -130,26 +86,14 @@ class CSPLayer(paddle.nn.Layer):
             dim_size=node_features.shape[0],
         )
         agg = paddle.concat(x=[node_features, agg], axis=1)
-        out = self.node_mlp(agg)
-        return out
+        return self.node_mlp(agg)
 
-    def forward(
-        self,
-        node_features,
-        frac_coords,
-        lattices,
-        edge_index,
-        edge2graph,
-        frac_diff=None,
-    ):
-        node_input = node_features
-        if self.ln:
-            node_features = self.layer_norm(node_input)
+    def forward(self, node_features, lattices, edge_index, edge2graph, frac_diff):
+        normed = self.layer_norm(node_features)
         edge_features = self.edge_model(
-            node_features, frac_coords, lattices, edge_index, edge2graph, frac_diff
+            normed, lattices, edge_index, edge2graph, frac_diff
         )
-        node_output = self.node_model(node_features, edge_features, edge_index)
-        return node_input + node_output
+        return node_features + self.node_model(normed, edge_features, edge_index)
 
 
 class Xrd2MofCSPNet(paddle.nn.Layer):
@@ -165,16 +109,8 @@ class Xrd2MofCSPNet(paddle.nn.Layer):
         num_layers (int, optional): Number of CSPLayer. Defaults to 3.
         num_atom_types (int, optional): Number of coarse-grained atom types.
             Defaults to 2.
-        act_fn (str, optional): Activation function type. Defaults to "silu".
-        dis_emb (str, optional): Distance embedding method, can be 'sin' or 'none'.
-            Defaults to "sin".
-        num_freqs (int, optional): Number of frequency components (effective only when
-            dis_emb='sin'). Defaults to 128.
-        edge_style (str, optional): Edge feature encoding method. Only 'fc' (fully
-            connected atomic interactions) is supported. Default: "fc".
-        ln (bool, optional): Enable LayerNorm after CSPLayer. Defaults to True.
-        ip (bool, optional): Apply lattice inner product for O(3)-invariance. Defaults
-            to True.
+        num_freqs (int, optional): Number of frequencies of the periodic distance
+            embedding. Defaults to 128.
     """
 
     def __init__(
@@ -184,99 +120,49 @@ class Xrd2MofCSPNet(paddle.nn.Layer):
         latent_dim: int = 256,
         num_layers: int = 3,
         num_atom_types: int = 2,
-        act_fn: str = "silu",
-        dis_emb: str = "sin",
         num_freqs: int = 128,
-        edge_style: str = "fc",
-        ln: bool = True,
-        ip: bool = True,
     ):
-        super(Xrd2MofCSPNet, self).__init__()
-        self.ip = ip
+        super().__init__()
         self.node_embedding = paddle.nn.Embedding(
             num_embeddings=num_atom_types, embedding_dim=hidden_dim
         )
         self.atom_latent_emb = paddle.nn.Linear(
             in_features=hidden_dim + latent_dim + feature_dim, out_features=hidden_dim
         )
-        if act_fn == "silu":
-            self.act_fn = paddle.nn.Silu()
-        else:
-            raise ValueError("act_fn only supports 'silu', got %s" % act_fn)
-        if dis_emb == "sin":
-            self.dis_emb = SinusoidsEmbedding(n_frequencies=num_freqs)
-        elif dis_emb == "none":
-            self.dis_emb = None
-        else:
-            raise ValueError("dis_emb supports 'sin' or 'none', got %s" % dis_emb)
+        dis_emb = SinusoidsEmbedding(n_frequencies=num_freqs)
         for i in range(0, num_layers):
             self.add_sublayer(
                 name="csp_layer_%d" % i,
-                sublayer=CSPLayer(
-                    hidden_dim,
-                    act_fn=self.act_fn,
-                    dis_emb=self.dis_emb,
-                    ln=ln,
-                    ip=ip,
-                ),
+                sublayer=CSPLayer(hidden_dim, dis_emb),
             )
         self.num_layers = num_layers
         self.coord_out = paddle.nn.Linear(
-            in_features=hidden_dim, out_features=3, bias_attr=False
+            in_features=hidden_dim, out_features=_NUM_SPATIAL_DIMS, bias_attr=False
         )
         self.lattice_out = paddle.nn.Linear(
-            in_features=hidden_dim, out_features=9, bias_attr=False
+            in_features=hidden_dim,
+            out_features=_NUM_LATTICE_MATRIX_ELEMENTS,
+            bias_attr=False,
         )
-        self.ln = ln
-        self.edge_style = edge_style
-        if self.ln:
-            self.final_layer_norm = paddle.nn.LayerNorm(normalized_shape=hidden_dim)
+        self.final_layer_norm = paddle.nn.LayerNorm(normalized_shape=hidden_dim)
 
     def gen_edges(self, num_atoms, frac_coords):
-        if self.edge_style == "fc":
-            cum_num_atoms = paddle.cumsum(x=num_atoms)
-            indices_pp = []
-            rows = paddle.arange(num_atoms.max())
-            ind1, ind2 = paddle.meshgrid(rows, rows)
-            index = paddle.stack(x=[ind1, ind2], axis=0)
-            for n, cum_n in zip(num_atoms, cum_num_atoms):
-                offset = cum_n - n
-                indices_pp.append(index[:, :n, :n].reshape((2, -1)) + offset)
-            indices_pp = paddle.concat(x=indices_pp, axis=1)
-            fc_edges = indices_pp
-            return fc_edges, (frac_coords[fc_edges[1]] - frac_coords[fc_edges[0]]) % 1.0
-        else:
-            raise NotImplementedError("Edge style '%s'" % self.edge_style)
-
-    def forward(
-        self,
-        feature_embedding,
-        time_emb,
-        atom_types,
-        frac_coords,
-        lattices,
-        num_atoms,
-        node2graph,
-    ):
-        edges, frac_diff = self.gen_edges(num_atoms, frac_coords)
-        return self.forward_with_edges(
-            feature_embedding,
-            time_emb,
-            atom_types,
-            frac_coords,
-            lattices,
-            num_atoms,
-            node2graph,
-            edges,
-            frac_diff,
-        )
+        cum_num_atoms = paddle.cumsum(x=num_atoms)
+        indices_pp = []
+        rows = paddle.arange(num_atoms.max())
+        ind1, ind2 = paddle.meshgrid(rows, rows)
+        index = paddle.stack(x=[ind1, ind2], axis=0)
+        for n, cum_n in zip(num_atoms, cum_num_atoms):
+            offset = cum_n - n
+            indices_pp.append(index[:, :n, :n].reshape((2, -1)) + offset)
+        edges = paddle.concat(x=indices_pp, axis=1)
+        return edges, (frac_coords[edges[1]] - frac_coords[edges[0]]) % 1.0
 
     def forward_with_edges(
         self,
         feature_embedding,
         time_emb,
         atom_types,
-        frac_coords,
         lattices,
         num_atoms,
         node2graph,
@@ -298,14 +184,12 @@ class Xrd2MofCSPNet(paddle.nn.Layer):
             layer = getattr(self, "csp_layer_%d" % i)
             node_features = layer(
                 node_features,
-                frac_coords,
                 lattices,
                 edges,
                 edge2graph,
-                frac_diff=frac_diff,
+                frac_diff,
             )
-        if self.ln:
-            node_features = self.final_layer_norm(node_features)
+        node_features = self.final_layer_norm(node_features)
         coord_out = self.coord_out(node_features)
         graph_features = scatter_mean(
             node_features,
@@ -314,10 +198,8 @@ class Xrd2MofCSPNet(paddle.nn.Layer):
             dim_size=lattices.shape[0],
         )
         lattice_out = self.lattice_out(graph_features)
-        lattice_out = lattice_out.reshape([-1, 3, 3])
-        if self.ip:
-            lattice_out = paddle.bmm(lattice_out, lattices)
-        return lattice_out, coord_out
+        lattice_out = lattice_out.reshape([-1, _NUM_SPATIAL_DIMS, _NUM_SPATIAL_DIMS])
+        return paddle.bmm(lattice_out, lattices), coord_out
 
 
 class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
@@ -332,12 +214,12 @@ class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
         lattice_noise_scheduler_cfg (dict): Noise scheduler configuration for lattice.
         coord_noise_scheduler_cfg (dict): Noise scheduler configuration for coordinates.
         num_train_timesteps (int): Number of diffusion steps. Defaults to 1000.
-        time_dim (int): Time embedding dimension. Defaults to 256.
         lattice_loss_weight (float, optional): Lattice loss weight. Defaults to 0.1.
         coord_loss_weight (float, optional): Coordinate loss weight. Defaults to 1.0.
     """
 
     supports_num_atoms_sampling = False
+    supports_chemical_formula_sampling = False
 
     def __init__(
         self,
@@ -345,7 +227,6 @@ class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
         lattice_noise_scheduler_cfg: dict,
         coord_noise_scheduler_cfg: dict,
         num_train_timesteps: int = 1000,
-        time_dim: int = 256,
         lattice_loss_weight: float = 0.1,
         coord_loss_weight: float = 1.0,
         execution_backend: str = "eager",
@@ -361,11 +242,10 @@ class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
         self.coord_scheduler = build_scheduler(coord_noise_scheduler_cfg)
 
         self.num_train_timesteps = num_train_timesteps
-        self.time_dim = time_dim
         self.lattice_loss_weight = lattice_loss_weight
         self.coord_loss_weight = coord_loss_weight
 
-        self.time_embedding = SinusoidalTimeEmbeddings(time_dim)
+        self.time_embedding = SinusoidalTimeEmbeddings(decoder_cfg["latent_dim"])
         self.apply(self._init_weights)
 
     def _decode(
@@ -383,7 +263,6 @@ class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
             time_emb,
             feature_embedding,
             atom_types,
-            frac_coords,
             lattices,
             num_atoms,
             node2graph,
@@ -397,7 +276,6 @@ class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
         time_emb,
         feature_embedding,
         atom_types,
-        frac_coords,
         lattices,
         num_atoms,
         node2graph,
@@ -408,7 +286,6 @@ class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
             feature_embedding,
             time_emb,
             atom_types,
-            frac_coords,
             lattices,
             num_atoms,
             node2graph,
@@ -422,7 +299,7 @@ class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
         elif isinstance(m, nn.Embedding):
             initializer.normal_(m.weight)
 
-    def forward(self, batch, **kwargs):
+    def forward(self, batch):
 
         structure_array = batch["structure_array"]
         batch_size = structure_array["num_atoms"].shape[0]
@@ -432,12 +309,9 @@ class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
 
         # The time embedding follows the original 1-based diffusion step, while
         # the noise schedulers are indexed from 0 (diffusion step - 1).
-        steps = uniform_sample_t(batch_size, self.num_train_timesteps) + 1
-        steps_per_atom = steps.repeat_interleave(repeats=structure_array["num_atoms"])
-        times = steps - 1
-        times_per_atom = steps_per_atom - 1
-
-        time_emb = self.time_embedding(steps)
+        times = uniform_sample_t(batch_size, self.num_train_timesteps)
+        times_per_atom = times.repeat_interleave(repeats=structure_array["num_atoms"])
+        time_emb = self.time_embedding(times + 1)
 
         # forward is only driven by train/val batches, which always carry
         # lattice parameters; there is no input path carrying a prebuilt matrix.
@@ -495,15 +369,14 @@ class Xrd2Mof(RuntimeMixin, paddle.nn.Layer):
         }
 
     @paddle.no_grad()
-    def sample(self, batch_data, num_inference_steps=1000, **kwargs):
+    def sample(self, batch_data, num_inference_steps=1000):
         structure_array = batch_data["structure_array"]
         batch_size = structure_array["num_atoms"].shape[0]
         batch_idx = paddle.repeat_interleave(
             paddle.arange(batch_size), repeats=structure_array["num_atoms"]
         )
-        l_T, x_T = paddle.randn(shape=[batch_size, 3, 3]), paddle.rand(
-            shape=[structure_array["num_atoms"].sum(), 3]
-        )
+        l_T = paddle.randn(shape=[batch_size, _NUM_SPATIAL_DIMS, _NUM_SPATIAL_DIMS])
+        x_T = paddle.rand(shape=[structure_array["num_atoms"].sum(), _NUM_SPATIAL_DIMS])
         l_t, x_t = l_T, x_T
 
         self.lattice_scheduler.set_timesteps(num_inference_steps)

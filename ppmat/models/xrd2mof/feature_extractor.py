@@ -169,92 +169,8 @@ class XrdEncoder(paddle.nn.Layer):
         return x
 
 
-class LatticeEncoder(paddle.nn.Layer):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = paddle.nn.Conv1D(
-            in_channels=3, out_channels=8, kernel_size=3, padding=1
-        )
-        self.bn1 = paddle.nn.BatchNorm1D(num_features=8)
-        self.conv2 = paddle.nn.Conv1D(
-            in_channels=8, out_channels=16, kernel_size=3, padding=1
-        )
-        self.bn2 = paddle.nn.BatchNorm1D(num_features=16)
-        self.conv3 = paddle.nn.Conv1D(
-            in_channels=16, out_channels=32, kernel_size=3, padding=1
-        )
-        self.bn3 = paddle.nn.BatchNorm1D(num_features=32)
-        self.conv4 = paddle.nn.Conv1D(
-            in_channels=32, out_channels=32, kernel_size=3, padding=1
-        )
-        self.bn4 = paddle.nn.BatchNorm1D(num_features=32)
-        self.conv5 = paddle.nn.Conv1D(
-            in_channels=32, out_channels=16, kernel_size=3, padding=1
-        )
-        self.bn5 = paddle.nn.BatchNorm1D(num_features=16)
-        self.fc = paddle.nn.Linear(in_features=16 * 3, out_features=32)
-
-    def forward(self, x):
-        x = x.transpose([0, 2, 1])
-        x = F.relu(x=self.bn1(self.conv1(x)))
-        x = F.relu(x=self.bn2(self.conv2(x)))
-        x = F.relu(x=self.bn3(self.conv3(x)))
-        x = F.relu(x=self.bn4(self.conv4(x)))
-        x = F.relu(x=self.bn5(self.conv5(x)))
-        x = F.adaptive_avg_pool1d(x, 3)
-        x = x.reshape([x.shape[0], -1])
-        x = self.fc(x)
-        return x
-
-
-class AtomEncoder(paddle.nn.Layer):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = paddle.nn.Conv1D(
-            in_channels=3, out_channels=16, kernel_size=3, padding=1
-        )
-        self.bn1 = paddle.nn.BatchNorm1D(num_features=16)
-        self.conv2 = paddle.nn.Conv1D(
-            in_channels=16, out_channels=32, kernel_size=3, padding=1
-        )
-        self.bn2 = paddle.nn.BatchNorm1D(num_features=32)
-        self.pool = paddle.nn.MaxPool1D(kernel_size=2, stride=2)
-        self.conv3 = paddle.nn.Conv1D(
-            in_channels=32, out_channels=64, kernel_size=3, padding=1
-        )
-        self.bn3 = paddle.nn.BatchNorm1D(num_features=64)
-        self.conv4 = paddle.nn.Conv1D(
-            in_channels=64, out_channels=64, kernel_size=3, padding=1
-        )
-        self.bn4 = paddle.nn.BatchNorm1D(num_features=64)
-        self.conv5 = paddle.nn.Conv1D(
-            in_channels=64, out_channels=128, kernel_size=3, padding=1
-        )
-        self.bn5 = paddle.nn.BatchNorm1D(num_features=128)
-        self.conv6 = paddle.nn.Conv1D(
-            in_channels=128, out_channels=128, kernel_size=3, padding=1
-        )
-        self.bn6 = paddle.nn.BatchNorm1D(num_features=128)
-        self.global_pool = paddle.nn.AdaptiveAvgPool1D(output_size=1)
-        self.fc = paddle.nn.Linear(in_features=128, out_features=256)
-
-    def forward(self, x):
-        x = x.transpose([0, 2, 1])
-        x = F.relu(x=self.bn1(self.conv1(x)))
-        x = F.relu(x=self.bn2(self.conv2(x)))
-        x = self.pool(x)
-        x = F.relu(x=self.bn3(self.conv3(x)))
-        x = F.relu(x=self.bn4(self.conv4(x)))
-        x = F.relu(x=self.bn5(self.conv5(x)))
-        x = F.relu(x=self.bn6(self.conv6(x)))
-        x = self.global_pool(x)
-        x = x.reshape([x.shape[0], -1])
-        x = self.fc(x)
-        return x
-
-
 class ProjectionHead(paddle.nn.Layer):
-    def __init__(self, embedding_dim, projection_dim, dropout):
+    def __init__(self, embedding_dim, projection_dim):
         super().__init__()
         self.projection = paddle.nn.Linear(
             in_features=embedding_dim, out_features=projection_dim
@@ -267,7 +183,6 @@ class ProjectionHead(paddle.nn.Layer):
             in_features=projection_dim, out_features=projection_dim
         )
         self.batch_norm = paddle.nn.BatchNorm1D(num_features=projection_dim)
-        self.dropout = paddle.nn.Dropout(p=dropout)
         self.layer_norm = paddle.nn.LayerNorm(normalized_shape=projection_dim)
 
     def forward(self, x):
@@ -277,132 +192,56 @@ class ProjectionHead(paddle.nn.Layer):
         x = self.gelu(x)
         x = self.fc2(x)
         x = self.batch_norm(x)
-        x = self.dropout(x)
         x = x + projected
         x = self.layer_norm(x)
         return x
 
 
 class Xrd2MofFeatureExtractor(paddle.nn.Layer):
-    """XRD feature extraction model.
+    """XRD-conditioned feature extractor for coarse-grained structure generation.
 
-    Aligns structural features (lattice + atom positions) with chemical
-    features (XRD pattern + metal node + organic linker) in a shared embedding
-    space, so the XRD pattern alone can drive downstream structure generation.
+    Fuses the PXRD pattern with the metal-node and organic-linker priors into the
+    256-dim conditioning embedding consumed by `Xrd2Mof`. The released weights
+    are loaded for inference; this repository does not train the extractor.
 
     Args:
-        cif_features (int): Concatenated lattice and atom feature dimension.
-            Defaults to 288.
         combined_features (int): Concatenated XRD, metal and linker feature
             dimension. Defaults to 1152.
-        projection_dim (int): Shared embedding dimension. Defaults to 256.
-        dropout (float): Dropout rate of the projection head. Defaults to 0.0.
-        temperature (float): Contrastive temperature. Defaults to 1.0.
+        projection_dim (int): Output embedding dimension. Defaults to 256.
     """
 
     def __init__(
         self,
-        cif_features: int = 288,
         combined_features: int = 1152,
         projection_dim: int = 256,
-        dropout: float = 0.0,
-        temperature: float = 1.0,
     ):
         super().__init__()
-        self.temperature = temperature
 
-        self.lattice_encoder = LatticeEncoder()
-        self.atom_encoder = AtomEncoder()
         self.xrd_encoder = XrdEncoder()
         self.metal_encoder = MetalEncoder()
         self.linker_encoder = LinkerEncoder()
 
-        self.cif_fusion = paddle.nn.Sequential(
-            paddle.nn.Linear(in_features=cif_features, out_features=128),
-            paddle.nn.ReLU(),
-            paddle.nn.Linear(in_features=128, out_features=cif_features),
-        )
         self.feature_fusion = paddle.nn.Sequential(
             paddle.nn.Linear(in_features=combined_features, out_features=512),
             paddle.nn.ReLU(),
             paddle.nn.Linear(in_features=512, out_features=combined_features),
         )
 
-        self.cif_projection = ProjectionHead(
-            embedding_dim=cif_features,
-            projection_dim=projection_dim,
-            dropout=dropout,
-        )
         self.feature_projection = ProjectionHead(
             embedding_dim=combined_features,
             projection_dim=projection_dim,
-            dropout=dropout,
         )
 
-    def _encode(self, batch):
-        cif_lattice = batch["cif_lattice"]
-        cif_atom_positions = batch["cif_atom_positions"]
-        xrd = batch["xrd"]
-        metal = batch["metal"]
+    def forward(self, batch):
+        xrd_features = self.xrd_encoder(batch["xrd"])
+        metal_features = self.metal_encoder(batch["metal"])
         linker = batch["linker"]
-
-        lattice_features = self.lattice_encoder(cif_lattice)
-        atom_features = self.atom_encoder(cif_atom_positions)
-        xrd_features = self.xrd_encoder(xrd)
-        metal_features = self.metal_encoder(metal)
         linker_features = self.linker_encoder(
             linker["x"], linker["edge_index"], linker["batch"]
         )
 
-        cif_features = paddle.concat(x=[lattice_features, atom_features], axis=1)
-        cif_features = self.cif_fusion(cif_features)
         combined_features = paddle.concat(
             x=[xrd_features, metal_features, linker_features], axis=1
         )
         combined_features = self.feature_fusion(combined_features)
-
-        cif_embeddings = self.cif_projection(cif_features)
-        feature_embeddings = self.feature_projection(combined_features)
-        return cif_embeddings, feature_embeddings
-
-    def forward(self, batch):
-        cif_embeddings, feature_embeddings = self._encode(batch)
-
-        logits = (
-            paddle.matmul(feature_embeddings, cif_embeddings, transpose_y=True)
-            / self.temperature
-        )
-        cifs_similarity = paddle.matmul(
-            cif_embeddings, cif_embeddings, transpose_y=True
-        )
-        features_similarity = paddle.matmul(
-            feature_embeddings, feature_embeddings, transpose_y=True
-        )
-        targets = F.softmax(
-            (cifs_similarity + features_similarity) / 2 * self.temperature, axis=-1
-        )
-        features_loss = F.cross_entropy(
-            logits, targets, soft_label=True, reduction="none"
-        )
-        cifs_loss = F.cross_entropy(
-            logits.T, targets, soft_label=True, reduction="none"
-        )
-        loss = (cifs_loss + features_loss) / 2.0
-        loss_dict = {
-            "loss": loss.mean(),
-            "loss_cif": cifs_loss.mean(),
-            "loss_feature": features_loss.mean(),
-        }
-        pred_dict = {
-            "cif_embedding": cif_embeddings,
-            "feature_embedding": feature_embeddings,
-        }
-        return {"loss_dict": loss_dict, "pred_dict": pred_dict}
-
-    @paddle.no_grad()
-    def extract(self, batch):
-        cif_embeddings, feature_embeddings = self._encode(batch)
-        return {
-            "cif_embedding": cif_embeddings,
-            "feature_embedding": feature_embeddings,
-        }
+        return {"feature_embedding": self.feature_projection(combined_features)}

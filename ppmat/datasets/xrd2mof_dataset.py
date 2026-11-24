@@ -22,10 +22,6 @@ from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.utils import download
 from ppmat.utils import logger
 
-XRD2MOF_DATA_NAME = "xrd2mof_cgmof50"
-XRD2MOF_DATA_URL = "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MOF_PXRD/xrd2mof_cgmof50_data.zip"  # noqa
-XRD2MOF_DATA_MD5 = "e14457945570dd577e4fcaef82cc5232"
-
 
 class _Xrd2MofBaseDataset(Dataset):
     """Shared loading logic for the coarse-grained Xrd2Mof npz archives.
@@ -35,30 +31,26 @@ class _Xrd2MofBaseDataset(Dataset):
     Subclasses only declare which fields to keep and how to build a sample.
     """
 
-    name = XRD2MOF_DATA_NAME
-    url = XRD2MOF_DATA_URL
-    md5 = XRD2MOF_DATA_MD5
+    name = "xrd2mof_cgmof50"
+    url = "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/MOF_PXRD/xrd2mof_cgmof50_data.zip"  # noqa
+    md5 = "e14457945570dd577e4fcaef82cc5232"
 
     def __init__(
         self,
         path: str,
         transforms: Optional[Callable] = None,
-        **kwargs,
     ):
         super().__init__()
-        self.path = self._resolve_path(path)
+        if not osp.exists(path):
+            logger.message("The dataset is not found. Will download it now.")
+            root_path = download.get_datasets_path_from_url(self.url, self.md5)
+            path = osp.join(root_path, self.name, osp.basename(path))
+        self.path = path
         data = np.load(self.path, allow_pickle=True)
         self.num_atoms = data["num_atoms"].astype("int64")
         self.offsets = np.concatenate([[0], np.cumsum(self.num_atoms)]).astype("int64")
         self._load_fields(data)
         self.transforms = transforms
-
-    def _resolve_path(self, path: str) -> str:
-        if osp.exists(path):
-            return path
-        logger.message("The dataset is not found. Will download it now.")
-        root_path = download.get_datasets_path_from_url(self.url, self.md5)
-        return osp.join(root_path, self.name, osp.basename(path))
 
     def _load_fields(self, data):
         raise NotImplementedError
@@ -101,9 +93,8 @@ class Xrd2MofDataset(_Xrd2MofBaseDataset):
         self,
         path: str = "./data/xrd2mof_cgmof50/train.npz",
         transforms: Optional[Callable] = None,
-        **kwargs,
     ):
-        super().__init__(path, transforms, **kwargs)
+        super().__init__(path, transforms)
 
     def _load_fields(self, data):
         self.feature_embedding = data["feature_embedding"].astype("float32")
@@ -142,9 +133,8 @@ class Xrd2MofTestDataset(_Xrd2MofBaseDataset):
         self,
         path: str = "./data/xrd2mof_cgmof50/test.npz",
         transforms: Optional[Callable] = None,
-        **kwargs,
     ):
-        super().__init__(path, transforms, **kwargs)
+        super().__init__(path, transforms)
 
     def _load_fields(self, data):
         self.feature_embedding = data["feature_embedding"].astype("float32")

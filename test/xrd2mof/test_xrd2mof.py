@@ -31,6 +31,7 @@ from ppmat.models import build_model_from_name
 from ppmat.models import resolve_model_package_dir
 from ppmat.models.xrd2mof.feature_extractor import Xrd2MofFeatureExtractor
 from ppmat.models.xrd2mof.xrd2mof import Xrd2Mof
+from ppmat.sampler import StructureSampler
 from ppmat.trainer.base_trainer import BaseTrainer
 from ppmat.utils import download
 
@@ -51,12 +52,7 @@ TINY_DECODER_CFG = {
     "latent_dim": 16,
     "num_layers": 2,
     "num_atom_types": 2,
-    "act_fn": "silu",
-    "dis_emb": "sin",
     "num_freqs": 4,
-    "edge_style": "fc",
-    "ln": True,
-    "ip": True,
 }
 TINY_LATTICE_SCHEDULER_CFG = {
     "__class_name__": "DDPMScheduler",
@@ -161,8 +157,6 @@ def test_sample_produces_valid_cg_structures():
 def build_feature_extractor_batch():
     batch_size, num_nodes, num_edges = 3, 9, 12
     return {
-        "cif_lattice": paddle.randn([batch_size, 3, 3]),
-        "cif_atom_positions": paddle.randn([batch_size, 50, 3]),
         "xrd": paddle.randn([batch_size, 5250]),
         "metal": paddle.randn([batch_size, 65]),
         "linker": {
@@ -175,16 +169,16 @@ def build_feature_extractor_batch():
     }
 
 
-def test_feature_extractor_forward_and_loss():
+def test_feature_extractor_forward():
     model = Xrd2MofFeatureExtractor()
+    model.eval()
     batch = build_feature_extractor_batch()
 
-    outputs = model(batch)
+    with paddle.no_grad():
+        outputs = model(batch)
 
-    assert "loss_dict" in outputs and "pred_dict" in outputs
-    assert bool(paddle.isfinite(outputs["loss_dict"]["loss"]))
-    assert outputs["pred_dict"]["feature_embedding"].shape == [3, 256]
-    assert outputs["pred_dict"]["cif_embedding"].shape == [3, 256]
+    assert outputs["feature_embedding"].shape == [3, 256]
+    assert bool(paddle.isfinite(outputs["feature_embedding"]).all())
 
 
 def test_registered_model_full_chain():
@@ -203,7 +197,8 @@ def test_registered_model_full_chain():
         paddle.load(osp.join(package_dir, "checkpoints", "feature_extractor.pdparams"))
     )
     extractor.eval()
-    extractor_outputs = extractor.extract(build_feature_extractor_batch())
+    with paddle.no_grad():
+        extractor_outputs = extractor(build_feature_extractor_batch())
     assert extractor_outputs["feature_embedding"].shape == [3, 256]
     assert bool(paddle.isfinite(extractor_outputs["feature_embedding"]).all())
 
@@ -214,6 +209,33 @@ def test_registered_model_full_chain():
     assert len(outputs["result"]) > 0
 
 
+def test_sample_through_structure_sampler(tmp_path):
+    try:
+        sampler = StructureSampler(model_name=MODEL_NAME)
+    except Exception as exc:  # pragma: no cover - depends on network access
+        pytest.skip(f"registered weights unavailable: {exc}")
+
+    sampler.sample_config["model_sample_params"]["num_inference_steps"] = 2
+    results = sampler.sample_by_dataloader(save_path=tmp_path)
+
+    assert len(results) == 16
+    files = sorted(tmp_path.glob("*.npz"))
+    assert len(files) == 16
+    assert not list(tmp_path.glob("*.cif"))
+    data = np.load(files[0])
+    assert set(data.files) >= {
+        "num_atoms",
+        "atom_types",
+        "frac_coords",
+        "lattice",
+        "mof_id",
+    }
+    assert data["mof_id"].ndim == 0
+
+    with pytest.raises(NotImplementedError):
+        sampler.sample_by_chemical_formula("LiMnO2")
+
+
 def _make_tiny_model(execution_backend="eager"):
     with paddle.utils.unique_name.guard():
         return Xrd2Mof(
@@ -221,7 +243,6 @@ def _make_tiny_model(execution_backend="eager"):
             lattice_noise_scheduler_cfg=copy.deepcopy(TINY_LATTICE_SCHEDULER_CFG),
             coord_noise_scheduler_cfg=copy.deepcopy(TINY_COORD_SCHEDULER_CFG),
             num_train_timesteps=TINY_NUM_TIMESTEPS,
-            time_dim=TINY_DECODER_CFG["latent_dim"],
             lattice_loss_weight=0.1,
             coord_loss_weight=1.0,
             execution_backend=execution_backend,

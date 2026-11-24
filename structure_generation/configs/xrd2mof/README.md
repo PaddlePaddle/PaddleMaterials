@@ -30,25 +30,22 @@ A coarse-grained MOF unit cell is represented as:
 - lattice matrix: $L \in \mathbb{R}^{3 \times 3}$
 
 Generation is conditioned on a per-sample 256-dim embedding $C$ produced by a
-CLIP-style feature extractor. Its five encoders are fused into two 256-dim
-embeddings:
+feature extractor that fuses the PXRD pattern with the metal-node and
+organic-linker priors:
 
 | Encoder | Input | Output |
 |---------|-------|--------|
-| `LatticeEncoder` | lattice matrix (3x3) | 32 |
-| `AtomEncoder` | atom positions (50x3) | 256 |
 | `XrdEncoder` | PXRD pattern (5250) | 1024 |
 | `MetalEncoder` | metal prior (65) | 64 |
 | `LinkerEncoder` | linker graph (GCN) | 64 |
 
-`cif_features = lattice(32) + atom(256) = 288`, and
-`combined_features = xrd(1024) + metal(64) + linker(64) = 1152`. Both branches
-are projected to a shared 256-dim space and trained with an in-batch contrastive
-loss; for generation only the `feature_embedding` (PXRD + metal + linker branch)
-is used. The pipeline of the original repository is
+`combined_features = xrd(1024) + metal(64) + linker(64) = 1152`, projected to a
+256-dim embedding. The extractor weights are released by the original repository
+and loaded here for inference; generation consumes only the `feature_embedding`
+(PXRD + metal + linker branch). The pipeline of the original repository is
 `create_data/ -> pretrained_model/ -> generation_model/`; this repository
-reimplements the last two stages and consumes the CG npz data produced by the
-first.
+provides the `generation_model/` stage and consumes the CG npz data produced by
+`create_data/`.
 
 ### Method
 
@@ -83,7 +80,7 @@ distribution over $[0,1)^{3}$.
 #### 2) Feature-conditioned denoiser (CSPNet)
 
 The denoiser is a DiffCSP-style CSPNet whose node initialization fuses the CG
-atom type embedding, the per-sample PXRD embedding $C$ and the time embedding:
+atom type embedding, the per-sample conditioning embedding $C$ and the time embedding:
 
 $$
 h_i^{(0)} = \rho\left(f_{\text{atom}}(a_i) \oplus C \oplus f_{\text{time}}(t)\right).
@@ -151,7 +148,7 @@ ancestral DDPM step, and the final coordinates are wrapped into $[0,1)$.
 > training requires the full CSD-derived dataset.
 
 Recommended data fields for each sample:
-- `feature_embedding`: $[N, 256]$ PXRD embedding from the pretrained feature extractor
+- `feature_embedding`: $[N, 256]$ conditioning embedding from the pretrained feature extractor
 - `num_atoms`: $[N]$ CG site count per sample
 - `atom_types`: $[\sum \text{num\_atoms}]$, `0` metal node, `1` organic linker
 - `frac_coords`: $[\sum \text{num\_atoms}, 3]$ fractional coordinates in $[0,1)$ (train/val only)
@@ -172,8 +169,7 @@ Recommended data fields for each sample:
 
 The pretrained feature extractor weights ship inside the model package at
 `checkpoints/feature_extractor.pdparams`; the input batch keys and shapes are
-`cif_lattice [B, 3, 3]`, `cif_atom_positions [B, 50, 3]`, `xrd [B, 5250]`,
-`metal [B, 65]` and
+`xrd [B, 5250]`, `metal [B, 65]` and
 `linker {x: [N, 37], edge_index: [2, E], batch: [N]}`:
 
 ```python
@@ -194,8 +190,6 @@ extractor.set_state_dict(
 )
 extractor.eval()
 batch = {
-    "cif_lattice": paddle.randn([1, 3, 3]),
-    "cif_atom_positions": paddle.randn([1, 50, 3]),
     "xrd": paddle.randn([1, 5250]),
     "metal": paddle.randn([1, 65]),
     "linker": {
@@ -204,7 +198,8 @@ batch = {
         "batch": paddle.zeros([9], dtype="int64"),
     },
 }
-outputs = extractor.extract(batch)
+with paddle.no_grad():
+    outputs = extractor(batch)
 feature_embedding = outputs["feature_embedding"]  # [1, 256]
 ```
 
@@ -226,7 +221,6 @@ Deterministic alignment against the original PyTorch implementation
 |-----------|--------|-------|
 | Generation decoder (t=100/200/500/800) | pred max abs diff | 3.34e-6 |
 | Training loss (fixed timestep/noise, `sigmas_norm` aligned) | max abs diff | 2.0e-5 |
-| Feature extractor (`cif_embedding`) | max abs diff | 9.18e-6 |
 | Feature extractor (`feature_embedding`) | max abs diff | 1.25e-5 |
 
 These numbers document the migration-time cross-check; the residual gap comes
@@ -255,75 +249,30 @@ python structure_generation/train.py -c structure_generation/configs/xrd2mof/xrd
 
 ### Testing
 ```bash
-# Since the bundled test split provides PXRD embeddings only (no reference
+# Since the bundled test split provides conditioning embeddings only (no reference
 # coarse-grained structures to compute the loss), this model does not use the
 # test command.
 ```
 
 ### Sample
 
-```python
-# Mode 1: use a pre-trained model (downloads automatically).
-import os
+Coarse-grained results are saved as `npz` files (`Sample.save_format: npz`) in
+the default output directory `results/`.
 
-import numpy as np
-
-from ppmat.datasets import build_dataloader
-from ppmat.models import build_model_from_name
-
-output_dir = "results/xrd2mof"
-os.makedirs(output_dir, exist_ok=True)
-
-model, config = build_model_from_name("xrd2mof_cgmof50")
-model.eval()
-batch = next(iter(build_dataloader(config["Sample"]["data"])))
-result = model.sample(batch, num_inference_steps=1000)["result"]
-for index, item in enumerate(result):
-    np.savez(
-        os.path.join(output_dir, f"{item['mof_id']}_{index + 1}.npz"),
-        lattice=np.asarray(item["lattice"], dtype="float32"),
-        frac_coords=np.asarray(item["frac_coords"], dtype="float32"),
-        atom_types=np.asarray(item["atom_types"], dtype="int64"),
-        num_atoms=np.asarray(item["num_atoms"], dtype="int64"),
-        mof_id=str(item["mof_id"]),
-    )
+```bash
+# Mode 1: registered pretrained model (downloads automatically).
+python structure_generation/sample.py --model_name=xrd2mof_cgmof50 --mode=by_dataloader
+# Mode 2: custom configuration and checkpoint.
+python structure_generation/sample.py --config_path=structure_generation/configs/xrd2mof/xrd2mof_cgmof50.yaml --checkpoint_path=path/to/best.pdparams --mode=by_dataloader
 ```
 
-```python
-# Mode 2: use a custom configuration file and checkpoint.
-import os
-
-import numpy as np
-from omegaconf import OmegaConf
-
-from ppmat.datasets import build_dataloader
-from ppmat.models import build_model
-from ppmat.utils import save_load
-
-output_dir = "results/xrd2mof"
-os.makedirs(output_dir, exist_ok=True)
-
-config = OmegaConf.load("structure_generation/configs/xrd2mof/xrd2mof_cgmof50.yaml")
-model = build_model(OmegaConf.to_container(config["Model"], resolve=True))
-save_load.load_pretrain(model, "path/to/best.pdparams")
-model.eval()
-sample_cfg = OmegaConf.to_container(config["Sample"], resolve=True)
-batch = next(iter(build_dataloader(sample_cfg["data"])))
-result = model.sample(batch, num_inference_steps=1000)["result"]
-for index, item in enumerate(result):
-    np.savez(
-        os.path.join(output_dir, f"{item['mof_id']}_{index + 1}.npz"),
-        lattice=np.asarray(item["lattice"], dtype="float32"),
-        frac_coords=np.asarray(item["frac_coords"], dtype="float32"),
-        atom_types=np.asarray(item["atom_types"], dtype="int64"),
-        num_atoms=np.asarray(item["num_atoms"], dtype="int64"),
-        mof_id=str(item["mof_id"]),
-    )
-```
-
-> `mof_id` is produced only by the bundled test split (`Xrd2MofTestDataset`).
-> Batches built from other sources must supply their own identifier or drop the
-> `mof_id` key.
+> Each file contains `num_atoms`, `atom_types`, `frac_coords`, `lattice` and
+> `mof_id`. These are coarse-grained structures; the downstream atomic assembly
+> is not part of this repository. `by_chemical_formula` and `by_num_atoms` are
+> not supported because generation requires an XRD conditioning embedding.
+> Batches built from other sources must provide the field named by
+> `Sample.save_name_key` (`mof_id`), otherwise files fall back to
+> `sample_<batch>_<index>.npz`.
 
 ---
 

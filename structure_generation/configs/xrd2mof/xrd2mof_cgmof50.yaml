@@ -5,8 +5,8 @@ Global:
   do_test: False
   # Number of training timesteps for diffusion scheduler
   num_train_timesteps: 1000
-  # Time embedding dimension, shared by the decoder latent and the model
-  time_dim: 256
+  # Decoder latent dimension, also the time embedding dimension
+  latent_dim: 256
 
 Trainer:
   # Max epochs to train
@@ -64,15 +64,10 @@ Model:
     decoder_cfg:
       hidden_dim: 512
       feature_dim: 256
-      latent_dim: ${Global.time_dim}
+      latent_dim: ${Global.latent_dim}
       num_layers: 3
       num_atom_types: 2
-      act_fn: silu
-      dis_emb: sin
       num_freqs: 128
-      edge_style: fc
-      ln: True
-      ip: True
     lattice_noise_scheduler_cfg:
       __class_name__: DDPMScheduler
       __init_params__:
@@ -87,7 +82,6 @@ Model:
         sigma_max: 0.5
         snr: 1e-5
     num_train_timesteps: ${Global.num_train_timesteps}
-    time_dim: ${Global.time_dim}
     lattice_loss_weight: 0.1
     coord_loss_weight: 1.0
 
@@ -135,6 +129,8 @@ Dataset:
         batch_size: 4
 
 Sample:
+  save_format: npz
+  save_name_key: mof_id
   data:
     dataset:
       __class_name__: Xrd2MofTestDataset

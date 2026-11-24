@@ -40,6 +40,7 @@ def family_name(model_name: str) -> str:
         "mattersim_": "MatterSim",
         "megnet_": "MEGNet",
         "sfin_": "SFIN",
+        "xrd2mof_": "Xrd2Mof",
     }
     for prefix, family in families.items():
         if model_name.startswith(prefix):
