@@ -20,126 +20,26 @@ import hashlib
 import json
 import os
 import os.path as osp
-import subprocess
-import sys
 import tempfile
 import zipfile
 from datetime import datetime
-from functools import partial
 from importlib import resources
 
 import numpy as np
 import paddle.distributed as dist
 import pandas as pd
 from paddle.io import Dataset
-from rdkit import Chem
 from rdkit import rdBase
-from rdkit.Chem import rdDetermineBonds
 
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.datasets.qm9_dataset import QM9Dataset
+from ppmat.datasets.transform.propmolflow_structure import PropMolFlowStructure
+from ppmat.models import build_graph_converter
 from ppmat.utils import download
 from ppmat.utils import logger
-from ppmat.utils.ext_rdkit import bond_types_from_vocab
 
 CACHE_VERSION = "v3"
 _HASH_CHUNK_SIZE = 1024 * 1024
-N_CHARGES = 6
-CHARGE_OFFSET = 2
-N_BOND_TYPES = 5
-BOND_TYPE_INDEX = {bond: index for index, bond in bond_types_from_vocab().items()}
-_PERCEPTION_OPTIONS = (
-    {"charge": 0},
-    {"charge": 0, "allowChargedFragments": False},
-)
-_HUECKEL_SCRIPT = (
-    "import sys\n"
-    "from pathlib import Path\n"
-    "from rdkit import Chem\n"
-    "from rdkit.Chem import rdDetermineBonds\n"
-    "mol = Chem.Mol(sys.stdin.buffer.read())\n"
-    "rdDetermineBonds.DetermineBonds(mol, charge=0, useHueckel=True)\n"
-    "Path(sys.argv[1]).write_bytes("
-    "mol.ToBinary(Chem.PropertyPickleOptions.AllProps))\n"
-)
-
-
-def _perceive_molecule(molecule, work_dir):
-    if molecule is None:
-        return None
-    for kwargs in _PERCEPTION_OPTIONS:
-        mol = Chem.Mol(molecule)
-        try:
-            with rdBase.BlockLogs():
-                rdDetermineBonds.DetermineBonds(mol, **kwargs)
-            return mol
-        except (RuntimeError, ValueError):
-            continue
-    # Extended Hueckel writes fixed filenames; isolate its working directory.
-    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
-    with tempfile.TemporaryDirectory(
-        prefix=f"perception_{stamp}_", dir=work_dir
-    ) as tmp:
-        filename = f"molecule_{stamp}.bin"
-        result = subprocess.run(
-            [sys.executable, "-c", _HUECKEL_SCRIPT, filename],
-            input=molecule.ToBinary(),
-            cwd=tmp,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if result.returncode != 0:
-            return None
-        with open(osp.join(tmp, filename), "rb") as stream:
-            return Chem.Mol(stream.read())
-
-
-def _featurize_molecule(mol, atom_map: list):
-    if mol is None:
-        return None
-    atom_map_dict = {symbol: index for index, symbol in enumerate(atom_map)}
-    atom_types, charges = [], []
-    for atom in mol.GetAtoms():
-        symbol = atom.GetSymbol()
-        if symbol not in atom_map_dict:
-            return None
-        atom_types.append(atom_map_dict[symbol])
-        charge = atom.GetFormalCharge()
-        if not -CHARGE_OFFSET <= charge < N_CHARGES - CHARGE_OFFSET:
-            return None
-        charges.append(charge)
-    num_atoms = mol.GetNumAtoms()
-    if num_atoms == 0:
-        return None
-    adjacency = np.zeros((num_atoms, num_atoms), dtype="int64")
-    for bond in mol.GetBonds():
-        bond_type = bond.GetBondType()
-        if bond_type not in BOND_TYPE_INDEX:
-            return None
-        begin, end = bond.GetBeginAtomIdx(), bond.GetEndAtomIdx()
-        adjacency[begin, end] = BOND_TYPE_INDEX[bond_type]
-        adjacency[end, begin] = BOND_TYPE_INDEX[bond_type]
-    upper_i, upper_j = np.triu_indices(num_atoms, k=1)
-    return {
-        "positions": np.asarray(mol.GetConformer().GetPositions(), dtype="float32"),
-        "atom_types": np.asarray(atom_types, dtype="int64"),
-        "charges": np.asarray(charges, dtype="int64"),
-        "bond_types": adjacency[upper_i, upper_j],
-        "num_atoms": num_atoms,
-    }
-
-
-def _one_hot(indices: np.ndarray, num_classes: int) -> np.ndarray:
-    indices = np.asarray(indices, dtype="int64")
-    out = np.zeros(indices.shape + (num_classes,), dtype="float32")
-    np.put_along_axis(out, indices[..., None], 1.0, axis=-1)
-    return out
-
-
-def _featurize_one(molecule, atom_map: list, work_dir: str) -> dict:
-    """Module-level worker so the featurization stays process-picklable."""
-    return _featurize_molecule(_perceive_molecule(molecule, work_dir), atom_map)
 
 
 class _QM9Properties:
@@ -156,10 +56,6 @@ class _QM9Properties:
         logger.message("The QM9 split is not found. Will download it now.")
         root_path = download.get_datasets_path_from_url(self.url, self.md5)
         return osp.join(root_path, self.name, osp.basename(path))
-
-    def _trim_raw_data(self) -> None:
-        """Release CSV geometries and unused columns after feature extraction."""
-        self.raw_data = {}
 
     def _normalization_statistics(self, normalization_source, property_name):
         if normalization_source is None:
@@ -210,6 +106,7 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
         num_cpus: int = 1,
         rebuild: bool = False,
         property_range: list = None,
+        transforms=None,
     ):
         if atom_map is None:
             raise ValueError("atom_map must be provided")
@@ -267,6 +164,9 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
             overwrite=rebuild,
             filter_unvalid=False,
         )
+        self.transforms = (
+            PropMolFlowStructure(self.atom_map) if transforms is None else transforms
+        )
         self.cache_path = npz_path
         self._load_or_build_cache(num_cpus, rebuild)
 
@@ -275,7 +175,7 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
         )[self.valid_indices]
         if not np.isfinite(self.property_values).all():
             raise ValueError("Conditioning properties must be finite")
-        self._trim_raw_data()
+        self.raw_data = {}
 
     def read_data(self, path: str):
         data, num_samples = super().read_data(path)
@@ -357,18 +257,17 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
     def _build_cache(self, num_cpus: int) -> None:
         molecules = [self.load_from_cache(path) for path in self.molecules]
         logger.info(f"Featurizing {len(molecules)} molecules from {self.path}")
-        worker = partial(
-            _featurize_one,
-            atom_map=self.atom_map,
-            work_dir=osp.dirname(self.cache_path),
+        converter = build_graph_converter(
+            {
+                "__class_name__": "PropMolFlowMolConverter",
+                "__init_params__": {
+                    "atom_map": self.atom_map,
+                    "work_dir": osp.dirname(self.cache_path),
+                    "num_cpus": num_cpus,
+                },
+            }
         )
-        with rdBase.BlockLogs():
-            if num_cpus and num_cpus > 1:
-                from p_tqdm import p_map
-
-                features = p_map(worker, molecules, num_cpus=num_cpus)
-            else:
-                features = [worker(mol) for mol in molecules]
+        features = converter(molecules)
 
         positions, atom_types, charges, bond_types = [], [], [], []
         node_idx_array, edge_idx_array, valid_indices = [], [], []
@@ -430,31 +329,21 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
         node_start, node_end = self.node_idx_array[idx]
         edge_start, edge_end = self.edge_idx_array[idx]
 
-        positions = self.positions[node_start:node_end].astype("float32")
-        positions = positions - positions.mean(axis=0, keepdims=True)
-        num_atoms = int(node_end - node_start)
-
-        structure_array = {
-            "num_atoms": np.array([num_atoms], dtype="int64"),
-            "positions": positions,
-            "atom_types": _one_hot(
-                self.atom_types[node_start:node_end], len(self.atom_map)
-            ),
-            "atom_charges": _one_hot(
-                self.charges[node_start:node_end] + CHARGE_OFFSET, N_CHARGES
-            ),
-            "bond_types": _one_hot(self.bond_types[edge_start:edge_end], N_BOND_TYPES),
-        }
-
         property_value = (
             float(self.property_values[idx]) - self.property_mean
         ) / self.property_std
-        return {
-            "structure_array": {
-                key: ConcatData(value) for key, value in structure_array.items()
-            },
-            "prop": property_value,
-        }
+        return self.transforms(
+            {
+                "graph": {
+                    "positions": self.positions[node_start:node_end],
+                    "atom_types": self.atom_types[node_start:node_end],
+                    "charges": self.charges[node_start:node_end],
+                    "bond_types": self.bond_types[edge_start:edge_end],
+                    "num_atoms": int(node_end - node_start),
+                },
+                "prop": property_value,
+            }
+        )
 
 
 class PropMolFlowSamplingDataset(_QM9Properties, Dataset):
@@ -480,6 +369,7 @@ class PropMolFlowSamplingDataset(_QM9Properties, Dataset):
         property_value: float = None,
         n_atoms: int = None,
         num_bins: int = 1000,
+        ood_quantile: float = 0.97,
     ):
         if property_name is None:
             raise ValueError("property_name must be provided")
@@ -498,24 +388,31 @@ class PropMolFlowSamplingDataset(_QM9Properties, Dataset):
             raise ValueError(
                 "property_value must be provided for out_of_distribution sampling"
             )
+        if not 0 <= ood_quantile <= 1:
+            raise ValueError("ood_quantile must be between 0 and 1")
 
         self.property_name = property_name
         self.total_num = total_num
 
         super().__init__()
         self.path = self._resolve_split_path(path)
-        self.raw_data, _ = QM9Dataset.read_data(self, self.path)
-        if "num_atoms" not in self.raw_data:
-            self.raw_data["num_atoms"] = [
-                int(xyz.splitlines()[0]) for xyz in self.raw_data["molecule"]
-            ]
+        frame = pd.read_csv(
+            self.path,
+            usecols=lambda column: column
+            in ("num_atoms", "standard_xyz", self.property_name),
+        )
+        if "num_atoms" in frame:
+            num_atoms_all = frame["num_atoms"].to_numpy(dtype="int64")
+        else:
+            num_atoms_all = np.asarray(
+                [int(xyz.splitlines()[0]) for xyz in frame["standard_xyz"]],
+                dtype="int64",
+            )
+        properties_all = frame[self.property_name].to_numpy(dtype="float64")
 
         self.property_mean, self.property_std = self._normalization_statistics(
             normalization_source, self.property_name
         )
-
-        num_atoms_all = np.asarray(self.raw_data["num_atoms"], dtype="int64")
-        properties_all = np.asarray(self.raw_data[self.property_name], dtype="float64")
 
         if n_atoms is not None:
             self.num_atoms = np.full(total_num, int(n_atoms), dtype="int64")
@@ -523,7 +420,7 @@ class PropMolFlowSamplingDataset(_QM9Properties, Dataset):
             self.num_atoms = self._sample_num_atoms(num_atoms_all, seed)
         else:
             self.num_atoms = self._sample_ood_num_atoms(
-                properties_all, num_atoms_all, seed
+                properties_all, num_atoms_all, seed, ood_quantile
             )
 
         if property_value is not None:
@@ -533,18 +430,16 @@ class PropMolFlowSamplingDataset(_QM9Properties, Dataset):
                 self.num_atoms, properties_all, num_atoms_all, num_bins, seed
             )
 
-        self._trim_raw_data()
-
     def _sample_num_atoms(self, num_atoms, seed):
         rng = np.random.RandomState(seed)
         unique_num_atoms, counts = np.unique(num_atoms, return_counts=True)
         num_atoms_probs = counts / counts.sum()
         return rng.choice(unique_num_atoms, size=self.total_num, p=num_atoms_probs)
 
-    def _sample_ood_num_atoms(self, properties, num_atoms, seed):
+    def _sample_ood_num_atoms(self, properties, num_atoms, seed, quantile):
         rng = np.random.RandomState(seed)
-        _, low, high = np.quantile(properties, [0.5, 0.97, 1.0])
-        mask = (properties >= low) & (properties <= high)
+        lower_bound = np.quantile(properties, quantile)
+        mask = properties >= lower_bound
         candidates = num_atoms[mask]
         if candidates.size == 0:
             raise ValueError(

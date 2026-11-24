@@ -134,17 +134,6 @@ def rigid_alignment(x_0: paddle.Tensor, x_1: paddle.Tensor) -> paddle.Tensor:
     return x_0_aligned + t
 
 
-def align_prior(
-    prior_feat: paddle.Tensor,
-    dst_feat: paddle.Tensor,
-) -> paddle.Tensor:
-    """Align a prior feature to a destination feature."""
-    cost_mat = paddle.cdist(dst_feat, prior_feat, p=2)
-    _, prior_idx = linear_sum_assignment(cost_mat.numpy())
-    prior_feat = prior_feat[paddle.to_tensor(prior_idx, dtype="int64")]
-    return rigid_alignment(prior_feat, dst_feat)
-
-
 class NodePositionUpdate(nn.Layer):
     """Update node positions with the vectors predicted by a stack of GVPs."""
 
@@ -827,6 +816,10 @@ class PropMolFlow(RuntimeMixin, nn.Layer):
         )
 
         scheduler_cfg = copy.deepcopy(interpolant_scheduler_config)
+        if scheduler_cfg["__class_name__"] == "InterpolantScheduler":
+            # Released packages omit the formerly fixed linear schedule.
+            scheduler_cfg["__init_params__"].setdefault("schedule_type", "linear")
+            scheduler_cfg["__init_params__"].setdefault("cosine_params", {})
         scheduler_cfg["__init_params__"]["feature_names"] = self.feature_names
         interpolant_scheduler = build_scheduler(scheduler_cfg)
 
@@ -899,7 +892,7 @@ class PropMolFlow(RuntimeMixin, nn.Layer):
         place = batch["positions"].place
         num_atoms = batch["structure_array"]["num_atoms"].numpy()
 
-        prior_list = []
+        prior_list, positions_list, costs = [], [], []
         node_offset = 0
         for n in num_atoms:
             n = int(n)
@@ -907,10 +900,23 @@ class PropMolFlow(RuntimeMixin, nn.Layer):
             prior = centered_normal_prior(
                 n, 3, **self.prior_config["positions"]["kwargs"]
             ).to(place)
-            prior = align_prior(prior, positions)
             prior_list.append(prior)
+            positions_list.append(positions)
+            costs.append(paddle.cdist(positions, prior, p=2).reshape([-1]))
             node_offset += n
-        return paddle.concat(prior_list, axis=0)
+
+        # Transfer the assignment costs once per batch instead of per molecule.
+        costs = paddle.concat(costs).numpy()
+        aligned = []
+        cost_offset = 0
+        for prior, positions, n in zip(prior_list, positions_list, num_atoms):
+            n = int(n)
+            cost = costs[cost_offset : cost_offset + n * n].reshape(n, n)
+            _, prior_idx = linear_sum_assignment(cost)
+            prior_idx = paddle.to_tensor(prior_idx, dtype="int64", place=place)
+            aligned.append(rigid_alignment(prior[prior_idx], positions))
+            cost_offset += n * n
+        return paddle.concat(aligned, axis=0)
 
     def _build_targets(self, batch: dict, state: dict, upper_edge_mask) -> dict:
         """Build the loss targets; already unmasked states are ignored."""

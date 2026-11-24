@@ -47,7 +47,7 @@ CONFIG_PATH = osp.join(
     "structure_generation",
     "configs",
     "propmolflow",
-    "propmolflow_qm9_alpha_sum.yaml",
+    "propmolflow_qm9.yaml",
 )
 
 PRIOR_CONFIG = {
@@ -262,7 +262,49 @@ def test_train_forward_from_config():
         "concatenate_sum",
         "concatenate_multiply",
     ]:
-        variant = _build_model(properties_handle_method=method)
+        variant_config = OmegaConf.load(CONFIG_PATH)
+        variant_config.Model.__init_params__.vector_field_config = OmegaConf.create(
+            SMALL_VECTOR_FIELD
+        )
+        variant_config = OmegaConf.merge(
+            variant_config,
+            OmegaConf.from_dotlist(
+                [
+                    "Global.property_name=mu",
+                    f"Global.properties_handle_method={method}",
+                    "Global.hidden_dim=32",
+                ]
+            ),
+        )
+        variant_config = OmegaConf.to_container(variant_config, resolve=True)
+        if method == "sum":
+            variant_config["Model"]["__init_params__"]["interpolant_scheduler_config"][
+                "__init_params__"
+            ] = {
+                "schedule_type": {
+                    "positions": "linear",
+                    "atom_types": "cosine",
+                    "atom_charges": "cosine",
+                    "bond_types": "cosine",
+                },
+                "cosine_params": {
+                    "atom_types": 0.5,
+                    "atom_charges": 1.0,
+                    "bond_types": 2.0,
+                },
+            }
+        dataset_configs = [
+            variant_config["Dataset"][stage]["dataset"]
+            for stage in ("train", "val", "test")
+        ]
+        dataset_configs.append(variant_config["Sampler"]["data"]["dataset"])
+        assert all(
+            dataset["__init_params__"]["property_name"] == "mu"
+            for dataset in dataset_configs
+        )
+        assert variant_config["Trainer"]["output_dir"].endswith(f"mu_{method}")
+        variant = build_model(variant_config["Model"])
+        assert variant.vector_field.properties_handle_method == method
         loss = variant(batch)["loss_dict"]["loss"]
         assert np.isfinite(float(loss))
         loss.backward()
@@ -305,6 +347,9 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
     config["Dataset"]["train"]["sampler"]["__init_params__"]["shuffle"] = False
     data_loader = build_dataloader(config["Dataset"]["train"])
     batch = next(iter(data_loader))
+    dataset_params = {
+        key: value for key, value in dataset_params.items() if key != "transforms"
+    }
     assert isinstance(data_loader.dataset, QM9Dataset)
     assert all(osp.isfile(path) for path in data_loader.dataset.molecules)
 
@@ -324,6 +369,60 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
 
     model = _build_model()
     assert np.isfinite(float(model(batch)["loss_dict"]["loss"]))
+
+    qm9_config = {
+        "dataset": {
+            "__class_name__": "QM9Dataset",
+            "__init_params__": {
+                "path": path,
+                "property_names": ["alpha"],
+                "cache_path": str(tmp_path / "qm9_cache"),
+                "build_graph_cfg": {
+                    "__class_name__": "PropMolFlowMolConverter",
+                    "__init_params__": {
+                        "atom_map": dataset_params["atom_map"],
+                        "work_dir": str(tmp_path),
+                    },
+                },
+                "transforms": [
+                    {
+                        "__class_name__": "Normalize",
+                        "__init_params__": {
+                            "mean": mean,
+                            "std": std,
+                            "apply_keys": ["alpha"],
+                        },
+                    },
+                    {
+                        "__class_name__": "PropMolFlowStructure",
+                        "__init_params__": {
+                            "atom_map": dataset_params["atom_map"],
+                            "property_name": "alpha",
+                        },
+                    },
+                ],
+            },
+        },
+        "loader": config["Dataset"]["train"]["loader"],
+        "sampler": config["Dataset"]["train"]["sampler"],
+    }
+    qm9_loader = build_dataloader(qm9_config)
+    qm9_batch = next(iter(qm9_loader))
+    assert type(qm9_loader.dataset) is QM9Dataset
+    for key, value in batch["structure_array"].items():
+        np.testing.assert_array_equal(qm9_batch["structure_array"][key], value)
+    np.testing.assert_allclose(qm9_batch["prop"], batch["prop"], atol=2e-7)
+    paddle.seed(42)
+    adapter_loss = model(batch)["loss_dict"]["loss"]
+    paddle.seed(42)
+    qm9_loss = model(qm9_batch)["loss_dict"]["loss"]
+    np.testing.assert_allclose(qm9_loss.numpy(), adapter_loss.numpy(), rtol=1e-6)
+    qm9_loss.backward()
+    assert all(
+        np.isfinite(parameter.grad.numpy()).all()
+        for parameter in model.parameters()
+        if not parameter.stop_gradient
+    )
 
     original_cache = data_loader.dataset.cache_path
     frame = pd.read_csv(path)
@@ -357,7 +456,7 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
             raise ValueError("Exercise isolated Hueckel perception")
 
         context.setattr(
-            "ppmat.datasets.propmolflow_dataset.rdDetermineBonds.DetermineBonds",
+            "ppmat.models.propmolflow.mol_converter.rdDetermineBonds.DetermineBonds",
             require_hueckel,
         )
         fallback = PropMolFlowDataset(**dict(dataset_params, rebuild=True))
@@ -443,6 +542,21 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
     checkpoint_dataset = PropMolFlowSamplingDataset(**sampling_params)
     assert checkpoint_dataset.property_mean == 75.19867706298828
     assert checkpoint_dataset.property_std == 8.181739807128906
+    sampling_frame = frame.iloc[:2][["alpha"]].copy()
+    sampling_frame["num_atoms"] = [
+        int(xyz.splitlines()[0]) for xyz in frame.iloc[:2]["standard_xyz"]
+    ]
+    sampling_path = isolated_dir / "sampling.csv"
+    sampling_frame.to_csv(sampling_path, index=False)
+    counts_dataset = PropMolFlowSamplingDataset(
+        **dict(sampling_params, path=str(sampling_path))
+    )
+    np.testing.assert_array_equal(
+        counts_dataset.num_atoms, checkpoint_dataset.num_atoms
+    )
+    np.testing.assert_array_equal(
+        counts_dataset.property_values, checkpoint_dataset.property_values
+    )
     reference_training = PropMolFlowDataset(
         **dict(dataset_params, path=str(isolated_path), normalization_source=None)
     )
@@ -479,8 +593,22 @@ def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
 # ----------------------------- sampling chain -----------------------------
 
 
-def test_sample_produces_valid_molecules(tmp_path):
-    model = _build_model()
+@pytest.mark.parametrize("schedule_type", ["linear", "cosine"])
+def test_sample_produces_valid_molecules(tmp_path, schedule_type):
+    model = _build_model(
+        interpolant_scheduler_config={
+            "__class_name__": "InterpolantScheduler",
+            "__init_params__": {
+                "schedule_type": schedule_type,
+                "cosine_params": {
+                    "positions": 0.5,
+                    "atom_types": 0.5,
+                    "atom_charges": 1.0,
+                    "bond_types": 2.0,
+                },
+            },
+        }
+    )
     sampling_datasets = (
         _sampling_dataset(tmp_path),
         _sampling_dataset(
@@ -500,13 +628,15 @@ def test_sample_produces_valid_molecules(tmp_path):
             {},
             {"stochasticity": 8.0, "high_confidence_threshold": 0.9},
         ):
-            result = model.sample(batch_data, num_inference_steps=2, **sample_kwargs)[
+            result = model.sample(batch_data, num_inference_steps=3, **sample_kwargs)[
                 "pred"
             ]
             _assert_molecule_dicts(result, batch_data["structure_array"]["num_atoms"])
 
 
 def test_sampling_framework_end_to_end(tmp_path):
+    from rdkit import Chem
+
     path, _ = _write_synthetic_qm9(tmp_path)
     checkpoint_path = str(tmp_path / "best.pdparams")
     paddle.save(_build_model().state_dict(), checkpoint_path)
@@ -524,7 +654,6 @@ def test_sampling_framework_end_to_end(tmp_path):
             }
         }
     )
-    del config.Dataset
     sampler_config_path = tmp_path / "sampler_config.yaml"
     OmegaConf.save(config, str(sampler_config_path))
 
@@ -533,14 +662,17 @@ def test_sampling_framework_end_to_end(tmp_path):
         [
             "Sampler.data.dataset.__init_params__.mode=out_of_distribution",
             "Sampler.data.dataset.__init_params__.property_value=3.0",
+            "Sampler.data.dataset.__init_params__.ood_quantile=0.0",
         ],
     ):
         sampler = MolecularSampler(
             config_path=str(sampler_config_path),
             checkpoint_path=checkpoint_path,
             config_overrides=[
+                "Dataset.train=null",
                 f"Sampler.data.dataset.__init_params__.path={path}",
                 "Sampler.data.dataset.__init_params__.total_num=4",
+                "Sampler.data.sampler.__init_params__.batch_size=2",
                 f"Sampler.output_dir={tmp_path / 'out'}",
                 "Sampler.model_sample_params.num_inference_steps=2",
             ]
@@ -556,12 +688,18 @@ def test_sampling_framework_end_to_end(tmp_path):
         }
         assert all(0.0 <= value <= 1.0 for value in metrics.values())
         assert len(sampler.last_samples["pred"]) == 4
+        assert sampler.config["Dataset"]["train"] is None
 
-    # The one-line model-owned serialization writes the SDF file.
-    save_samples = getattr(sampler.model, "save_samples", None)
-    assert callable(save_samples)
-    save_samples(sampler.last_samples["pred"], sampler.output_dir)
-    assert osp.exists(str(tmp_path / "out" / "propmolflow_samples.sdf"))
+        sampler.model.save_samples(sampler.last_samples["pred"], sampler.output_dir)
+        molecules = list(
+            Chem.SDMolSupplier(
+                str(tmp_path / "out" / "propmolflow_samples.sdf"),
+                sanitize=False,
+                removeHs=False,
+            )
+        )
+        assert len(molecules) == 4
+        assert all(molecule is not None for molecule in molecules)
 
 
 # ---------------------------- evaluation chain ----------------------------
@@ -684,6 +822,7 @@ def test_trainer_checkpoint_resume_restores_training_state(tmp_path, monkeypatch
             output_dir=str(tmp_path / name),
             max_epochs=max_epochs,
             save_freq=1,
+            pretrained_model_path=None,
         )
         return BaseTrainer(
             trainer_config,

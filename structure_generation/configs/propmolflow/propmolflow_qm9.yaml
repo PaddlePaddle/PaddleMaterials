@@ -3,8 +3,11 @@ Global:
   do_train: True
   do_eval: True
   do_test: False
+  atom_type_map: ["C", "H", "N", "O", "F"]
+  hidden_dim: 256
   # Property used for conditional generation
-  property_name: lumo
+  property_name: alpha
+  properties_handle_method: sum
   # Number of integration steps used during sampling
   num_inference_steps: 100
 
@@ -14,7 +17,7 @@ Trainer:
   # Random seed
   seed: 42
   # Save path for checkpoints and logs
-  output_dir: ./output/propmolflow_qm9_lumo_concatenate_multiply_ood
+  output_dir: ./output/propmolflow_qm9_${Global.property_name}_${Global.properties_handle_method}
   # Save frequency [epoch], for example, save_freq=10 means save checkpoints every 10 epochs
   save_freq: 50 # set 0 to disable saving during training
   # Logging frequency [step], for example, log_freq=10 means log every 10 steps
@@ -24,8 +27,9 @@ Trainer:
   start_eval_epoch: 1
   # Evaluation frequency [epoch], for example, eval_freq=1 means evaluate every 1 epoch
   eval_freq: 1 # set 0 to disable evaluation during training
-  # Pretrained model path, if null, no pretrained model will be loaded
-  pretrained_model_path: null
+  # Pretrained checkpoint for validation and testing
+  # pretrained_model_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/propmolflow/propmolflow_qm9_alpha_sum.zip
+  pretrained_model_path: http://127.0.0.1/models/propmolflow_qm9_alpha_sum.zip
   # Resume from checkpoint path, useful for resuming training
   resume_from_checkpoint: null
   # whether use automatic mixed precision
@@ -56,7 +60,7 @@ Trainer:
 Model:
   __class_name__: PropMolFlow
   __init_params__:
-    atom_type_map: ["C", "H", "N", "O", "F"]
+    atom_type_map: ${Global.atom_type_map}
     total_loss_weights:
       positions: 3.0
       atom_types: 0.4
@@ -64,12 +68,14 @@ Model:
       bond_types: 2.0
     interpolant_scheduler_config:
       __class_name__: InterpolantScheduler
-      __init_params__: {}
+      __init_params__:
+        schedule_type: linear
+        cosine_params: {}
     vector_field_config:
       n_charges: 6
       n_bond_types: 5
       charge_offset: 2
-      n_hidden_scalars: 256
+      n_hidden_scalars: ${Global.hidden_dim}
       n_hidden_edge_feats: 128
       n_vec_channels: 16
       n_cp_feats: 4
@@ -88,8 +94,8 @@ Model:
       atom_types: {type: ctmc}
       atom_charges: {type: ctmc}
       bond_types: {type: ctmc}
-    property_embedding_dim: 256
-    properties_handle_method: concatenate_multiply
+    property_embedding_dim: ${Global.hidden_dim}
+    properties_handle_method: ${Global.properties_handle_method}
     execution_backend: eager
     runtime_options: null
 
@@ -108,8 +114,12 @@ Dataset:
       __class_name__: PropMolFlowDataset
       __init_params__:
         path: "./data/qm9/train.csv"
-        atom_map: ["C", "H", "N", "O", "F"]
+        atom_map: ${Global.atom_type_map}
         property_name: ${Global.property_name}
+        transforms:
+          - __class_name__: PropMolFlowStructure
+            __init_params__:
+              atom_map: ${Global.atom_type_map}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -125,8 +135,12 @@ Dataset:
       __class_name__: PropMolFlowDataset
       __init_params__:
         path: "./data/qm9/val.csv"
-        atom_map: ["C", "H", "N", "O", "F"]
+        atom_map: ${Global.atom_type_map}
         property_name: ${Global.property_name}
+        transforms:
+          - __class_name__: PropMolFlowStructure
+            __init_params__:
+              atom_map: ${Global.atom_type_map}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -142,8 +156,12 @@ Dataset:
       __class_name__: PropMolFlowDataset
       __init_params__:
         path: "./data/qm9/test.csv"
-        atom_map: ["C", "H", "N", "O", "F"]
+        atom_map: ${Global.atom_type_map}
         property_name: ${Global.property_name}
+        transforms:
+          - __class_name__: PropMolFlowStructure
+            __init_params__:
+              atom_map: ${Global.atom_type_map}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -163,6 +181,7 @@ Sampler:
         path: "./data/qm9/train.csv"
         property_name: ${Global.property_name}
         mode: in_distribution
+        ood_quantile: 0.97
         total_num: 64
         seed: 42
     loader:

@@ -42,6 +42,7 @@ from ppmat.models.mattergen.mattergen import MatterGenWithCondition
 from ppmat.models.mattersim.m3gnet import M3GNet
 from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
 from ppmat.models.megnet.megnet import MEGNetPlus
+from ppmat.models.propmolflow.mol_converter import PropMolFlowMolConverter
 from ppmat.models.propmolflow.propmolflow import PropMolFlow
 from ppmat.models.propmolflow.propmolflow import PropMolFlowVectorField
 from ppmat.models.sfin.sfin import SFIN
@@ -78,6 +79,7 @@ __all__ = [
     "SFIN",
     "SphereNet",
     "PropMolFlow",
+    "PropMolFlowMolConverter",
     "PropMolFlowVectorField",
 ]
 
