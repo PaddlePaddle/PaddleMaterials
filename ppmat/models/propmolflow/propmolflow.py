@@ -80,52 +80,12 @@ def build_batched_complete_graph(num_atoms: np.ndarray) -> dict:
     }
 
 
-def _rbf(D, D_max, D_count, D_min=0.0):
+def _rbf(D, D_max, D_count):
     """Radial basis function embedding of pairwise distances."""
-    D_mu = paddle.linspace(D_min, D_max, D_count)
-    D_mu = D_mu.reshape([1, -1])
-    D_sigma = (D_max - D_min) / D_count
+    D_mu = paddle.linspace(0.0, D_max, D_count).reshape([1, -1])
+    D_sigma = D_max / D_count
     D_expand = paddle.unsqueeze(D, -1)
     return paddle.exp(-(((D_expand - D_mu) / D_sigma) ** 2))
-
-
-class GaussianExpansion(nn.Layer):
-    """Expansion layer using a set of Gaussian functions.
-
-    Reference: https://github.com/atomistic-machine-learning/cG-SchNet
-    """
-
-    def __init__(self, start, stop, n_gaussians):
-        super().__init__()
-        offset = paddle.linspace(start, stop, n_gaussians)
-        widths = (offset[1] - offset[0]) * paddle.ones_like(offset)
-        self.register_buffer("widths", widths)
-        self.register_buffer("offsets", offset)
-
-    def forward(self, values: paddle.Tensor) -> paddle.Tensor:
-        coeff = -0.5 / paddle.pow(self.widths, 2)[None, :]
-        diff = values - self.offsets[None, :]
-        return paddle.exp(coeff * paddle.pow(diff, 2))
-
-
-class PropertyEmbedder(nn.Layer):
-    """Embed scalar property values through a Gaussian expansion and an MLP."""
-
-    def __init__(self, start: float, stop: float, embedding_dim: int, n_gaussians: int):
-        super().__init__()
-        self.embedding_dim = embedding_dim
-        self.mlp = nn.Sequential(
-            nn.Linear(n_gaussians, embedding_dim),
-            StableSiLU(),
-            nn.Linear(embedding_dim, embedding_dim),
-        )
-        self.gaussian_expansion = GaussianExpansion(
-            start=start, stop=stop, n_gaussians=n_gaussians
-        )
-
-    def forward(self, x: paddle.Tensor) -> paddle.Tensor:
-        expanded_x = self.gaussian_expansion(x)
-        return self.mlp(expanded_x)
 
 
 def centered_normal_prior(n: int, d: int, std: float) -> paddle.Tensor:
@@ -177,19 +137,12 @@ def rigid_alignment(x_0: paddle.Tensor, x_1: paddle.Tensor) -> paddle.Tensor:
 def align_prior(
     prior_feat: paddle.Tensor,
     dst_feat: paddle.Tensor,
-    permutation: bool = False,
-    rigid_body: bool = False,
 ) -> paddle.Tensor:
     """Align a prior feature to a destination feature."""
-    if permutation:
-        cost_mat = paddle.cdist(dst_feat, prior_feat, p=2)
-        _, prior_idx = linear_sum_assignment(cost_mat.numpy())
-        prior_feat = prior_feat[paddle.to_tensor(prior_idx, dtype="int64")]
-
-    if rigid_body:
-        prior_feat = rigid_alignment(prior_feat, dst_feat)
-
-    return prior_feat
+    cost_mat = paddle.cdist(dst_feat, prior_feat, p=2)
+    _, prior_idx = linear_sum_assignment(cost_mat.numpy())
+    prior_feat = prior_feat[paddle.to_tensor(prior_idx, dtype="int64")]
+    return rigid_alignment(prior_feat, dst_feat)
 
 
 class NodePositionUpdate(nn.Layer):
@@ -227,14 +180,9 @@ class NodePositionUpdate(nn.Layer):
 class EdgeUpdate(nn.Layer):
     """Update edge features with source/destination scalars and distances."""
 
-    def __init__(self, n_node_scalars, n_edge_feats, update_edge_w_distance, rbf_dim):
+    def __init__(self, n_node_scalars, n_edge_feats, rbf_dim):
         super().__init__()
-        self.update_edge_w_distance = update_edge_w_distance
-
-        input_dim = n_node_scalars * 2 + n_edge_feats
-        if update_edge_w_distance:
-            input_dim += rbf_dim
-
+        input_dim = n_node_scalars * 2 + n_edge_feats + rbf_dim
         self.edge_update_fn = nn.Sequential(
             nn.Linear(input_dim, n_edge_feats),
             StableSiLU(),
@@ -244,18 +192,11 @@ class EdgeUpdate(nn.Layer):
         self.edge_norm = nn.LayerNorm(n_edge_feats)
 
     def forward(self, node_scalars, edge_feats, d, src, dst):
-        mlp_inputs = [node_scalars[src], node_scalars[dst], edge_feats]
-        if self.update_edge_w_distance:
-            mlp_inputs.append(d)
+        mlp_inputs = [node_scalars[src], node_scalars[dst], edge_feats, d]
         edge_feats = self.edge_norm(
             edge_feats + self.edge_update_fn(paddle.concat(mlp_inputs, axis=-1))
         )
         return edge_feats
-
-
-def _categorical_sample(probs: paddle.Tensor) -> paddle.Tensor:
-    """Draw one category per row; ``probs`` must be normalized probabilities."""
-    return paddle.multinomial(probs, num_samples=1).squeeze(-1)
 
 
 def _purity_sampling(
@@ -320,15 +261,11 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
         n_cp_feats: int = 4,
         n_hidden_scalars: int = 256,
         n_hidden_edge_feats: int = 128,
-        n_recycles: int = 1,
         n_molecule_updates: int = 8,
-        convs_per_update: int = 1,
         n_message_gvps: int = 3,
         n_update_gvps: int = 3,
         n_position_update_gvps: int = 3,
-        separate_mol_updaters: bool = True,
         message_norm=100,
-        update_edge_w_distance: bool = True,
         rbf_dmax: float = 14,
         rbf_dim: int = 32,
         stochasticity: float = 10.0,
@@ -340,11 +277,7 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
         super().__init__()
         self._init_runtime(execution_backend, runtime_options)
 
-        if n_recycles < 1 or n_molecule_updates < 1 or convs_per_update < 1:
-            raise ValueError(
-                "n_recycles, n_molecule_updates and convs_per_update must be positive"
-            )
-        if n_molecule_updates == 1 and convs_per_update == 1:
+        if n_molecule_updates < 2:
             raise ValueError(
                 "The released update schedule requires at least two convolutions "
                 "to update molecular coordinates"
@@ -378,9 +311,6 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
         self.n_vec_channels = n_vec_channels
         self.rbf_dmax = rbf_dmax
         self.rbf_dim = rbf_dim
-        self.convs_per_update = convs_per_update
-        self.n_recycles = n_recycles
-        self.separate_mol_updaters = separate_mol_updaters
         self.interpolant_scheduler = interpolant_scheduler
         self.feature_names = feature_names
         self.properties_handle_method = properties_handle_method
@@ -423,7 +353,7 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
         )
 
         conv_layers = []
-        for _ in range(convs_per_update * n_molecule_updates):
+        for _ in range(n_molecule_updates):
             conv_layers.append(
                 GVPConv(
                     scalar_size=n_hidden_scalars,
@@ -438,7 +368,6 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
             )
         self.conv_layers = nn.LayerList(conv_layers)
 
-        n_updaters = n_molecule_updates if separate_mol_updaters else 1
         self.node_position_updaters = nn.LayerList(
             [
                 NodePositionUpdate(
@@ -447,7 +376,7 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
                     n_gvps=n_position_update_gvps,
                     n_cp_feats=n_cp_feats,
                 )
-                for _ in range(n_updaters)
+                for _ in range(n_molecule_updates)
             ]
         )
         self.edge_updaters = nn.LayerList(
@@ -455,10 +384,9 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
                 EdgeUpdate(
                     n_hidden_scalars,
                     n_hidden_edge_feats,
-                    update_edge_w_distance=update_edge_w_distance,
                     rbf_dim=rbf_dim,
                 )
-                for _ in range(n_updaters)
+                for _ in range(n_molecule_updates)
             ]
         )
 
@@ -466,10 +394,9 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
         checkpoint_only_layers = []
         if properties_handle_method not in ["concatenate", "concatenate_sum"]:
             checkpoint_only_layers.append(self.scalar_embedding_cond)
-        if separate_mol_updaters and convs_per_update == 1:
-            checkpoint_only_layers.extend(
-                [self.node_position_updaters[0], self.edge_updaters[0]]
-            )
+        checkpoint_only_layers.extend(
+            [self.node_position_updaters[0], self.edge_updaters[0]]
+        )
         for layer in checkpoint_only_layers:
             for parameter in layer.parameters():
                 parameter.stop_gradient = True
@@ -493,9 +420,6 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
         x_diff = x_diff / dij
         d = _rbf(dij.squeeze(1), D_max=self.rbf_dmax, D_count=self.rbf_dim)
         return x_diff, d
-
-    def _velocity(self, x_t, x_1, alpha_t, alpha_t_prime):
-        return alpha_t_prime / (1 - alpha_t) * (x_1 - x_t)
 
     def _apply_property_conditioning(self, node_scalar_features, prop_emb):
         if self.properties_handle_method == "concatenate_sum":
@@ -578,32 +502,26 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
         src, dst = state["src"], state["dst"]
         x_diff, d = self.precompute_distances(node_positions, src, dst)
 
-        for _ in range(self.n_recycles):
-            for conv_idx, conv in enumerate(self.conv_layers):
-                node_scalar_features, node_vec_features = conv(
-                    scalar_feats=node_scalar_features,
-                    vec_feats=node_vec_features,
-                    src=src,
-                    dst=dst,
-                    num_nodes=num_nodes,
-                    edge_feats=edge_features,
-                    x_diff=x_diff,
-                    d=d,
+        for conv_idx, conv in enumerate(self.conv_layers):
+            node_scalar_features, node_vec_features = conv(
+                scalar_feats=node_scalar_features,
+                vec_feats=node_vec_features,
+                src=src,
+                dst=dst,
+                num_nodes=num_nodes,
+                edge_feats=edge_features,
+                x_diff=x_diff,
+                d=d,
+            )
+
+            if conv_idx != 0:
+                node_positions = self.node_position_updaters[conv_idx](
+                    node_scalar_features, node_positions, node_vec_features
                 )
-
-                if conv_idx != 0 and (conv_idx + 1) % self.convs_per_update == 0:
-                    if self.separate_mol_updaters:
-                        updater_idx = conv_idx // self.convs_per_update
-                    else:
-                        updater_idx = 0
-
-                    node_positions = self.node_position_updaters[updater_idx](
-                        node_scalar_features, node_positions, node_vec_features
-                    )
-                    x_diff, d = self.precompute_distances(node_positions, src, dst)
-                    edge_features = self.edge_updaters[updater_idx](
-                        node_scalar_features, edge_features, d=d, src=src, dst=dst
-                    )
+                x_diff, d = self.precompute_distances(node_positions, src, dst)
+                edge_features = self.edge_updaters[conv_idx](
+                    node_scalar_features, edge_features, d=d, src=src, dst=dst
+                )
 
         node_scalar_features = self.node_output_head(node_scalar_features)
         atom_type_logits = node_scalar_features[:, : self.n_atom_types]
@@ -642,16 +560,9 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
         upper_edge_mask: paddle.Tensor,
     ) -> dict:
         """Sample the CTMC probability path between the prior and the endpoint."""
-        _, alpha_t = self.interpolant_scheduler.interpolant_weights(t)
+        alpha_t = self.interpolant_scheduler.alpha_t(t)
 
-        state = {
-            "src": batch["src"],
-            "dst": batch["dst"],
-            "upper_edge_mask": upper_edge_mask,
-            "node_batch_idx": node_batch_idx,
-            "edge_batch_idx": edge_batch_idx,
-            "batch_size": batch["batch_size"],
-        }
+        state = {"src": batch["src"], "dst": batch["dst"]}
 
         positions_idx = self.feature_names.index("positions")
         dst_weight = alpha_t[:, positions_idx][node_batch_idx].unsqueeze(-1)
@@ -773,7 +684,7 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
 
         x_1 = output["positions"]
         x_t = state["positions"]
-        vf = self._velocity(x_t, x_1, alpha_t_i[0], alpha_t_prime_i[0])
+        vf = alpha_t_prime_i[0] / (1 - alpha_t_i[0]) * (x_1 - x_t)
         state["positions"] = x_t + dt * vf
 
         for feat_idx, feat in enumerate(self.feature_names):
@@ -833,7 +744,7 @@ class PropMolFlowVectorField(RuntimeMixin, nn.Layer):
         last_step: bool,
         batch_idx: paddle.Tensor,
     ):
-        x1 = _categorical_sample(p_1_given_t)
+        x1 = paddle.multinomial(p_1_given_t, num_samples=1).squeeze(-1)
 
         unmask_prob = dt * (alpha_t_prime + stochasticity * alpha_t) / (1 - alpha_t)
         mask_prob = dt * stochasticity
@@ -879,10 +790,6 @@ class PropMolFlow(RuntimeMixin, nn.Layer):
         prior_config: dict,
         property_embedding_dim: int,
         properties_handle_method: str,
-        gaussian_expansion: bool,
-        n_gaussians: int,
-        gaussian_start: float = None,
-        gaussian_stop: float = None,
         execution_backend: str = "eager",
         runtime_options: dict = None,
     ):
@@ -912,34 +819,21 @@ class PropMolFlow(RuntimeMixin, nn.Layer):
                     f"{prior_config[feat]['type']}"
                 )
 
-        if gaussian_expansion:
-            if gaussian_start is None or gaussian_stop is None:
-                raise ValueError(
-                    "gaussian_start and gaussian_stop must be provided when "
-                    "gaussian_expansion is enabled"
-                )
-            self.property_embedder = PropertyEmbedder(
-                start=gaussian_start,
-                stop=gaussian_stop,
-                embedding_dim=property_embedding_dim,
-                n_gaussians=n_gaussians,
-            )
-        else:
-            self.property_embedder = nn.Sequential(
-                nn.Linear(1, property_embedding_dim),
-                StableSiLU(),
-                nn.Linear(property_embedding_dim, property_embedding_dim),
-                nn.LayerNorm(property_embedding_dim),
-            )
+        self.property_embedder = nn.Sequential(
+            nn.Linear(1, property_embedding_dim),
+            StableSiLU(),
+            nn.Linear(property_embedding_dim, property_embedding_dim),
+            nn.LayerNorm(property_embedding_dim),
+        )
 
         scheduler_cfg = copy.deepcopy(interpolant_scheduler_config)
         scheduler_cfg["__init_params__"]["feature_names"] = self.feature_names
-        self.interpolant_scheduler = build_scheduler(scheduler_cfg)
+        interpolant_scheduler = build_scheduler(scheduler_cfg)
 
         self.vector_field = PropMolFlowVectorField(
             n_atom_types=self.n_atom_types,
             feature_names=self.feature_names,
-            interpolant_scheduler=self.interpolant_scheduler,
+            interpolant_scheduler=interpolant_scheduler,
             property_embedding_dim=property_embedding_dim,
             properties_handle_method=properties_handle_method,
             property_embedder=self.property_embedder,
@@ -998,10 +892,6 @@ class PropMolFlow(RuntimeMixin, nn.Layer):
             offset += n_edges
         prepared["bond_types"] = paddle.concat(bond_parts, axis=0)
         prepared["prop"] = paddle.to_tensor(batch["prop"], dtype="float32", place=place)
-        if "prior_positions" in batch:
-            prepared["prior_positions"] = paddle.to_tensor(
-                batch["prior_positions"], dtype="float32", place=place
-            )
         return prepared
 
     def _sample_prior_positions(self, batch: dict) -> paddle.Tensor:
@@ -1017,8 +907,7 @@ class PropMolFlow(RuntimeMixin, nn.Layer):
             prior = centered_normal_prior(
                 n, 3, **self.prior_config["positions"]["kwargs"]
             ).to(place)
-            if self.prior_config["positions"]["align"]:
-                prior = align_prior(prior, positions, permutation=True, rigid_body=True)
+            prior = align_prior(prior, positions)
             prior_list.append(prior)
             node_offset += n
         return paddle.concat(prior_list, axis=0)
@@ -1054,9 +943,7 @@ class PropMolFlow(RuntimeMixin, nn.Layer):
         prop_emb = self.property_embedder(prop)
         t_combined = paddle.concat([t.unsqueeze(-1), prop_emb], axis=-1)
 
-        prior_positions = batch.get("prior_positions")
-        if prior_positions is None:
-            prior_positions = self._sample_prior_positions(batch)
+        prior_positions = self._sample_prior_positions(batch)
 
         state = self.vector_field.sample_conditional_path(
             batch,

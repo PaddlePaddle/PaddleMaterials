@@ -22,19 +22,18 @@ The implementation follows https://github.com/lucidrains/geometric-vector-percep
 from __future__ import annotations
 
 import math
-from typing import Union
 
 import paddle
 import paddle.nn as nn
 
-from ppmat.utils.scatter import scatter_mean
+from ppmat.models.common.activation import swish
 from ppmat.utils.scatter import scatter_sum
 
 
 class StableSiLU(nn.SiLU):
     def forward(self, x):
         # Paddle 3.3 CPU fused SiLU backward overflows for large negative inputs.
-        return x * paddle.nn.functional.sigmoid(x)
+        return swish(x)
 
 
 def norm_no_nan(x, axis=-1, keepdims=False, eps=1e-8, sqrt=True):
@@ -178,9 +177,7 @@ class GVPConv(nn.Layer):
         n_update_gvps: int,
         rbf_dim: int,
         edge_feat_size: int,
-        message_norm: Union[float, str],
-        scalar_activation=StableSiLU,
-        vector_activation=nn.Sigmoid,
+        message_norm: float,
         dropout: float = 0.0,
     ):
         super().__init__()
@@ -188,16 +185,8 @@ class GVPConv(nn.Layer):
         self.edge_feat_size = edge_feat_size
         self.message_norm = message_norm
 
-        if isinstance(message_norm, str) and message_norm not in ["mean", "sum"]:
-            raise ValueError(
-                "message_norm must be either 'mean', 'sum', or a number, "
-                f"got {message_norm}"
-            )
-        if not isinstance(message_norm, (str, float, int)):
-            raise TypeError(
-                "message_norm must be either 'mean', 'sum', or a number, "
-                f"got {message_norm}"
-            )
+        if not isinstance(message_norm, (float, int)):
+            raise TypeError(f"message_norm must be a number, got {message_norm}")
 
         message_gvps = []
         for i in range(n_message_gvps):
@@ -215,8 +204,8 @@ class GVPConv(nn.Layer):
                     n_cp_feats=n_cp_feats,
                     dim_feats_in=dim_feats_in,
                     dim_feats_out=scalar_size,
-                    feats_activation=scalar_activation(),
-                    vectors_activation=vector_activation(),
+                    feats_activation=StableSiLU(),
+                    vectors_activation=nn.Sigmoid(),
                 )
             )
         self.edge_message = nn.LayerList(message_gvps)
@@ -230,8 +219,8 @@ class GVPConv(nn.Layer):
                     n_cp_feats=n_cp_feats,
                     dim_feats_in=scalar_size,
                     dim_feats_out=scalar_size,
-                    feats_activation=scalar_activation(),
-                    vectors_activation=vector_activation(),
+                    feats_activation=StableSiLU(),
+                    vectors_activation=nn.Sigmoid(),
                 )
             )
         self.node_update = nn.LayerList(update_gvps)
@@ -239,11 +228,7 @@ class GVPConv(nn.Layer):
         self.dropout = GVPDropout(dropout)
         self.message_layer_norm = GVPLayerNorm(scalar_size)
         self.update_layer_norm = GVPLayerNorm(scalar_size)
-
-        if self.message_norm == "mean":
-            self.agg_func = scatter_mean
-        else:
-            self.agg_func = scatter_sum
+        self.agg_func = scatter_sum
 
     def forward(
         self,
@@ -260,13 +245,14 @@ class GVPConv(nn.Layer):
             scalar_feats, vec_feats, edge_feats, x_diff, d, src, dst
         )
 
-        if isinstance(self.message_norm, str):
-            z = 1
-        else:
-            z = self.message_norm
-
-        scalar_msg = self.agg_func(scalar_message, dst, dim=0, dim_size=num_nodes) / z
-        vec_msg = self.agg_func(vector_message, dst, dim=0, dim_size=num_nodes) / z
+        scalar_msg = (
+            self.agg_func(scalar_message, dst, dim=0, dim_size=num_nodes)
+            / self.message_norm
+        )
+        vec_msg = (
+            self.agg_func(vector_message, dst, dim=0, dim_size=num_nodes)
+            / self.message_norm
+        )
 
         scalar_msg, vec_msg = self.dropout(scalar_msg, vec_msg)
 

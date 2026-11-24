@@ -27,7 +27,6 @@ import zipfile
 from datetime import datetime
 from functools import partial
 from importlib import resources
-from typing import Dict
 
 import numpy as np
 import paddle.distributed as dist
@@ -192,19 +191,6 @@ class _QM9Properties:
         return mean, std
 
 
-class _QM9Split(_QM9Properties, Dataset):
-    """Read conditioning data without constructing training molecules."""
-
-    def __init__(self, path: str):
-        super().__init__()
-        self.path = self._resolve_split_path(path)
-        self.raw_data, self.num_samples = QM9Dataset.read_data(self, self.path)
-        if "num_atoms" not in self.raw_data:
-            self.raw_data["num_atoms"] = [
-                int(xyz.splitlines()[0]) for xyz in self.raw_data["molecule"]
-            ]
-
-
 class PropMolFlowDataset(_QM9Properties, QM9Dataset):
     """Adapt cached QM9 molecules to complete-graph flow-matching features.
 
@@ -218,7 +204,7 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
         self,
         path: str = "./data/qm9/train.csv",
         atom_map: list = None,
-        conditioning_cfg: Dict = None,
+        property_name: str = None,
         normalization_source: str = None,
         cache_dir: str = None,
         num_cpus: int = 1,
@@ -227,30 +213,21 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
     ):
         if atom_map is None:
             raise ValueError("atom_map must be provided")
-        if conditioning_cfg is None:
-            raise ValueError("conditioning_cfg must be provided")
+        if property_name is None:
+            raise ValueError("property_name must be provided")
         self.atom_map = list(atom_map)
-        self.conditioning = conditioning_cfg
-        self.property_name = conditioning_cfg.get("property")
-        if conditioning_cfg.get("enabled", False) and self.property_name is None:
-            raise ValueError("property must be provided when conditioning is enabled")
+        self.property_name = property_name
         self.property_range = property_range
         if property_range is not None:
             if (
-                self.property_name is None
-                or len(property_range) != 2
+                len(property_range) != 2
                 or not np.isfinite(property_range).all()
                 or property_range[0] >= property_range[1]
             ):
-                raise ValueError(
-                    "property_range requires a property and finite lower < upper bounds"
-                )
-        if self.conditioning.get("enabled", False) and self.conditioning.get(
-            "normalize", False
-        ):
-            self.property_mean, self.property_std = self._normalization_statistics(
-                normalization_source, self.property_name
-            )
+                raise ValueError("property_range requires finite lower < upper bounds")
+        self.property_mean, self.property_std = self._normalization_statistics(
+            normalization_source, self.property_name
+        )
 
         path = self._resolve_split_path(path)
         if cache_dir is None:
@@ -279,8 +256,8 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
             "kekulize": False,
             "num_cpus": num_cpus,
         }
-        self.cache_path = cache_stem + ".npz"
-        self._validate_distributed_cache(cache_stem, molecule_config, rebuild)
+        npz_path = cache_stem + ".npz"
+        self._validate_distributed_cache(cache_stem, npz_path, molecule_config, rebuild)
         super().__init__(
             path=path,
             property_names=[self.property_name] if self.property_name else [],
@@ -290,15 +267,14 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
             overwrite=rebuild,
             filter_unvalid=False,
         )
-        self.cache_path = cache_stem + ".npz"
+        self.cache_path = npz_path
         self._load_or_build_cache(num_cpus, rebuild)
 
-        if self.conditioning.get("enabled", False):
-            self.property_values = np.asarray(
-                self.raw_data[self.property_name], dtype="float64"
-            )[self.valid_indices]
-            if not np.isfinite(self.property_values).all():
-                raise ValueError("Conditioning properties must be finite")
+        self.property_values = np.asarray(
+            self.raw_data[self.property_name], dtype="float64"
+        )[self.valid_indices]
+        if not np.isfinite(self.property_values).all():
+            raise ValueError("Conditioning properties must be finite")
         self._trim_raw_data()
 
     def read_data(self, path: str):
@@ -315,13 +291,15 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
             len(indices),
         )
 
-    def _validate_distributed_cache(self, cache_stem, molecule_config, rebuild):
+    def _validate_distributed_cache(
+        self, cache_stem, cache_path, molecule_config, rebuild
+    ):
         if not dist.is_initialized():
             return
         status = [None]
         if dist.get_rank() == 0:
             try:
-                if rebuild or not self._cache_is_valid():
+                if rebuild or not self._cache_is_valid(cache_path):
                     raise ValueError("Prewarm this dataset in a single process first")
                 cached_config = self.load_from_cache(
                     osp.join(cache_stem, "build_molecule_cfg.pkl")
@@ -338,11 +316,11 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
                 f"PropMolFlow distributed cache validation failed: {status[0]}"
             )
 
-    def _cache_is_valid(self) -> bool:
-        if not osp.exists(self.cache_path):
+    def _cache_is_valid(self, cache_path: str) -> bool:
+        if not osp.exists(cache_path):
             return False
         try:
-            with np.load(self.cache_path) as cache:
+            with np.load(cache_path) as cache:
                 meta = json.loads(str(cache["meta"]))
         except (OSError, ValueError, KeyError, zipfile.BadZipFile):
             return False
@@ -354,7 +332,7 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
         status = [None]
         if not distributed or dist.get_rank() == 0:
             try:
-                if rebuild or not self._cache_is_valid():
+                if rebuild or not self._cache_is_valid(self.cache_path):
                     self._build_cache(num_cpus)
             except Exception as error:
                 if not distributed:
@@ -468,22 +446,18 @@ class PropMolFlowDataset(_QM9Properties, QM9Dataset):
             "bond_types": _one_hot(self.bond_types[edge_start:edge_end], N_BOND_TYPES),
         }
 
-        sample = {
+        property_value = (
+            float(self.property_values[idx]) - self.property_mean
+        ) / self.property_std
+        return {
             "structure_array": {
                 key: ConcatData(value) for key, value in structure_array.items()
-            }
+            },
+            "prop": property_value,
         }
-        if self.conditioning.get("enabled", False):
-            property_value = float(self.property_values[idx])
-            if self.conditioning.get("normalize", False):
-                property_value = (
-                    property_value - self.property_mean
-                ) / self.property_std
-            sample["prop"] = property_value
-        return sample
 
 
-class PropMolFlowSamplingDataset(_QM9Split):
+class PropMolFlowSamplingDataset(_QM9Properties, Dataset):
     """Sampling inputs for PropMolFlow: number of atoms and property values.
 
     ``n_atoms`` and ``property_value`` are orthogonal pins: an explicit value
@@ -526,10 +500,15 @@ class PropMolFlowSamplingDataset(_QM9Split):
             )
 
         self.property_name = property_name
-        self.mode = mode
         self.total_num = total_num
 
-        super().__init__(path=path)
+        super().__init__()
+        self.path = self._resolve_split_path(path)
+        self.raw_data, _ = QM9Dataset.read_data(self, self.path)
+        if "num_atoms" not in self.raw_data:
+            self.raw_data["num_atoms"] = [
+                int(xyz.splitlines()[0]) for xyz in self.raw_data["molecule"]
+            ]
 
         self.property_mean, self.property_std = self._normalization_statistics(
             normalization_source, self.property_name

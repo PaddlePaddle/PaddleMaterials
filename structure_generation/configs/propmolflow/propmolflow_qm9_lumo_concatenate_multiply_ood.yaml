@@ -64,17 +64,7 @@ Model:
       bond_types: 2.0
     interpolant_scheduler_config:
       __class_name__: InterpolantScheduler
-      __init_params__:
-        schedule_type:
-          positions: linear
-          atom_types: linear
-          atom_charges: linear
-          bond_types: linear
-        cosine_params:
-          positions: 1
-          atom_types: 2
-          atom_charges: 2
-          bond_types: 1.5
+      __init_params__: {}
     vector_field_config:
       n_charges: 6
       n_bond_types: 5
@@ -87,27 +77,19 @@ Model:
       n_update_gvps: 3
       n_position_update_gvps: 3
       n_molecule_updates: 8
-      convs_per_update: 1
-      n_recycles: 1
       rbf_dim: 32
       rbf_dmax: 14
       message_norm: 100
-      separate_mol_updaters: True
-      update_edge_w_distance: True
       stochasticity: 10.0
       high_confidence_threshold: 0.0
       cat_temperature: 0.05
     prior_config:
-      positions: {type: centered-normal, align: True, kwargs: {std: 1.0}}
+      positions: {type: centered-normal, kwargs: {std: 1.0}}
       atom_types: {type: ctmc}
       atom_charges: {type: ctmc}
       bond_types: {type: ctmc}
     property_embedding_dim: 256
     properties_handle_method: concatenate_multiply
-    gaussian_expansion: False
-    n_gaussians: 5
-    gaussian_start: null
-    gaussian_stop: null
     execution_backend: eager
     runtime_options: null
 
@@ -127,10 +109,7 @@ Dataset:
       __init_params__:
         path: "./data/qm9/train.csv"
         atom_map: ["C", "H", "N", "O", "F"]
-        conditioning_cfg:
-          enabled: True
-          property: ${Global.property_name}
-          normalize: True
+        property_name: ${Global.property_name}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -147,10 +126,7 @@ Dataset:
       __init_params__:
         path: "./data/qm9/val.csv"
         atom_map: ["C", "H", "N", "O", "F"]
-        conditioning_cfg:
-          enabled: True
-          property: ${Global.property_name}
-          normalize: True
+        property_name: ${Global.property_name}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -167,10 +143,7 @@ Dataset:
       __init_params__:
         path: "./data/qm9/test.csv"
         atom_map: ["C", "H", "N", "O", "F"]
-        conditioning_cfg:
-          enabled: True
-          property: ${Global.property_name}
-          normalize: True
+        property_name: ${Global.property_name}
     loader:
       num_workers: 0
       use_shared_memory: False

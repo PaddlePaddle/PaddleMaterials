@@ -51,7 +51,7 @@ CONFIG_PATH = osp.join(
 )
 
 PRIOR_CONFIG = {
-    "positions": {"type": "centered-normal", "align": True, "kwargs": {"std": 1.0}},
+    "positions": {"type": "centered-normal", "kwargs": {"std": 1.0}},
     "atom_types": {"type": "ctmc"},
     "atom_charges": {"type": "ctmc"},
     "bond_types": {"type": "ctmc"},
@@ -69,13 +69,9 @@ SMALL_VECTOR_FIELD = {
     "n_update_gvps": 2,
     "n_position_update_gvps": 3,
     "n_molecule_updates": 2,
-    "convs_per_update": 1,
-    "n_recycles": 1,
     "rbf_dim": 8,
     "rbf_dmax": 14,
     "message_norm": 100,
-    "separate_mol_updaters": True,
-    "update_edge_w_distance": True,
     "stochasticity": 10.0,
     "high_confidence_threshold": 0.0,
     "cat_temperature": 0.05,
@@ -93,20 +89,7 @@ def _build_model(vector_field_config=None, **overrides):
         },
         "interpolant_scheduler_config": {
             "__class_name__": "InterpolantScheduler",
-            "__init_params__": {
-                "schedule_type": {
-                    "positions": "linear",
-                    "atom_types": "linear",
-                    "atom_charges": "linear",
-                    "bond_types": "linear",
-                },
-                "cosine_params": {
-                    "positions": 1,
-                    "atom_types": 2,
-                    "atom_charges": 2,
-                    "bond_types": 1.5,
-                },
-            },
+            "__init_params__": {},
         },
         "vector_field_config": (
             SMALL_VECTOR_FIELD if vector_field_config is None else vector_field_config
@@ -114,10 +97,6 @@ def _build_model(vector_field_config=None, **overrides):
         "prior_config": PRIOR_CONFIG,
         "property_embedding_dim": 32,
         "properties_handle_method": "sum",
-        "gaussian_expansion": False,
-        "n_gaussians": 5,
-        "gaussian_start": None,
-        "gaussian_stop": None,
     }
     init_params.update(overrides)
     model = build_model(
@@ -276,26 +255,14 @@ def test_train_forward_from_config():
     )
 
     # Training-forward variants over the released configuration space.
-    for overrides in (
-        {"gaussian_expansion": True, "gaussian_start": 6.31, "gaussian_stop": 196.62},
-        {
-            "vector_field_config": dict(
-                SMALL_VECTOR_FIELD, n_molecule_updates=1, convs_per_update=2
-            )
-        },
-        {"vector_field_config": dict(SMALL_VECTOR_FIELD, separate_mol_updaters=False)},
-        *(
-            {"properties_handle_method": method}
-            for method in [
-                "concatenate",
-                "sum",
-                "multiply",
-                "concatenate_sum",
-                "concatenate_multiply",
-            ]
-        ),
-    ):
-        variant = _build_model(**overrides)
+    for method in [
+        "concatenate",
+        "sum",
+        "multiply",
+        "concatenate_sum",
+        "concatenate_multiply",
+    ]:
+        variant = _build_model(properties_handle_method=method)
         loss = variant(batch)["loss_dict"]["loss"]
         assert np.isfinite(float(loss))
         loss.backward()
@@ -318,14 +285,11 @@ def test_train_forward_from_config():
     )
 
     with pytest.raises(ValueError):
-        _build_model(gaussian_expansion=True, gaussian_start=None, gaussian_stop=None)
-    with pytest.raises(ValueError):
         _build_model(properties_handle_method="unsupported")
     with pytest.raises(ValueError, match="at least two convolutions"):
         _build_model(vector_field_config=dict(SMALL_VECTOR_FIELD, n_molecule_updates=1))
-    for name in ("n_recycles", "n_molecule_updates", "convs_per_update"):
-        with pytest.raises(ValueError, match="must be positive"):
-            _build_model(vector_field_config=dict(SMALL_VECTOR_FIELD, **{name: 0}))
+    with pytest.raises(ValueError, match="at least two convolutions"):
+        _build_model(vector_field_config=dict(SMALL_VECTOR_FIELD, n_molecule_updates=0))
 
 
 def test_train_data_pipeline_feeds_forward(tmp_path, monkeypatch):
@@ -552,6 +516,15 @@ def test_sampling_framework_end_to_end(tmp_path):
         SMALL_VECTOR_FIELD
     )
     config.Model.__init_params__.property_embedding_dim = 32
+    config.Metric = OmegaConf.create(
+        {
+            "PropMolFlowMoleculeMetric": {
+                "__class_name__": "PropMolFlowMoleculeMetric",
+                "__init_params__": {},
+            }
+        }
+    )
+    del config.Dataset
     sampler_config_path = tmp_path / "sampler_config.yaml"
     OmegaConf.save(config, str(sampler_config_path))
 
@@ -566,7 +539,6 @@ def test_sampling_framework_end_to_end(tmp_path):
             config_path=str(sampler_config_path),
             checkpoint_path=checkpoint_path,
             config_overrides=[
-                "Dataset.train=null",
                 f"Sampler.data.dataset.__init_params__.path={path}",
                 "Sampler.data.dataset.__init_params__.total_num=4",
                 f"Sampler.output_dir={tmp_path / 'out'}",
@@ -574,13 +546,7 @@ def test_sampling_framework_end_to_end(tmp_path):
             ]
             + condition_overrides,
         )
-        results = sampler.sample_by_dataloader(save_path=str(tmp_path / "out"))
-        assert results is sampler.last_samples
-        assert len(results["pred"]) == 4
-
-        # API-level evaluation and serialization (no top-level Metric section
-        # is shipped: the SG task train.py has no generation-model metrics).
-        metrics = PropMolFlowMoleculeMetric()(results["pred"])
+        metrics = sampler.sample_by_dataloader(save_path=str(tmp_path / "out"))
         assert set(metrics) == {
             "rdkit_valid",
             "valid_and_unique",
@@ -588,6 +554,8 @@ def test_sampling_framework_end_to_end(tmp_path):
             "atom_stable",
             "mol_stable",
         }
+        assert all(0.0 <= value <= 1.0 for value in metrics.values())
+        assert len(sampler.last_samples["pred"]) == 4
 
     # The one-line model-owned serialization writes the SDF file.
     save_samples = getattr(sampler.model, "save_samples", None)

@@ -42,16 +42,16 @@ x_1, & \text{with probability } \alpha_t, \\
 \end{cases}
 $$
 
-The weight follows a linear ($\alpha_t = t$) or a cosine ($\alpha_t = 1 - \cos(\frac{\pi}{2} t^{\nu})^2$) schedule.
+The weight follows a linear schedule ($\alpha_t = t$).
 
 #### 2) SE(3)-equivariant GVP network
-The endpoint is predicted by a GVP message passing network. Node scalar features are initialized from the atom types, the formal charges and the time, and edge features from the bond types; the property embedding is fused into the node scalars. A stack of GVP convolutions performs message passing, and every `convs_per_update` convolutions a position updater and an edge updater refresh the coordinates and the edge features. The output heads predict:
+The endpoint is predicted by a GVP message passing network. Node scalar features are initialized from the atom types, the formal charges and the time, and edge features from the bond types; the property embedding is fused into the node scalars. A stack of GVP convolutions performs message passing; after the first convolution, each convolution refreshes the coordinates and the edge features. The output heads predict:
 - **invariant** logits for atom types and formal charges
 - **invariant** logits for bond types (from the summed features of both edge directions)
 - **equivariant** updated coordinates
 
 #### 3) Property conditioning
-The scalar property is embedded by an optional Gaussian expansion followed by an MLP. Five injection strategies connect the embedding to the node scalar features: `concatenate`, `sum`, `multiply`, `concatenate_sum` and `concatenate_multiply`.
+The scalar property is embedded by an MLP. Five injection strategies connect the embedding to the node scalar features: `concatenate`, `sum`, `multiply`, `concatenate_sum` and `concatenate_multiply`. The released checkpoints use this MLP variant; the paper's optional Gaussian expansion is not included.
 
 #### 4) Training objective
 The training objective is a weighted sum of a coordinate loss and the categorical cross-entropy losses:
@@ -182,14 +182,26 @@ python structure_generation/train.py -c structure_generation/configs/propmolflow
 ### Sample
 
 You can replace `model_name` with other model names from the Results table.
-The generated molecules are saved to `Sampler.output_dir`.
-Existing downloaded packages remain compatible with the sampling recipe below.
-
-This adapter refactor keeps the existing package schema and weights. Older
-packages can still name `PropMolFlowCollator` in their training loaders; the
-sampling recipe disables that unused loader with `Dataset.train=null`.
+Registered packages carry an inference-only configuration with the sampling data
+and the molecule metric; repository configurations keep the training dataset.
 For training or resume, use the repository configuration and the downloaded
-checkpoint rather than the package's legacy loader configuration.
+checkpoint.
+
+The shared molecular sampler CLI runs dataloader sampling or metric evaluation:
+
+```bash
+python spectrum_elucidation/sample.py \
+    --model_name=propmolflow_qm9_alpha_sum \
+    --mode=by_dataloader \
+    --output_path=./output/propmolflow_samples
+
+python spectrum_elucidation/sample.py \
+    --model_name=propmolflow_qm9_alpha_sum \
+    --mode=compute_metric \
+    --output_path=./output/propmolflow_samples
+```
+
+The Python API below also serializes the sampled molecules to SDF:
 
 ```python
 from ppmat.sampler import MolecularSampler
@@ -201,14 +213,13 @@ sampler = MolecularSampler(
     # config_path="structure_generation/configs/propmolflow/propmolflow_qm9_alpha_sum.yaml",
     # checkpoint_path="./output/propmolflow_qm9_alpha_sum/checkpoints/latest.pdparams",
     config_overrides=[
-        "Dataset.train=null",
         "Sampler.data.dataset.__init_params__.total_num=64",
         "Sampler.model_sample_params.num_inference_steps=100",
         "Sampler.output_dir=./output/propmolflow_samples",
     ],
 )
-results = sampler.sample_by_dataloader()
-sampler.model.save_samples(results["pred"], sampler.output_dir)
+metrics = sampler.sample_by_dataloader()
+sampler.model.save_samples(sampler.last_samples["pred"], sampler.output_dir)
 ```
 
 To sample out-of-distribution molecules at a single target value, add
