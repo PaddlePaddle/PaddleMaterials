@@ -90,6 +90,7 @@ def _runtime_forward(self, pos, edge_index, idx_kj):
 | `NMRNetCLIP` | `graph_encoder`、`spectrum_encoder` | SOT | 无独立注册流程 |
 | `DiffPrior` | `denoise_step` | SOT | 无独立注册流程 |
 | `DiffNMR` | `spectrum_encoder`、`denoise_step` | SOT | 反向扩散 |
+| `PropMolFlow` | `denoise_step` | SOT | 训练 |
 | `InfGCN` | 无 | 仅 eager | CINN 不可用 |
 
 ## 接入 CINN

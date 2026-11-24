@@ -1,0 +1,86 @@
+# Sampling-only configuration for MolecularSampler.
+# Training and evaluation must use propmolflow_qm9.yaml: the trainer interprets a
+# top-level Metric block as per-attribute (pred, label) callables, while
+# MolecularSampler interprets it as streaming metrics. Keep the model parameters
+# in sync with propmolflow_qm9.yaml.
+
+Global:
+  atom_type_map: ["C", "H", "N", "O", "F"]
+  hidden_dim: 256
+  # Property used for conditional generation
+  property_name: alpha
+  properties_handle_method: sum
+  # Number of integration steps used during sampling
+  num_inference_steps: 100
+
+Model:
+  __class_name__: PropMolFlow
+  __init_params__:
+    atom_type_map: ${Global.atom_type_map}
+    total_loss_weights:
+      positions: 3.0
+      atom_types: 0.4
+      atom_charges: 1.0
+      bond_types: 2.0
+    interpolant_scheduler_config:
+      __class_name__: InterpolantScheduler
+      __init_params__:
+        schedule_type: linear
+        cosine_params: {}
+    vector_field_config:
+      n_charges: 6
+      n_bond_types: 5
+      charge_offset: 2
+      n_hidden_scalars: ${Global.hidden_dim}
+      n_hidden_edge_feats: 128
+      n_vec_channels: 16
+      n_cp_feats: 4
+      n_message_gvps: 3
+      n_update_gvps: 3
+      n_position_update_gvps: 3
+      n_molecule_updates: 8
+      rbf_dim: 32
+      rbf_dmax: 14
+      message_norm: 100
+      stochasticity: 10.0
+      high_confidence_threshold: 0.0
+      cat_temperature: 0.05
+    prior_config:
+      positions: {type: centered-normal, kwargs: {std: 1.0}}
+      atom_types: {type: ctmc}
+      atom_charges: {type: ctmc}
+      bond_types: {type: ctmc}
+    property_embedding_dim: ${Global.hidden_dim}
+    properties_handle_method: ${Global.properties_handle_method}
+    execution_backend: eager
+    runtime_options: null
+
+Metric:
+  PropMolFlowMoleculeMetric:
+    __class_name__: PropMolFlowMoleculeMetric
+    __init_params__: {}
+
+Sampler:
+  data:
+    dataset:
+      __class_name__: PropMolFlowSamplingDataset
+      __init_params__:
+        path: "./data/qm9/train.csv"
+        property_name: ${Global.property_name}
+        mode: in_distribution
+        ood_quantile: 0.97
+        total_num: 64
+        seed: 42
+    loader:
+      num_workers: 0
+      use_shared_memory: False
+      collate_fn: DefaultCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 64
+  model_sample_params:
+    num_inference_steps: ${Global.num_inference_steps}
+  output_dir: ./output/propmolflow_qm9_${Global.property_name}_${Global.properties_handle_method}_samples

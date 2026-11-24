@@ -1,0 +1,33 @@
+{
+  "properties": {
+    "Cv": {
+      "mean": 31.612899780273438,
+      "std": 4.057038307189941
+    },
+    "alpha": {
+      "mean": 75.19867706298828,
+      "std": 8.181739807128906
+    },
+    "gap": {
+      "mean": 0.2515234649181366,
+      "std": 0.0472756028175354
+    },
+    "homo": {
+      "mean": -0.24002689123153687,
+      "std": 0.022097179666161537
+    },
+    "lumo": {
+      "mean": 0.011496728286147118,
+      "std": 0.04669145494699478
+    },
+    "mu": {
+      "mean": 2.702885389328003,
+      "std": 1.5295705795288086
+    }
+  },
+  "schema_version": 1,
+  "source": "rQM9_v0/train_data_property_normalization.npz",
+  "source_sha256": "801f3f65220c4716aa65104e66ae1c5d74d7b14d7ba533043e2477fbd19353ca",
+  "standard_deviation_ddof": 1,
+  "training_samples": 100000
+}

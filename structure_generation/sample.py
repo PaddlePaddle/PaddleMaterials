@@ -16,17 +16,24 @@ import argparse
 
 from omegaconf import OmegaConf
 
+from ppmat.sampler import MolecularSampler
 from ppmat.sampler import StructureSampler
 from ppmat.utils import logger
 
-__all__ = ["StructureSampler", "build_parser", "main"]
+__all__ = ["MolecularSampler", "StructureSampler", "build_parser", "main"]
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Crystal structure sampling")
+    parser = argparse.ArgumentParser(description="Structure and molecular sampling")
     model_source = parser.add_mutually_exclusive_group(required=True)
     model_source.add_argument("--model_name", help="Registered model name.")
     model_source.add_argument("--config_path", help="Path to a local config file.")
+    parser.add_argument(
+        "--sampler",
+        choices=["StructureSampler", "MolecularSampler"],
+        default="StructureSampler",
+        help="Sampler class; defaults to StructureSampler.",
+    )
     parser.add_argument(
         "--weights_name",
         help="Weight filename in a registered model package.",
@@ -81,18 +88,27 @@ def main():
     ]
     if invalid_overrides:
         parser.error("unrecognized arguments: " + " ".join(invalid_overrides))
+    sampler_class = StructureSampler
+    if args.sampler == "MolecularSampler":
+        sampler_class = MolecularSampler
     if args.input_path is not None:
+        config_section = "Sampler" if args.sampler == "MolecularSampler" else "Sample"
         config_overrides.append(
-            f"Sample.data.dataset.__init_params__.path={args.input_path}"
+            f"{config_section}.data.dataset.__init_params__.path={args.input_path}"
         )
 
-    sampler = StructureSampler(
+    sampler = sampler_class(
         model_name=args.model_name,
         weights_name=args.weights_name,
         config_path=args.config_path,
         checkpoint_path=args.checkpoint_path,
         config_overrides=config_overrides,
     )
+    method_name = (
+        "compute_metric" if args.mode == "compute_metric" else f"sample_{args.mode}"
+    )
+    if not callable(getattr(sampler, method_name, None)):
+        parser.error(f"{type(sampler).__name__} does not support mode {args.mode!r}")
     if args.mode == "compute_metric":
         metric_result = sampler.compute_metric(save_path=args.output_path)
         for metric_name, metric_value in metric_result.items():

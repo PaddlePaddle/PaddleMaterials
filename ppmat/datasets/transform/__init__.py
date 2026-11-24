@@ -31,6 +31,7 @@ from ppmat.datasets.transform.preprocess import LatticePolarDecomposition
 from ppmat.datasets.transform.preprocess import Log10
 from ppmat.datasets.transform.preprocess import Normalize
 from ppmat.datasets.transform.preprocess import Scale
+from ppmat.datasets.transform.propmolflow_structure import PropMolFlowStructure
 from ppmat.utils import logger
 
 __all__ = [
@@ -46,6 +47,7 @@ __all__ = [
     "mean_std_scaling",
     "rmsd_scaling",
     "custom_scaling",
+    "PropMolFlowStructure",
 ]
 
 
