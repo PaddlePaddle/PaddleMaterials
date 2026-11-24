@@ -39,7 +39,6 @@ from ppmat.datasets.flowmol_sampling_dataset import FlowMol3GeomSamplingDataset
 from ppmat.models import build_model
 from ppmat.models.flowmol.vector_field import FlowMolVectorField
 from ppmat.sampler import MolecularSampler
-from ppmat.sampler import build_sampler
 from ppmat.sampler import molecular_sampler
 from ppmat.trainer.base_trainer import BaseTrainer
 from structure_generation import sample as sampling_cli
@@ -461,24 +460,13 @@ def test_sampling_framework_end_to_end(tmp_path, monkeypatch):
         "Sampler.data.sampler.__init_params__.batch_size=2",
         "Sampler.model_sample_params.num_inference_steps=4",
     ]
-    sampler_cfg = {
-        "__class_name__": "MolecularSampler",
-        "__init_params__": {
-            "config_path": str(sampler_config_path),
-            "checkpoint_path": checkpoint_path,
-            "config_overrides": overrides,
-        },
-    }
-    for input_name in ("null", "123", "[input].csv", "data: input.csv"):
-        csv_path = csv_path.rename(tmp_path / input_name)
-        sampler_cfg["__init_params__"]["input_path"] = input_name
-        sampler = build_sampler(sampler_cfg)
-        assert isinstance(sampler, MolecularSampler)
-        assert sampler.sample_config["input_reference"] == input_name
-        dataset_params = sampler.sample_config["data"]["dataset"]["__init_params__"]
-        assert dataset_params["path"] == str(csv_path)
-    assert sampler_cfg["__init_params__"]["config_overrides"] == overrides
-    assert "__class_name__" in sampler_cfg
+    overrides.append(f"Sampler.data.dataset.__init_params__.path={csv_path}")
+    sampler = MolecularSampler(
+        config_path=str(sampler_config_path),
+        checkpoint_path=checkpoint_path,
+        config_overrides=overrides,
+    )
+    assert sampler.sample_config["input_reference"] == str(csv_path)
     results = sampler.sample_by_dataloader(save_path=str(tmp_path / "out"))
     assert results is sampler.last_samples
     assert len(results["pred"]) == 4
@@ -502,9 +490,9 @@ def test_sampling_framework_end_to_end(tmp_path, monkeypatch):
         "--sampler=MolecularSampler",
         f"--config_path={sampler_config_path}",
         f"--checkpoint_path={checkpoint_path}",
-        f"--input_path={input_name}",
+        f"--input_path={csv_path}",
         f"--output_path={tmp_path / 'cli'}",
-        *overrides,
+        *overrides[:-1],
     ]
     monkeypatch.setattr(sys, "argv", [*cli_args, "--mode=by_dataloader"])
     sampling_cli.main()
@@ -551,15 +539,10 @@ def test_registered_sampling_framework_end_to_end(tmp_path, monkeypatch):
     monkeypatch.setattr(
         molecular_sampler.download, "get_weights_path_from_url", resolve_package
     )
-    sampler = build_sampler(
-        {
-            "__class_name__": "MolecularSampler",
-            "__init_params__": {
-                "model_name": "flowmol_test",
-                "weights_name": "selected.pdparams",
-                "input_path": csv_path,
-            },
-        }
+    sampler = MolecularSampler(
+        model_name="flowmol_test",
+        weights_name="selected.pdparams",
+        config_overrides=[f"Sampler.data.dataset.__init_params__.path={csv_path}"],
     )
     assert downloads == [package_url]
     assert sampler.pretrained_weight_name == "selected.pdparams"

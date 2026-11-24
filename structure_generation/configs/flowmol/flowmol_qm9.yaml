@@ -229,8 +229,6 @@ Dataset:
         batch_size: 128
 
 Sampler:
-  __class_name__: MolecularSampler
-  __init_params__: {}
   save_samples: True
   data:
     dataset:

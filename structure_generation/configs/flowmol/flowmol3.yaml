@@ -67,8 +67,6 @@ Model:
     runtime_options: null
 
 Sampler:
-  __class_name__: MolecularSampler
-  __init_params__: {}
   save_samples: True
   data:
     dataset:

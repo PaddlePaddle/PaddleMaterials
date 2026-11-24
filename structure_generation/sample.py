@@ -89,13 +89,12 @@ def main():
     if invalid_overrides:
         parser.error("unrecognized arguments: " + " ".join(invalid_overrides))
     sampler_class = StructureSampler
-    sampler_kwargs = {}
     if args.sampler == "MolecularSampler":
         sampler_class = MolecularSampler
-        sampler_kwargs["input_path"] = args.input_path
-    elif args.input_path is not None:
+    if args.input_path is not None:
+        config_section = "Sampler" if args.sampler == "MolecularSampler" else "Sample"
         config_overrides.append(
-            f"Sample.data.dataset.__init_params__.path={args.input_path}"
+            f"{config_section}.data.dataset.__init_params__.path={args.input_path}"
         )
 
     sampler = sampler_class(
@@ -104,7 +103,6 @@ def main():
         config_path=args.config_path,
         checkpoint_path=args.checkpoint_path,
         config_overrides=config_overrides,
-        **sampler_kwargs,
     )
     method_name = (
         "compute_metric" if args.mode == "compute_metric" else f"sample_{args.mode}"
