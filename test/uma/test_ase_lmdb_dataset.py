@@ -178,7 +178,7 @@ def test_ase_lmdb_cache_is_lazy_and_reusable(
     def unexpected_read(*args):
         pytest.fail("Cached samples must not be decoded or rebuilt")
 
-    monkeypatch.setattr(dataset, "_read_record", unexpected_read)
+    monkeypatch.setattr(dataset, "read_data", unexpected_read)
     cached = dataset[0]
     np.testing.assert_array_equal(cached["energy"], sample["energy"])
     np.testing.assert_array_equal(cached["forces"], sample["forces"])
@@ -219,15 +219,15 @@ def test_cache_overwrite_rebuilds_requested_sample(
     del dataset
     dataset = ASELMDBDataset(**params, overwrite=True)
     reads = []
-    original = dataset._read_record
+    original = dataset.read_data
 
-    def read_record(*args):
-        reads.append(args)
-        return original(*args)
+    def read_data(path, index=None):
+        reads.append(index)
+        return original(path, index=index)
 
-    monkeypatch.setattr(dataset, "_read_record", read_record)
+    monkeypatch.setattr(dataset, "read_data", read_data)
     dataset[0]
-    assert reads == [(0, 1)]
+    assert reads == [0]
 
 
 def test_cache_does_not_store_transform_results(tmp_path, database_path, graph_cfg):
@@ -351,7 +351,7 @@ def test_filtering_and_subsetting_preserve_lmdb_row_ids(database_path, graph_cfg
     dataset = ASELMDBDataset(
         path=database_path, build_graph_cfg=graph_cfg, filter_unvalid=True
     )
-    assert dataset.raw_data == [(0, 1), (0, 3)]
+    assert dataset.indices == [(0, 1), (0, 3)]
     assert len(dataset) == 2
     assert dataset[1]["energy"].item() == -3.0
     del dataset
@@ -374,11 +374,11 @@ def test_lmdb_shard_selection_stops_at_requested_limit(
     for name in ("a.aselmdb", "b.aselmdb", "c.aselmdb"):
         shutil.copyfile(database_path, shards / name)
     dataset = ASELMDBDataset(path=shards, build_graph_cfg=graph_cfg, limit=1)
-    assert dataset.raw_data == [(0, 1)]
+    assert dataset.indices == [(0, 1)]
     assert len(dataset.databases) == 1
     del dataset
     dataset = ASELMDBDataset(path=shards, build_graph_cfg=graph_cfg, offset=1, limit=2)
-    assert dataset.raw_data == [(1, 1), (2, 1)]
+    assert dataset.indices == [(1, 1), (2, 1)]
     assert dataset[1]["energy"].item() == -1.0
 
 
@@ -397,7 +397,7 @@ def test_lmdb_without_length_sorts_numeric_record_keys(database_path, graph_cfg)
     dataset = ASELMDBDataset(
         path=database_path, build_graph_cfg=graph_cfg, offset=1, limit=2
     )
-    assert dataset.raw_data == [(0, 2), (0, 10)]
+    assert dataset.indices == [(0, 2), (0, 10)]
     assert dataset[0]["energy"].item() == -2.0
     assert dataset[1]["energy"].item() == -10.0
 
@@ -406,6 +406,45 @@ def test_lmdb_without_length_sorts_numeric_record_keys(database_path, graph_cfg)
 def test_invalid_or_empty_record_selection(database_path, graph_cfg, params):
     with pytest.raises(ValueError):
         ASELMDBDataset(path=database_path, build_graph_cfg=graph_cfg, **params)
+
+
+@pytest.mark.parametrize("compressed", [False, True])
+def test_invalid_record_is_logged_and_raised(database_path, monkeypatch, compressed):
+    database = lmdb.open(str(database_path), subdir=False)
+    with database.begin(write=True) as transaction:
+        payload = b"{invalid json"
+        transaction.put(b"1", zlib.compress(payload) if compressed else payload)
+    database.close()
+    errors = []
+    monkeypatch.setattr("ppmat.datasets.ase_lmdb_dataset.logger.error", errors.append)
+    dataset = ASELMDBDataset(path=database_path)
+    with pytest.raises(json.JSONDecodeError):
+        dataset[0]
+    assert len(errors) == 1
+    assert str(database_path) in errors[0]
+
+
+def test_missing_record_is_logged_and_raised(database_path, monkeypatch):
+    database = lmdb.open(str(database_path), subdir=False)
+    with database.begin(write=True) as transaction:
+        transaction.put(b"length", b"2")
+    database.close()
+    errors = []
+    monkeypatch.setattr("ppmat.datasets.ase_lmdb_dataset.logger.error", errors.append)
+    dataset = ASELMDBDataset(path=database_path)
+    with pytest.raises(KeyError, match="Missing row 2"):
+        dataset[1]
+    assert len(errors) == 1
+    assert "Missing row 2" in errors[0]
+
+
+def test_missing_split_is_logged_and_raised(tmp_path, monkeypatch):
+    errors = []
+    monkeypatch.setattr("ppmat.datasets.ase_lmdb_dataset.logger.error", errors.append)
+    with pytest.raises(FileNotFoundError):
+        ASELMDBDataset(path=tmp_path)
+    assert len(errors) == 1
+    assert str(tmp_path) in errors[0]
 
 
 @pytest.mark.parametrize("num_workers", [0, 1])

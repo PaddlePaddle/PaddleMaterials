@@ -28,6 +28,7 @@ from typing import Callable
 import lmdb
 import numpy as np
 from ase import Atoms
+from ase.io.jsonio import decode
 from paddle.io import Dataset
 
 from ppmat.datasets.build_structure import BuildStructure
@@ -140,14 +141,13 @@ class ASELMDBDataset(Dataset):
         self.limit = limit
         self.overwrite = overwrite
         self.filter_unvalid = filter_unvalid
-        if limit == 0:
-            raise ValueError(f"No records found in {self.path}.")
-        self.raw_data, self.num_samples = self.read_data(self.path)
+        self.indices, self.num_samples = self.read_data(self.path)
         if self.filter_unvalid:
             self.filter_unvalid_by_property()
-        self.num_samples = len(self.raw_data)
+        self.num_samples = len(self.indices)
         if not self.num_samples:
-            raise ValueError(f"No records found in {self.path}.")
+            logger.error(f"No valid samples found in {self.path}.")
+            raise ValueError(f"No valid samples found in {self.path}.")
         self.build_structure = BuildStructure(**self.build_structure_cfg)
         self.graph_converter = build_graph_converter(self.build_graph_cfg)
         logger.info(f"Load {self.num_samples} samples from {self.path}")
@@ -171,70 +171,71 @@ class ASELMDBDataset(Dataset):
             self.cache_path = osp.join(cache_path, cache_key)
             logger.info(f"Cache path: {self.cache_path}")
 
-    def read_data(self, path: str) -> tuple[list[tuple[int, int]], int]:
-        self.paths = (
-            [osp.abspath(path)]
-            if osp.isfile(path)
-            else sorted(glob.glob(osp.join(osp.abspath(path), self.pattern)))
-        )
-        if not self.paths:
-            raise FileNotFoundError(f"No ASE-LMDB file found in {path}.")
-        self.databases = []
-        indices = []
-        offset = self.offset
-        for database_index, database_path in enumerate(self.paths):
-            database = lmdb.open(
-                database_path,
-                subdir=False,
-                readonly=True,
-                lock=False,
-                readahead=False,
-                meminit=False,
-            )
-            self.databases.append(database)
-            with database.begin() as transaction:
-                length = transaction.get(b"length")
-                if length is not None:
-                    row_ids = range(1, int(length.decode()) + 1)
-                else:
-                    row_ids = sorted(
-                        int(key.decode())
-                        for key in transaction.cursor().iternext(values=False)
-                        if key.isdigit()
-                    )
-            start = min(offset, len(row_ids))
-            offset -= start
-            stop = (
-                start + self.limit - len(indices)
-                if self.limit is not None
-                else len(row_ids)
-            )
-            indices.extend((database_index, row_id) for row_id in row_ids[start:stop])
-            if self.limit is not None and len(indices) == self.limit:
-                break
-        return indices, len(indices)
-
-    @classmethod
-    def _decode(cls, value):
-        if isinstance(value, dict):
-            if "__ndarray__" in value:
-                shape, dtype, data = value["__ndarray__"][:3]
-                return np.asarray(data, dtype=dtype).reshape(shape)
-            return {key: cls._decode(item) for key, item in value.items()}
-        if isinstance(value, list):
-            return [cls._decode(item) for item in value]
-        return value
-
-    def _read_record(self, database_index: int, row_id: int) -> dict[str, Any]:
-        with self.databases[database_index].begin() as transaction:
-            raw = transaction.get(str(row_id).encode())
-        if raw is None:
-            raise KeyError(f"Missing row {row_id} in {self.paths[database_index]}.")
+    def read_data(self, path: str, index: int | None = None):
+        """Index the LMDB split, or read one indexed sample without preloading it."""
         try:
-            raw = zlib.decompress(raw)
-        except zlib.error:
-            pass
-        return self._decode(json.loads(raw.decode()))
+            if index is not None:
+                database_index, row_id = self.indices[index]
+                with self.databases[database_index].begin() as transaction:
+                    raw = transaction.get(str(row_id).encode())
+                if raw is None:
+                    raise KeyError(
+                        f"Missing row {row_id} in {self.paths[database_index]}."
+                    )
+                try:
+                    raw = zlib.decompress(raw)
+                except zlib.error:
+                    pass
+                return decode(raw.decode(), always_array=False)
+
+            self.paths = (
+                [osp.abspath(path)]
+                if osp.isfile(path)
+                else sorted(glob.glob(osp.join(osp.abspath(path), self.pattern)))
+            )
+            if not self.paths:
+                raise FileNotFoundError(f"No ASE-LMDB file found in {path}.")
+            self.databases = []
+            indices = []
+            offset = self.offset
+            for database_index, database_path in enumerate(self.paths):
+                database = lmdb.open(
+                    database_path,
+                    subdir=False,
+                    readonly=True,
+                    lock=False,
+                    readahead=False,
+                    meminit=False,
+                )
+                self.databases.append(database)
+                with database.begin() as transaction:
+                    length = transaction.get(b"length")
+                    if length is not None:
+                        row_ids = range(1, int(length.decode()) + 1)
+                    else:
+                        row_ids = sorted(
+                            int(key.decode())
+                            for key in transaction.cursor().iternext(values=False)
+                            if key.isdigit()
+                        )
+                start = min(offset, len(row_ids))
+                offset -= start
+                stop = (
+                    start + self.limit - len(indices)
+                    if self.limit is not None
+                    else len(row_ids)
+                )
+                indices.extend(
+                    (database_index, row_id) for row_id in row_ids[start:stop]
+                )
+                if self.limit is not None and len(indices) == self.limit:
+                    break
+            if not indices:
+                raise ValueError(f"No records found in {path}.")
+            return indices, len(indices)
+        except (OSError, lmdb.Error, ValueError, KeyError) as error:
+            logger.error(f"Failed to read ASE-LMDB data from {path}: {error}")
+            raise
 
     def read_property_data(self, record: dict, property_names) -> dict:
         property_data = {}
@@ -252,13 +253,13 @@ class ASELMDBDataset(Dataset):
 
     def filter_unvalid_by_property(self) -> None:
         reserved = []
-        for index in self.raw_data:
-            record = self._read_record(*index)
+        for index, row in enumerate(self.indices):
+            record = self.read_data(self.path, index=index)
             properties = self.read_property_data(record, self.property_names)
             if all(np.isfinite(value).all() for value in properties.values()):
-                reserved.append(index)
-        logger.info(f"Filter out {len(self.raw_data) - len(reserved)} invalid samples.")
-        self.raw_data = reserved
+                reserved.append(row)
+        logger.info(f"Filter out {len(self.indices) - len(reserved)} invalid samples.")
+        self.indices = reserved
 
     @staticmethod
     def save_to_cache(cache_path: str, data: Any) -> None:
@@ -298,7 +299,7 @@ class ASELMDBDataset(Dataset):
         return self.num_samples
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        database_index, row_id = self.raw_data[index]
+        database_index, row_id = self.indices[index]
         cache_path = (
             osp.join(self.cache_path, f"{database_index:04d}_{row_id:010d}.pkl")
             if self.cache_path is not None
@@ -308,7 +309,7 @@ class ASELMDBDataset(Dataset):
             data = self.load_from_cache(cache_path)
             return self.transforms(data) if self.transforms is not None else data
 
-        record = self._read_record(database_index, row_id)
+        record = self.read_data(self.path, index=index)
         atoms = Atoms(
             numbers=record["numbers"],
             positions=record["positions"],
