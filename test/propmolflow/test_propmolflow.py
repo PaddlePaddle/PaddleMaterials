@@ -19,6 +19,8 @@ from __future__ import annotations
 import csv
 import os
 import os.path as osp
+import subprocess
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -40,15 +42,10 @@ from ppmat.optimizer import build_optimizer
 from ppmat.sampler import MolecularSampler
 from ppmat.trainer.base_trainer import BaseTrainer
 
-CONFIG_PATH = osp.join(
-    osp.dirname(__file__),
-    "..",
-    "..",
-    "structure_generation",
-    "configs",
-    "propmolflow",
-    "propmolflow_qm9.yaml",
-)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CONFIG_DIR = REPO_ROOT / "structure_generation" / "configs" / "propmolflow"
+CONFIG_PATH = CONFIG_DIR / "propmolflow_qm9.yaml"
+SAMPLING_CONFIG_PATH = CONFIG_DIR / "propmolflow_qm9_sample.yaml"
 
 PRIOR_CONFIG = {
     "positions": {"type": "centered-normal", "kwargs": {"std": 1.0}},
@@ -700,6 +697,83 @@ def test_sampling_framework_end_to_end(tmp_path):
         )
         assert len(molecules) == 4
         assert all(molecule is not None for molecule in molecules)
+
+
+def test_sampling_config_stays_in_sync_with_training_config():
+    """The sampling-only YAML must not drift from the training YAML.
+
+    The two files are split because ``train.py`` reads a top-level ``Metric``
+    block as per-attribute callables while ``MolecularSampler`` reads it as
+    streaming metrics. Their shared blocks therefore keep a single source and
+    are guarded here instead of being kept in sync by hand.
+    """
+    train_cfg = OmegaConf.to_container(OmegaConf.load(CONFIG_PATH), resolve=True)
+    sampling_cfg = OmegaConf.to_container(
+        OmegaConf.load(SAMPLING_CONFIG_PATH), resolve=True
+    )
+
+    assert sampling_cfg["Model"] == train_cfg["Model"]
+    assert sampling_cfg["Sampler"]["data"] == train_cfg["Sampler"]["data"]
+    assert (
+        sampling_cfg["Sampler"]["model_sample_params"]
+        == train_cfg["Sampler"]["model_sample_params"]
+    )
+    for key, value in sampling_cfg["Global"].items():
+        assert key in train_cfg["Global"], f"{key} is missing from the training config"
+        assert train_cfg["Global"][key] == value, f"{key} differs between the configs"
+
+
+def test_sg_sample_cli_molecular_dispatch(tmp_path):
+    path, _ = _write_synthetic_qm9(tmp_path)
+    checkpoint_path = tmp_path / "best.pdparams"
+    paddle.save(_build_model().state_dict(), str(checkpoint_path))
+
+    config = OmegaConf.load(CONFIG_PATH)
+    config.Model.__init_params__.vector_field_config = OmegaConf.create(
+        SMALL_VECTOR_FIELD
+    )
+    config.Model.__init_params__.property_embedding_dim = 32
+    for section in ("Dataset", "Trainer", "Optimizer"):
+        config.pop(section, None)
+    config.Metric = OmegaConf.create(
+        {
+            "PropMolFlowMoleculeMetric": {
+                "__class_name__": "PropMolFlowMoleculeMetric",
+                "__init_params__": {},
+            }
+        }
+    )
+    dataset_params = config.Sampler.data.dataset.__init_params__
+    dataset_params.path = path
+    dataset_params.normalization_source = path
+    dataset_params.total_num = 2
+    config.Sampler.data.sampler.__init_params__.batch_size = 2
+    config.Sampler.model_sample_params.num_inference_steps = 2
+    config.Sampler.output_dir = str(tmp_path / "out")
+    config_path = tmp_path / "sample_config.yaml"
+    OmegaConf.save(config, str(config_path))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "structure_generation" / "sample.py"),
+            "--config_path",
+            str(config_path),
+            "--checkpoint_path",
+            str(checkpoint_path),
+            "--sampler",
+            "MolecularSampler",
+            "--mode",
+            "compute_metric",
+            "--output_path",
+            str(tmp_path / "out"),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "rdkit_valid" in result.stdout + result.stderr
 
 
 # ---------------------------- evaluation chain ----------------------------

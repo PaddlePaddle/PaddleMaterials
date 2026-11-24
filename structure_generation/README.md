@@ -34,3 +34,5 @@ The structure generation (SG) task tackles the inverse-design challenge of creat
 | **ML2DDB🌟**                        | -                                          | ✅                                             |
 
 **Legend:** ✅ Verified · 🧪 Implemented, pending validation · 🚧 In development · `-` Not supported · 🌟 Original Work
+
+**Molecule generation:** PropMolFlow is served by the molecular sampler (`MolecularSampler`) instead of the crystal `StructureSampler`: its outputs are molecular graphs written as SDF, and its configuration and sampling contract are documented in [configs/propmolflow/README.md](./configs/propmolflow/README.md).

@@ -105,29 +105,22 @@ Validation and testing automatically load the checkpoint configured by `Trainer.
 
 ### Sample
 
+Sampling uses the SG entry point with `MolecularSampler`:
+
 ```bash
-python spectrum_elucidation/sample.py --model_name=propmolflow_qm9_alpha_sum --mode=compute_metric
+python structure_generation/sample.py --model_name=propmolflow_qm9_alpha_sum --sampler=MolecularSampler --mode=compute_metric
 ```
 
-The molecular CLI reports metrics. To reproduce the Results population and save the complete run as `propmolflow_samples.sdf`, use:
+`--mode=compute_metric` reports `rdkit_valid`, `valid_and_unique`,
+`close_shell_ratio`, `atom_stable` and `mol_stable`. For a local checkpoint use
+`--config_path` and `--checkpoint_path` instead of `--model_name`, keeping its
+property and fusion method consistent.
 
-```python
-import numpy as np
-import paddle
-
-from ppmat.sampler import MolecularSampler
-
-paddle.seed(42)
-np.random.seed(42)
-sampler = MolecularSampler(
-    model_name="propmolflow_qm9_alpha_sum",
-    config_overrides=["Sampler.data.dataset.__init_params__.total_num=1000"],
-)
-sampler.sample_by_dataloader()
-sampler.model.save_samples(sampler.last_samples["pred"], sampler.output_dir)
-```
-
-For custom weights, replace `model_name` with `config_path` and `checkpoint_path`, and add `Dataset.train=null` to `config_overrides`. Match the configured property and fusion method to the checkpoint. Sampling outputs molecular coordinates and bonds as SDF rather than crystal CIF files.
+`propmolflow_qm9.yaml` trains and evaluates; `propmolflow_qm9_sample.yaml` only
+swaps in the streaming `Metric` block, because `train.py` reads a top-level
+`Metric` as per-attribute callables. The shared blocks are guarded by
+`test_sampling_config_stays_in_sync_with_training_config`. Samples are molecular
+graphs, so no CIF is written.
 
 ---
 
