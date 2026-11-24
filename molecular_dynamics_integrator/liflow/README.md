@@ -75,7 +75,12 @@ loss      = mean_nodes( sum_xyz( (v_pred - v_target)^2 ) )
 | Paddle / PyTorch 数值对齐（模型输出） | `reference_model.npz`（PyTorch 2.5.1+cpu） | rtol=1e-5, atol=1e-6 | 通过 |
 | Paddle / PyTorch 数值对齐（中间层） | `reference_layers.npz` | rtol=2e-4, atol=2e-5 | 通过 |
 | 单元测试 | `test/fixtures/liflow/` | `pytest test/test_liflow_*.py test/test_save_load.py test/test_cinn_benchmark_scripts.py` | 94 passed, 2 skipped |
-| 真实数据推理与上游数值对齐（LGPS 1400 K 小样本） | 官方公开权重 `liflow_universal.zip` + 上游 `ckpt/P_universal.ckpt`，Zenodo LGPS 官方初始结构、`positions_1400K.npz` / `lattice.npy` / `element_index.npy` | 200 原子体系 5 步积分；`max|Δr| = 2.64e-4 Å`，MSD(Li) 7.6324315(Paddle) vs 7.6324291(PyTorch) | 通过（小样本，非完整复现） |
+| 真实数据推理与上游数值对齐（LGPS 1400 K 小样本） | 官方公开权重 `liflow_universal.zip` + 上游 `ckpt/P_universal.ckpt`，Zenodo LGPS 官方初始结构、`positions_1400K.npz` / `lattice.npy` / `element_index.npy` | 200 原子体系 5 步积分；`max\|Δr\| = 2.64e-4 Å`，MSD(Li) 7.6324315(Paddle) vs 7.6324291(PyTorch) | 通过（小样本，非完整复现） |
+| 真实数据结构指标（同上设置） | 同上，末帧配对分布（最小镜像、2–4 Å 首壳） | Li–Li / Li–P / Li–S 的平均键距 Paddle vs PyTorch | 3.2258081/3.2258115、3.3831053/3.3831050、3.0558127/3.0558123 Å，一致 |
+
+以上真实数据项只跑了一条 5 步轨迹（seed 42、200 原子），用于确认 Paddle 实现与上游在真实输入上给出同一结果，**不是论文级轨迹复现**；与参考 AIMD 的差异来自积分步数很少，不作为精度结论。
+
+仓库 YAML 的最小训练冒烟：`molecular_dynamics_integrator/train.py -c .../liflow_universal_propagator.yaml` 在 `test/fixtures/liflow/dataset_mini` 上跑完 1 个 epoch（train 11 步 + eval 11 步，`loss` 2.526769）并保存 `checkpoints/best`；推理配置用公开权重在 `example_data/initial_structure.npz` 上输出 `trajectory.npy` / `.xyz` / `run_metadata.json`。
 
 推理输出文件：`trajectory.npy`（初始帧 + 25 步）、`trajectory.xyz`、`run_metadata.json`。
 
