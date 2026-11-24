@@ -141,8 +141,8 @@ python structure_generation/sample.py --model_name=flowmol3 --sampler=MolecularS
 The registered GEOM checkpoint has a different architecture and cannot replace
 that QM9 checkpoint. For custom QM9 sampling, replace `--model_name` with
 `--config_path` and `--checkpoint_path`, and append `Dataset.train=null`.
-Local YAML configurations select `MolecularSampler`; registered models select
-the sampler through `--sampler`. Samples are saved as
+Both local configurations and registered models select `MolecularSampler`
+through `--sampler`. Samples are saved as
 `results/flowmol_samples.sdf` by default. `--input_path` overrides the sampling
 dataset path when the selected dataset accepts a path.
 

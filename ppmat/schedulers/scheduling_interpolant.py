@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+
 import paddle
 
 
@@ -27,7 +29,8 @@ class InterpolantScheduler:
         feature_names (list): Feature names in interpolation order.
         schedule_type (str | dict): A single schedule name applied to every
             feature, or a per-feature mapping of ``"cosine"``/``"linear"``.
-        cosine_params (dict): ``nu`` exponent of every cosine-scheduled feature.
+        cosine_params (dict): Finite ``nu >= 0.5`` for every cosine-scheduled
+            feature, ensuring a finite right derivative at t=0.
     """
 
     supported_schedule_types = ["cosine", "linear"]
@@ -38,26 +41,34 @@ class InterpolantScheduler:
         schedule_type,
         cosine_params: dict,
     ):
-        self.feature_names = feature_names
+        self.feature_names = list(feature_names)
 
         if not isinstance(schedule_type, (str, dict)):
             raise ValueError("schedule_type must be a string or a dictionary")
 
         if isinstance(schedule_type, str):
-            if schedule_type not in self.supported_schedule_types:
-                raise ValueError(f"unsupported schedule_type: {schedule_type}")
             self.schedule_dict = {feat: schedule_type for feat in self.feature_names}
         else:
             for feat in self.feature_names:
                 if feat not in schedule_type:
                     raise ValueError(f"must specify schedule_type for feature {feat}")
-            self.schedule_dict = schedule_type
+            self.schedule_dict = {
+                feat: schedule_type[feat] for feat in self.feature_names
+            }
 
-        self.cosine_params = cosine_params
+        self.cosine_params = dict(cosine_params)
 
         for feat, feat_schedule_type in self.schedule_dict.items():
-            if feat_schedule_type == "cosine" and feat not in self.cosine_params:
-                raise ValueError(f"must specify cosine_params for feature {feat}")
+            if feat_schedule_type not in self.supported_schedule_types:
+                raise ValueError(f"unsupported schedule_type: {feat_schedule_type}")
+            if feat_schedule_type == "cosine":
+                if feat not in self.cosine_params:
+                    raise ValueError(f"must specify cosine_params for feature {feat}")
+                nu = self.cosine_params[feat]
+                if not math.isfinite(nu) or nu < 0.5:
+                    raise ValueError(
+                        f"cosine_params for feature {feat} must be finite and >= 0.5"
+                    )
 
     def alpha_t(self, t: paddle.Tensor) -> paddle.Tensor:
         per_feat_alpha = []
@@ -89,13 +100,19 @@ class InterpolantScheduler:
 
     def cosine_alpha_t(self, t: paddle.Tensor, nu) -> paddle.Tensor:
         t = t.unsqueeze(-1)
-        return 1 - paddle.cos(paddle.pi * 0.5 * paddle.pow(t, nu)).square()
+        return paddle.sin(paddle.pi * 0.5 * paddle.pow(t, nu)).square()
 
     def cosine_alpha_t_prime(self, t: paddle.Tensor, nu) -> paddle.Tensor:
-        t = paddle.clip(t, min=1e-9)
         t = t.unsqueeze(-1)
-        sin_input = paddle.pi * paddle.pow(t, nu)
-        return paddle.pi * 0.5 * paddle.sin(sin_input) * nu * paddle.pow(t, nu - 1)
+        # The sinc form evaluates the right derivative at zero without clipping.
+        alpha_t_prime = (
+            paddle.pi**2
+            * 0.5
+            * nu
+            * paddle.pow(t, 2 * nu - 1)
+            * paddle.sinc(paddle.pow(t, nu))
+        )
+        return paddle.where(t == 1, paddle.zeros_like(t), alpha_t_prime)
 
     def linear_alpha_t(self, t: paddle.Tensor) -> paddle.Tensor:
         return t.unsqueeze(-1)

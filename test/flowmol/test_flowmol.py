@@ -279,6 +279,95 @@ def test_train_data_pipeline_feeds_forward(tmp_path, fake_atom_p):
     )
 
 
+def test_mixed_interpolation_training_and_sampling():
+    scheduler_config = {
+        "__class_name__": "InterpolantScheduler",
+        "__init_params__": {
+            "schedule_type": {
+                "positions": "cosine",
+                "atom_types": "linear",
+                "atom_charges": "cosine",
+                "bond_types": "cosine",
+            },
+            "cosine_params": {
+                "positions": 2.0,
+                "atom_charges": 0.5,
+                "bond_types": 0.75,
+            },
+        },
+    }
+    model = _build_model(interpolant_scheduler_config=scheduler_config)
+    scheduler = model.interpolant_scheduler
+    for dtype in ("float32", "float64"):
+        t = paddle.to_tensor([0.0, 1e-4, 0.01, 0.3, 0.7, 1.0], dtype=dtype)
+        times = t.numpy().astype("float64")
+        expected = np.stack(
+            [
+                np.sin(np.pi * 0.5 * times**2) ** 2,
+                times,
+                np.sin(np.pi * 0.5 * times**0.5) ** 2,
+                np.sin(np.pi * 0.5 * times**0.75) ** 2,
+            ],
+            axis=1,
+        )
+        np.testing.assert_allclose(
+            scheduler.alpha_t(t).numpy(), expected, rtol=1e-5, atol=0
+        )
+        derivative = scheduler.alpha_t_prime(t).numpy()
+        assert np.isfinite(derivative).all()
+        np.testing.assert_allclose(derivative[0], [0, 1, np.pi**2 / 4, 0])
+        np.testing.assert_array_equal(derivative[-1], [0, 1, 0, 0])
+
+        interior = t[1:-1].detach()
+        interior.stop_gradient = False
+        gradient = paddle.grad(scheduler.alpha_t(interior).sum(), interior)[0]
+        np.testing.assert_allclose(
+            scheduler.alpha_t_prime(interior).sum(axis=1).numpy(),
+            gradient.numpy(),
+            rtol=1e-5,
+        )
+
+    batch = _build_batch([4, 5])
+    optimizer = paddle.optimizer.Adam(learning_rate=1e-3, parameters=model.parameters())
+    loss = model(batch)["loss_dict"]["loss"]
+    assert np.isfinite(float(loss))
+    loss.backward()
+    assert all(
+        parameter.grad is not None and np.isfinite(parameter.grad.numpy()).all()
+        for parameter in model.parameters()
+    )
+    optimizer.step()
+    assert all(np.isfinite(parameter.numpy()).all() for parameter in model.parameters())
+    result = model.sample(batch, num_inference_steps=4)["pred"]
+    _assert_molecule_dicts(result, paddle.to_tensor([4, 5]))
+    assert all(np.isfinite(molecule["positions"]).all() for molecule in result)
+
+    params = scheduler_config["__init_params__"]
+    for schedule_type in (
+        "unsupported",
+        {**params["schedule_type"], "positions": "unsupported"},
+        {"positions": "linear"},
+    ):
+        with pytest.raises(ValueError, match="schedule_type"):
+            _build_model(
+                interpolant_scheduler_config={
+                    **scheduler_config,
+                    "__init_params__": {**params, "schedule_type": schedule_type},
+                }
+            )
+    for nu in (0.0, 0.25, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="finite and >= 0.5"):
+            _build_model(
+                interpolant_scheduler_config={
+                    **scheduler_config,
+                    "__init_params__": {
+                        **params,
+                        "cosine_params": {**params["cosine_params"], "positions": nu},
+                    },
+                }
+            )
+
+
 def test_ctmc_ignore_semantics():
     """Regression test: already-unmasked nodes must be ignored in the loss."""
     model = _build_model()
@@ -361,9 +450,6 @@ def test_sampling_framework_end_to_end(tmp_path, monkeypatch):
     )
     config.Model.__init_params__.default_n_timesteps = 4
     config.Sampler.data.dataset.__init_params__.path = "???"
-    config.Sampler.__init_params__.config_overrides = [
-        "Sampler.data.dataset.__init_params__.total_num=3"
-    ]
     config.Sampler.input_reference = "${Sampler.data.dataset.__init_params__.path}"
     sampler_config_path = tmp_path / "sampler_config.yaml"
     OmegaConf.save(config, str(sampler_config_path))
@@ -413,18 +499,19 @@ def test_sampling_framework_end_to_end(tmp_path, monkeypatch):
 
     cli_args = [
         "sample.py",
+        "--sampler=MolecularSampler",
         f"--config_path={sampler_config_path}",
         f"--checkpoint_path={checkpoint_path}",
         f"--input_path={input_name}",
         f"--output_path={tmp_path / 'cli'}",
-        *[value for value in overrides if "total_num=" not in value],
+        *overrides,
     ]
     monkeypatch.setattr(sys, "argv", [*cli_args, "--mode=by_dataloader"])
     sampling_cli.main()
     cli_samples = Chem.SDMolSupplier(
         str(tmp_path / "cli" / "flowmol_samples.sdf"), sanitize=False
     )
-    assert len(cli_samples) == 3
+    assert len(cli_samples) == 4
 
     monkeypatch.setattr(sys, "argv", cli_args)
     with pytest.raises(SystemExit) as error:
