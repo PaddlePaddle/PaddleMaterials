@@ -25,14 +25,14 @@
 | `positions_{temp}K.npz` | 各温度下的轨迹帧，键为轨迹名，值为 `(T, N, 3)` 的坐标数组 |
 | `atomic_numbers.npy` | 键为轨迹名、值为该轨迹各原子原子序数 `(N,)` 的字典 |
 | `lattice.npy` | 键为轨迹名、值为 `(3, 3)` 晶格的字典 |
-| `element_index.npy` | 长度 18 的元素查找表，`element_index[Z]` 把原子序数映射为训练时的元素索引 |
+| `element_index.npy` | 长度 93 的全局元素查找表，`element_index[Z]` 把原子序数映射为训练时的元素索引；稀有气体位置为 `-1`（不参与训练），有效索引共 77 个 |
 
 原版按温度索引轨迹（每个温度单独一个文件），转为本仓库 CSV 的规则：
 
 - 同一温度下的所有轨迹写入同一个 `positions_{temp}K.npz`，`temp` 列记录该行温度。
 - `t_start` / `t_end` 是该行在轨迹帧数组中的起止索引，即时间延迟帧对；`prior_Li` / `prior_frame` 选择 Maxwell-Boltzmann 先验帧。
 - 拓扑信息（原子数、元素序数、晶格）不随温度变化，按轨迹名存入 `atomic_numbers.npy` / `lattice.npy`。
-- `element_index.npy` 与 checkpoint 训练时一致：Li(Z=3)→2、O(Z=8)→7、P(Z=15)→14。随仓库提供的 `example_data/initial_structure.npz` 中 `atomic_numbers=[3,8,3,8]` 查表得元素索引 `[2,7,2,7]`，与训练 fixture 的表完全一致。
+- `element_index.npy` 与 checkpoint 训练时一致：Li(Z=3)→1、O(Z=8)→6、P(Z=15)→12；该表以原子序数 `Z` 直接索引，不是压缩后的 18 槽位表。随仓库提供的 `example_data/initial_structure.npz` 中 `atomic_numbers=[3,8,3,8]` 查表得元素索引 `[1,6,1,6]`，与官方 Zenodo 数据表一致。
 
 划分规则：按整条轨迹分配（一条轨迹只出现在一个 split），同一轨迹的帧不会跨 split，避免帧泄漏；`seed=42`，validation 对每行用 `default_rng(seed + row_idx)` 确定性抽取 `num_validation_times` 个流时间。
 
@@ -44,7 +44,7 @@
 
 共 6 条轨迹（`train_a/b/c`、`val_a/b`、`test_a`），每条 120 帧；`train_c` 含 5 个原子（其余 3–4 个原子）用于覆盖不同原子数。
 
-完整训练数据（论文中的 800 K 等温度数据集）未随仓库发布。复现完整训练需先按上表规则整理上游数据，放入 `data/liflow/`；在此之前可用 `dataset_mini` 做加载与最小训练验证。
+官方数据与划分来自 LiFlow 仓库 `learningmatter-mit/liflow`（commit `e6fc475`）和 Zenodo 记录 `10.5281/zenodo.14889658`；LGPS 1400 K 轨迹使用上游 `data/LGPS` 中的测试输入与 `train.csv` / `val.csv` / `test.csv`，本仓库不重新划分。完整训练数据集较大，按官方来源下载后放入 `data/liflow/`；`dataset_mini` 仅用于加载与最小训练验证，不代表论文规模训练。
 
 采样策略：propagator 保留时间延迟帧对采样与自适应 Maxwell-Boltzmann 先验；corrector 保留单帧加噪采样，先验为 `UniformScaleNormalPrior(0.25)` 与 `MaxwellBoltzmannPrior(0.1)`。
 
@@ -75,7 +75,7 @@ loss      = mean_nodes( sum_xyz( (v_pred - v_target)^2 ) )
 | Paddle / PyTorch 数值对齐（模型输出） | `reference_model.npz`（PyTorch 2.5.1+cpu） | rtol=1e-5, atol=1e-6 | 通过 |
 | Paddle / PyTorch 数值对齐（中间层） | `reference_layers.npz` | rtol=2e-4, atol=2e-5 | 通过 |
 | 单元测试 | `test/fixtures/liflow/` | `pytest test/test_liflow_*.py` | 86 passed, 2 skipped |
-| 轨迹评估（完整数据集 MSD / RDF） | 未随仓库发布 | — | 待补 |
+| 真实数据推理（LGPS 1400 K 小样本） | 官方公开权重 `liflow_universal.zip`，Zenodo LGPS 官方初始结构与 `positions_1400K.npz` / `lattice.npy` / `element_index.npy` | 200 原子体系 5 步积分，轨迹数值全部有限 | 通过（小样本，非完整复现） |
 
 推理输出文件：`trajectory.npy`（初始帧 + 25 步）、`trajectory.xyz`、`run_metadata.json`。
 
@@ -85,7 +85,7 @@ loss      = mean_nodes( sum_xyz( (v_pred - v_target)^2 ) )
 wget https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/molecular_dynamics_integrator/liflow/liflow_universal.zip
 ```
 
-包内为 `liflow_universal.yaml` 与 `checkpoints/best.pdparams`、`checkpoints/best.json`。注意当前 BCE 上的权重包条目使用 Windows 反斜杠路径，下载解包逻辑已按安全规则展开（实测通过）；后续由维护者重新打包为斜杠条目后此兼容仍保留但不再触发。
+包内为 `liflow_universal.yaml` 与 `checkpoints/best.pdparams`、`checkpoints/best.json`，条目均为正斜杠路径；替换包的 SHA256 为 `416a490db8371762cf201b1bf58e8cb68170d8bb2e8d7d1ba2fce9ac40f2342e`。
 
 ### Training
 
@@ -117,7 +117,23 @@ python molecular_dynamics_integrator/predict.py -c molecular_dynamics_integrator
 # 可选参数：--temperature <K> --steps <n> --flow_steps <n> --solver <euler|heun> --seed <int>
 ```
 
-MSD / RDF 评估使用 `molecular_dynamics_integrator/liflow/run_universal_evaluation.py` 对预测轨迹与参考轨迹计算均方位移和径向分布函数（需完整数据集，当前未提供数据，结果待补）。
+MSD / RDF 评估使用 `molecular_dynamics_integrator/liflow/run_universal_evaluation.py` 对预测轨迹与参考轨迹计算均方位移和径向分布函数；当前结果为 LGPS 1400 K 官方测试帧上的小样本对比，不代表论文全量复现。
+
+## CINN execution
+
+`LiFlow` 本身不产生力或应力，因此没有 `paddle.grad` 需要跨编译边界拆分：用 `Execution.backend=cinn` 前向只需默认的 SOT 单次捕获即可。三个配置默认都是 eager 后端，因为训练时原子数与边数在每个 batch 之间都会变化，静态编译的收益不稳定。
+
+如需在推理配置上切到 CINN：
+
+```yaml
+Execution:
+  backend: cinn
+  __init_params__:
+    full_graph: false       # 默认；单次前向边界
+    dynamic_shape: true     # develop 默认；按首见形状编译并缓存
+```
+
+实测行为（`test/test_liflow_cinn_workflows.py`）：编译缓存按后端模式只编译一次、重复调用复用；`state_dict` 键名与 eager 一致，预训练权重可直接加载。LiFlow 权重包未纳入 CINN benchmark 矩阵（与 `infgcn_*` 同样只发布权重）。详见 [CINN execution backend](../../../docs/cinn.md)。
 
 ## License
 

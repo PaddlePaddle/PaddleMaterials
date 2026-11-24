@@ -79,8 +79,6 @@ def _load_element_index(element_index) -> np.ndarray | None:
     array = array.astype(np.int64).reshape([-1])
     if array.size == 0:
         raise ValueError("element_index must not be empty.")
-    if array.min() < 0:
-        raise ValueError("element_index must be non-negative.")
     return array
 
 
@@ -206,7 +204,13 @@ class IntegratorPredictor:
                 f"element_index has {self.element_index.size} entries but the "
                 f"input contains Z={max_z}."
             )
-        return self.element_index[atomic_numbers]
+        elements = self.element_index[atomic_numbers]
+        if np.any(elements < 0):
+            bad_z = np.asarray(atomic_numbers)[elements < 0]
+            raise ValueError(
+                f"element_index has no valid embedding for Z={sorted(set(bad_z.tolist()))}."
+            )
+        return elements
 
     def _sample_prior(
         self,
