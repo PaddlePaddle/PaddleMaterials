@@ -74,8 +74,8 @@ loss      = mean_nodes( sum_xyz( (v_pred - v_target)^2 ) )
 | 推理跑通（公开权重） | `liflow_universal.zip`，空权重缓存 | 25 步轨迹 `(26, 4, 3)`，数值全部有限 | 通过 |
 | Paddle / PyTorch 数值对齐（模型输出） | `reference_model.npz`（PyTorch 2.5.1+cpu） | rtol=1e-5, atol=1e-6 | 通过 |
 | Paddle / PyTorch 数值对齐（中间层） | `reference_layers.npz` | rtol=2e-4, atol=2e-5 | 通过 |
-| 单元测试 | `test/fixtures/liflow/` | `pytest test/test_liflow_*.py` | 86 passed, 2 skipped |
-| 真实数据推理（LGPS 1400 K 小样本） | 官方公开权重 `liflow_universal.zip`，Zenodo LGPS 官方初始结构与 `positions_1400K.npz` / `lattice.npy` / `element_index.npy` | 200 原子体系 5 步积分，轨迹数值全部有限 | 通过（小样本，非完整复现） |
+| 单元测试 | `test/fixtures/liflow/` | `pytest test/test_liflow_*.py test/test_save_load.py test/test_cinn_benchmark_scripts.py` | 94 passed, 2 skipped |
+| 真实数据推理与上游数值对齐（LGPS 1400 K 小样本） | 官方公开权重 `liflow_universal.zip` + 上游 `ckpt/P_universal.ckpt`，Zenodo LGPS 官方初始结构、`positions_1400K.npz` / `lattice.npy` / `element_index.npy` | 200 原子体系 5 步积分；`max|Δr| = 2.64e-4 Å`，MSD(Li) 7.6324315(Paddle) vs 7.6324291(PyTorch) | 通过（小样本，非完整复现） |
 
 推理输出文件：`trajectory.npy`（初始帧 + 25 步）、`trajectory.xyz`、`run_metadata.json`。
 
