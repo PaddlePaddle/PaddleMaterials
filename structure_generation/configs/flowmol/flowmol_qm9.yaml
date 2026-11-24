@@ -229,7 +229,6 @@ Dataset:
         batch_size: 128
 
 Sampler:
-  save_samples: True
   data:
     dataset:
       __class_name__: FlowMolSamplingDataset

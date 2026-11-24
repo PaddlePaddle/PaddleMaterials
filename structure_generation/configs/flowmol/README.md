@@ -142,9 +142,18 @@ The registered GEOM checkpoint has a different architecture and cannot replace
 that QM9 checkpoint. For custom QM9 sampling, replace `--model_name` with
 `--config_path` and `--checkpoint_path`, and append `Dataset.train=null`.
 Both local configurations and registered models select `MolecularSampler`
-through `--sampler`. Samples are saved as
-`results/flowmol_samples.sdf` by default. `--input_path` overrides the sampling
-dataset path when the selected dataset accepts a path.
+through `--sampler`. The CLI runs sampling without exporting SDF files.
+`--input_path` overrides the sampling dataset path when the selected dataset
+accepts a path. To export samples in Python, use the existing sampler and call
+FlowMol's export method explicitly:
+
+```python
+from ppmat.sampler import MolecularSampler
+
+sampler = MolecularSampler(model_name="flowmol3")
+sampler.sample_by_dataloader(save_path="results")
+sampler.model.save_samples(sampler.last_samples["pred"], sampler.output_dir)
+```
 
 Legacy configurations must use `InterpolantScheduler`. Legacy weights with
 `separate_mol_updaters=True` and `convs_per_update=1` must omit the unused

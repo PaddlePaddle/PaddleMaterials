@@ -473,6 +473,7 @@ def test_sampling_framework_end_to_end(tmp_path, monkeypatch):
     sampled_num_atoms = sampler._sample_loader.dataset.sampled_num_atoms
     _assert_molecule_dicts(results["pred"], paddle.to_tensor(sampled_num_atoms))
 
+    sampler.model.save_samples(results["pred"], sampler.output_dir)
     saved = Chem.SDMolSupplier(
         str(tmp_path / "out" / "flowmol_samples.sdf"),
         sanitize=False,
@@ -481,10 +482,14 @@ def test_sampling_framework_end_to_end(tmp_path, monkeypatch):
     assert len(saved) == 4
     assert all(molecule is not None for molecule in saved)
 
-    sampler.sample_config.pop("save_samples")
-    sampler.sample_by_dataloader(save_path=str(tmp_path / "disabled"))
-    assert not (tmp_path / "disabled" / "flowmol_samples.sdf").exists()
+    cli_samplers = []
 
+    def capture_sampler(**kwargs):
+        instance = MolecularSampler(**kwargs)
+        cli_samplers.append(instance)
+        return instance
+
+    monkeypatch.setattr(sampling_cli, "MolecularSampler", capture_sampler)
     cli_args = [
         "sample.py",
         "--sampler=MolecularSampler",
@@ -496,10 +501,8 @@ def test_sampling_framework_end_to_end(tmp_path, monkeypatch):
     ]
     monkeypatch.setattr(sys, "argv", [*cli_args, "--mode=by_dataloader"])
     sampling_cli.main()
-    cli_samples = Chem.SDMolSupplier(
-        str(tmp_path / "cli" / "flowmol_samples.sdf"), sanitize=False
-    )
-    assert len(cli_samples) == 4
+    assert len(cli_samplers[0].last_samples["pred"]) == 4
+    assert not (tmp_path / "cli" / "flowmol_samples.sdf").exists()
 
     monkeypatch.setattr(sys, "argv", cli_args)
     with pytest.raises(SystemExit) as error:
@@ -558,14 +561,17 @@ def test_registered_sampling_framework_end_to_end(tmp_path, monkeypatch):
     sampler.metric_modules = {"count": SampleCountMetric()}
     metrics = sampler.compute_metric(save_path=str(tmp_path / "metrics"))
     assert metrics == {"sample_count": 2}
-    saved = Chem.SDMolSupplier(
-        str(tmp_path / "metrics" / "flowmol_samples.sdf"), sanitize=False
-    )
-    assert len(saved) == 2
+    assert len(sampler.last_samples["pred"]) == 2
+    assert not (tmp_path / "metrics" / "flowmol_samples.sdf").exists()
 
-    sampler.rank = 1
-    sampler.sample_by_dataloader(save_path=str(tmp_path / "other_rank"))
-    assert not (tmp_path / "other_rank" / "flowmol_samples.sdf").exists()
+    cli_samplers = []
+
+    def capture_sampler(**kwargs):
+        instance = MolecularSampler(**kwargs)
+        cli_samplers.append(instance)
+        return instance
+
+    monkeypatch.setattr(sampling_cli, "MolecularSampler", capture_sampler)
 
     monkeypatch.setattr(
         sys,
@@ -582,10 +588,8 @@ def test_registered_sampling_framework_end_to_end(tmp_path, monkeypatch):
     )
     sampling_cli.main()
     assert downloads == [package_url, package_url]
-    saved = Chem.SDMolSupplier(
-        str(tmp_path / "registered_cli" / "flowmol_samples.sdf"), sanitize=False
-    )
-    assert len(saved) == 2
+    assert len(cli_samplers[0].last_samples["pred"]) == 2
+    assert not (tmp_path / "registered_cli" / "flowmol_samples.sdf").exists()
 
 
 def test_integrate_feeds_evolving_state_to_network():

@@ -514,8 +514,6 @@ class MolecularSampler:
                         else f" | {k}(metric): {v:.5f}"
                     )
             logger.info(msg)
-        if self.rank == 0 and self.sample_config.get("save_samples", False):
-            self.model.save_samples(self.last_samples["pred"], self.output_dir)
         return metric_dict if self.metric_modules else self.last_samples
 
     @paddle.no_grad()

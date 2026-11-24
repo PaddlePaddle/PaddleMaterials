@@ -67,7 +67,6 @@ Model:
     runtime_options: null
 
 Sampler:
-  save_samples: True
   data:
     dataset:
       __class_name__: FlowMol3GeomSamplingDataset
