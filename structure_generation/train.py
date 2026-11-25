@@ -23,6 +23,7 @@ from omegaconf import OmegaConf
 from ppmat.datasets import build_dataloader
 from ppmat.datasets import set_signal_handlers
 from ppmat.metrics import build_metric
+from ppmat.metrics.streaming_base import StreamingMetricBase
 from ppmat.models import build_model
 from ppmat.optimizer import build_optimizer
 from ppmat.trainer.base_trainer import BaseTrainer
@@ -122,11 +123,22 @@ if __name__ == "__main__":
         optimizer, lr_scheduler = None, None
 
     # build metric from config
-    metric_cfg = config.get("Metric")
-    if metric_cfg is not None:
-        metric_func = build_metric(metric_cfg)
-    else:
-        metric_func = None
+    metric_func = build_metric(config.get("Metric"))
+    streaming_metrics = None
+    if isinstance(metric_func, StreamingMetricBase):
+        streaming_metrics, metric_func = metric_func, None
+    elif isinstance(metric_func, dict):
+        streaming_metrics = {
+            name: metric
+            for name, metric in metric_func.items()
+            if isinstance(metric, StreamingMetricBase)
+        }
+        if streaming_metrics:
+            metric_func = {
+                name: metric
+                for name, metric in metric_func.items()
+                if name not in streaming_metrics
+            } or None
 
     # # initialize trainer
     trainer = BaseTrainer(
@@ -139,6 +151,7 @@ if __name__ == "__main__":
         compute_metric_func_dict=metric_func,
         execution_config=config.get("Execution"),
     )
+    trainer.attach_metrics(streaming_metrics, model=model)
 
     if config["Global"].get("do_train", True):
         trainer.train()

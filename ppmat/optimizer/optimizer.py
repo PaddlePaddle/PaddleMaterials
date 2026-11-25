@@ -481,21 +481,42 @@ class OptimizerList:
 
     Args:
         optimizer_list (Tuple[optim.Optimizer, ...]): Optimizers listed in a tuple.
+        group_names (Tuple[str, ...]): Names for configured optimizer groups.
+        clip_norm_global (Optional[float]): Joint gradient norm limit.
+        clip_parameters (Tuple[paddle.Tensor, ...]): Unique parameters to clip.
     """
 
-    def __init__(self, optimizer_list: Tuple[optim.Optimizer, ...]):
+    def __init__(
+        self,
+        optimizer_list: Tuple[optim.Optimizer, ...],
+        *,
+        group_names: Tuple[str, ...] = (),
+        clip_norm_global: Optional[float] = None,
+        clip_parameters: Tuple[paddle.Tensor, ...] = (),
+    ):
         super().__init__()
         self._opt_list = optimizer_list
+        self.group_names = group_names
+        self._clip_norm_global = clip_norm_global
+        self._clip_parameters = clip_parameters
+        self.last_grad_norm = None
         if "LBFGS" in set(misc.typename(opt) for opt in optimizer_list):
             raise ValueError("LBFGS is not supported in OptimizerList yet.")
 
     def step(self):
+        if self._clip_norm_global is not None:
+            self.last_grad_norm = nn.utils.clip_grad_norm_(
+                self._clip_parameters, self._clip_norm_global
+            )
         for opt in self._opt_list:
             opt.step()
 
     def clear_grad(self):
         for opt in self._opt_list:
-            opt.clear_grad()
+            if self.group_names:
+                opt.clear_grad(set_to_zero=False)
+            else:
+                opt.clear_grad()
 
     def get_lr(self) -> float:
         """Return learning rate of first optimizer"""

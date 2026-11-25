@@ -35,6 +35,8 @@ from paddle.distributed import fleet
 from paddle.distributed.fleet.utils import hybrid_parallel_util as hpu
 from paddle.optimizer.lr import ReduceOnPlateau
 
+from ppmat.optimizer.lr_scheduler import SchedulerList
+from ppmat.optimizer.optimizer import OptimizerList
 from ppmat.trainer.trainer_state import TrainerState
 from ppmat.trainer.utils import compute_batch_size
 from ppmat.trainer.utils import log_paddle_version
@@ -88,6 +90,11 @@ class BaseTrainer:
         self.val_dataloader = val_dataloader
         self.lr_scheduler = lr_scheduler
         self.compute_metric_func_dict = compute_metric_func_dict
+        self._validation_schedulers = (
+            lr_scheduler
+            if isinstance(lr_scheduler, SchedulerList) and lr_scheduler.by_epoch
+            else None
+        )
 
         self.config = config
         execution_config = execution_config or {}
@@ -135,6 +142,12 @@ class BaseTrainer:
         # environment
         self.rank = dist.get_rank()
         self.world_size = dist.get_world_size()
+        if (
+            isinstance(self.optimizer, OptimizerList)
+            and self.optimizer.group_names
+            and (self.use_amp or self.world_size > 1)
+        ):
+            raise ValueError("Grouped optimizers require single-device FP32 training.")
 
         # Keep the model as the sole checkpoint/optimizer owner. A runtime
         # backend selected by the Trainer must be exposed and validated by the
@@ -646,7 +659,17 @@ class BaseTrainer:
             ):
 
                 logs: OrderedDict[str, float] = {}
-                if self.optimizer is not None:
+                if (
+                    isinstance(self.optimizer, OptimizerList)
+                    and self.optimizer.group_names
+                ):
+                    for name, optimizer in zip(
+                        self.optimizer.group_names, self.optimizer
+                    ):
+                        logs[f"lr/{name}"] = optimizer.get_lr()
+                    if self.optimizer.last_grad_norm is not None:
+                        logs["grad_norm"] = self.optimizer.last_grad_norm.item()
+                elif self.optimizer is not None:
                     logs["lr"] = self.optimizer.get_lr()
                 for name, average_meter in time_info.items():
                     logs[name] = average_meter.val
@@ -711,6 +734,10 @@ class BaseTrainer:
                     visualdl_writer=self.visualdl_writer,
                     tensorboard_writer=self.tensorboard_writer,
                 )
+                if self._validation_schedulers is not None:
+                    self._validation_schedulers.step_on_validation(
+                        eval_loss_info, eval_metric_info
+                    )
                 if self._determine_best_metric(
                     loss_info, metric_info, eval_loss_info, eval_metric_info
                 ):
@@ -722,7 +749,11 @@ class BaseTrainer:
                         output_dir=self.output_dir,
                         prefix="best",
                     )
-                if self.lr_scheduler is not None and self.lr_scheduler.by_epoch:
+                if (
+                    self.lr_scheduler is not None
+                    and self.lr_scheduler.by_epoch
+                    and self._validation_schedulers is None
+                ):
                     if isinstance(self.lr_scheduler, ReduceOnPlateau):
                         indicator_groups = {
                             "train_loss": loss_info,
@@ -876,31 +907,8 @@ class BaseTrainer:
                 tensorboard_writer=self.tensorboard_writer,
             )
 
-            # save checkpoint when epoch is divisible by save_freq
-            if (
-                self.state.epoch % self.config["save_freq"] == 0
-                or self.state.epoch == self.config["max_epochs"]
-                or self.state.epoch == 1
-            ):
-                save_load.save_checkpoint(
-                    self.model,
-                    self.optimizer,
-                    self.state.to_dict(),
-                    self.scaler,
-                    output_dir=self.output_dir,
-                    prefix=f"epoch_{self.state.epoch}",
-                )
-
-            # Always save latest when training begins
-            save_load.save_checkpoint(
-                self.model,
-                self.optimizer,
-                self.state.to_dict(),
-                self.scaler,
-                output_dir=self.output_dir,
-                prefix="latest",
-                print_log=(self.state.epoch == 1),
-            )
+            if self._validation_schedulers is None:
+                self._save_epoch_checkpoints()
 
             # evaluate model when epoch is divisible by eval_freq
             if (
@@ -951,6 +959,10 @@ class BaseTrainer:
                 )
             else:
                 eval_loss_info, eval_metric_info = None, None
+            if self._validation_schedulers is not None and eval_loss_info is not None:
+                self._validation_schedulers.step_on_validation(
+                    eval_loss_info, eval_metric_info
+                )
             # save best model when best_metric is better than previous best_metric
             save_best_flag = (
                 self.eval_freq_steps is None
@@ -970,11 +982,15 @@ class BaseTrainer:
                     output_dir=self.output_dir,
                     prefix="best",
                 )
+            if self._validation_schedulers is not None:
+                self._save_epoch_checkpoints()
+
             # update learning rate by epoch
             if (
                 self.eval_freq_steps is None
                 and self.lr_scheduler is not None
                 and self.lr_scheduler.by_epoch
+                and self._validation_schedulers is None
             ):
                 if isinstance(self.lr_scheduler, ReduceOnPlateau):
                     if self.lr_scheduler.indicator == "train_loss":
@@ -1008,6 +1024,30 @@ class BaseTrainer:
                         self.lr_scheduler.step(metrics=indicator_value)
                 else:
                     self.lr_scheduler.step()
+
+    def _save_epoch_checkpoints(self):
+        if (
+            self.state.epoch % self.config["save_freq"] == 0
+            or self.state.epoch == self.config["max_epochs"]
+            or self.state.epoch == 1
+        ):
+            save_load.save_checkpoint(
+                self.model,
+                self.optimizer,
+                self.state.to_dict(),
+                self.scaler,
+                output_dir=self.output_dir,
+                prefix=f"epoch_{self.state.epoch}",
+            )
+        save_load.save_checkpoint(
+            self.model,
+            self.optimizer,
+            self.state.to_dict(),
+            self.scaler,
+            output_dir=self.output_dir,
+            prefix="latest",
+            print_log=(self.state.epoch == 1),
+        )
 
     def _determine_best_metric(
         self, train_loss_info, train_metric_info, eval_loss_info, eval_metric_info
@@ -1092,11 +1132,21 @@ class BaseTrainer:
         runtime_objs: dataset_infos / train_smiles / clip / ... forwarded uniformly
                     to each metric via metric.bind(...).
         """
-        from ppmat.metrics import build_metric as _build  # 惰性导入
+        from ppmat.metrics import build_metric
+        from ppmat.metrics.streaming_base import StreamingMetricBase
 
         if not metric_cfg:
             return
-        mods = _build(metric_cfg)
+        if isinstance(metric_cfg, StreamingMetricBase) or (
+            isinstance(metric_cfg, dict)
+            and all(
+                isinstance(metric, StreamingMetricBase)
+                for metric in metric_cfg.values()
+            )
+        ):
+            mods = metric_cfg
+        else:
+            mods = build_metric(metric_cfg)
         if isinstance(mods, dict):
             self.metric_modules = mods
         elif mods is not None:
