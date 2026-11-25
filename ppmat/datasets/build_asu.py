@@ -26,8 +26,6 @@ from fractions import Fraction
 from functools import partial
 from importlib.metadata import version
 from pathlib import Path
-from typing import Dict
-from typing import List
 from typing import Tuple
 
 import numpy as np
@@ -91,275 +89,6 @@ chemical_symbols = ["X"] + [
     Element.from_Z(atomic_number).symbol
     for atomic_number in range(1, ELEMENT_ENCODING_SIZE + 1)
 ]
-if len(chemical_symbols) != ELEMENT_ENCODING_SIZE + 1:
-    raise RuntimeError(
-        "chemical_symbols table size mismatch: "
-        f"{len(chemical_symbols)} != {ELEMENT_ENCODING_SIZE + 1}"
-    )
-
-# Space group number (1-230) -> Bravais lattice symbol. pymatgen's
-# SpaceGroup exposes crystal_system only ("triclinic"/"tetragonal" both
-# start with "t"), so the symbol table is written out explicitly and
-# verified below for full coverage and known symbols.
-spgroup_data = {
-    1: "aP",
-    2: "aP",
-    3: "mP",
-    4: "mP",
-    5: "mC",
-    6: "mP",
-    7: "mP",
-    8: "mC",
-    9: "mC",
-    10: "mP",
-    11: "mP",
-    12: "mC",
-    13: "mP",
-    14: "mP",
-    15: "mC",
-    16: "oP",
-    17: "oP",
-    18: "oP",
-    19: "oP",
-    20: "oC",
-    21: "oC",
-    22: "oF",
-    23: "oI",
-    24: "oI",
-    25: "oP",
-    26: "oP",
-    27: "oP",
-    28: "oP",
-    29: "oP",
-    30: "oP",
-    31: "oP",
-    32: "oP",
-    33: "oP",
-    34: "oP",
-    35: "oC",
-    36: "oC",
-    37: "oC",
-    38: "oA",
-    39: "oA",
-    40: "oA",
-    41: "oA",
-    42: "oF",
-    43: "oF",
-    44: "oI",
-    45: "oI",
-    46: "oI",
-    47: "oP",
-    48: "oP",
-    49: "oP",
-    50: "oP",
-    51: "oP",
-    52: "oP",
-    53: "oP",
-    54: "oP",
-    55: "oP",
-    56: "oP",
-    57: "oP",
-    58: "oP",
-    59: "oP",
-    60: "oP",
-    61: "oP",
-    62: "oP",
-    63: "oC",
-    64: "oC",
-    65: "oC",
-    66: "oC",
-    67: "oC",
-    68: "oC",
-    69: "oF",
-    70: "oF",
-    71: "oI",
-    72: "oI",
-    73: "oI",
-    74: "oI",
-    75: "tP",
-    76: "tP",
-    77: "tP",
-    78: "tP",
-    79: "tI",
-    80: "tI",
-    81: "tP",
-    82: "tI",
-    83: "tP",
-    84: "tP",
-    85: "tP",
-    86: "tP",
-    87: "tI",
-    88: "tI",
-    89: "tP",
-    90: "tP",
-    91: "tP",
-    92: "tP",
-    93: "tP",
-    94: "tP",
-    95: "tP",
-    96: "tP",
-    97: "tI",
-    98: "tI",
-    99: "tP",
-    100: "tP",
-    101: "tP",
-    102: "tP",
-    103: "tP",
-    104: "tP",
-    105: "tP",
-    106: "tP",
-    107: "tI",
-    108: "tI",
-    109: "tI",
-    110: "tI",
-    111: "tP",
-    112: "tP",
-    113: "tP",
-    114: "tP",
-    115: "tP",
-    116: "tP",
-    117: "tP",
-    118: "tP",
-    119: "tI",
-    120: "tI",
-    121: "tI",
-    122: "tI",
-    123: "tP",
-    124: "tP",
-    125: "tP",
-    126: "tP",
-    127: "tP",
-    128: "tP",
-    129: "tP",
-    130: "tP",
-    131: "tP",
-    132: "tP",
-    133: "tP",
-    134: "tP",
-    135: "tP",
-    136: "tP",
-    137: "tP",
-    138: "tP",
-    139: "tI",
-    140: "tI",
-    141: "tI",
-    142: "tI",
-    143: "hP",
-    144: "hP",
-    145: "hP",
-    146: "hR",
-    147: "hP",
-    148: "hR",
-    149: "hP",
-    150: "hP",
-    151: "hP",
-    152: "hP",
-    153: "hP",
-    154: "hP",
-    155: "hR",
-    156: "hP",
-    157: "hP",
-    158: "hP",
-    159: "hP",
-    160: "hR",
-    161: "hR",
-    162: "hP",
-    163: "hP",
-    164: "hP",
-    165: "hP",
-    166: "hR",
-    167: "hR",
-    168: "hP",
-    169: "hP",
-    170: "hP",
-    171: "hP",
-    172: "hP",
-    173: "hP",
-    174: "hP",
-    175: "hP",
-    176: "hP",
-    177: "hP",
-    178: "hP",
-    179: "hP",
-    180: "hP",
-    181: "hP",
-    182: "hP",
-    183: "hP",
-    184: "hP",
-    185: "hP",
-    186: "hP",
-    187: "hP",
-    188: "hP",
-    189: "hP",
-    190: "hP",
-    191: "hP",
-    192: "hP",
-    193: "hP",
-    194: "hP",
-    195: "cP",
-    196: "cF",
-    197: "cI",
-    198: "cP",
-    199: "cI",
-    200: "cP",
-    201: "cP",
-    202: "cF",
-    203: "cF",
-    204: "cI",
-    205: "cP",
-    206: "cI",
-    207: "cP",
-    208: "cP",
-    209: "cF",
-    210: "cF",
-    211: "cI",
-    212: "cP",
-    213: "cP",
-    214: "cI",
-    215: "cP",
-    216: "cF",
-    217: "cI",
-    218: "cP",
-    219: "cF",
-    220: "cI",
-    221: "cP",
-    222: "cP",
-    223: "cP",
-    224: "cP",
-    225: "cF",
-    226: "cF",
-    227: "cF",
-    228: "cF",
-    229: "cI",
-    230: "cI",
-}
-
-if set(spgroup_data) != set(range(1, NUM_CRYSTALLOGRAPHIC_SPACE_GROUPS + 1)):
-    raise RuntimeError(
-        "spgroup_data must cover exactly space groups 1..230, got "
-        f"{len(spgroup_data)} entries."
-    )
-_unknown_symbols = set(spgroup_data.values()) - {
-    "aP",
-    "mP",
-    "mC",
-    "oP",
-    "oC",
-    "oF",
-    "oI",
-    "oA",
-    "tP",
-    "tI",
-    "hP",
-    "hR",
-    "cP",
-    "cF",
-    "cI",
-}
-if _unknown_symbols:
-    raise RuntimeError(
-        f"spgroup_data contains unknown lattice symbols: {_unknown_symbols}"
-    )
 
 
 VOCAB_NAME = "sgequidiff"
@@ -380,7 +109,7 @@ class EmbeddingTools:
                 "element vocabulary has "
                 f"{len(element_vectors)} rows, expected "
                 f"{ELEMENT_ENCODING_SIZE + 1} (index 0 placeholder + Z=1.."
-                f"{ELEMENT_ENCODING_SIZE - 1})"
+                f"{ELEMENT_ENCODING_SIZE})"
             )
         self.element_embedding_length = len(element_vectors[0])
         self.element_embedding_tensor = paddle.to_tensor(
@@ -400,7 +129,6 @@ class EmbeddingTools:
         asu_sites = vocab["asu_sites"]["data"]
 
         wyckoff_emb_list = []
-        n_wyckoffs_list = []
         for sg_num in range(1, NUM_CRYSTALLOGRAPHIC_SPACE_GROUPS + 1):
             wyckoff_dict_of_sg = wyckoff_dict[str(sg_num)]
             letters = list(wyckoff_dict_of_sg.keys())
@@ -440,12 +168,8 @@ class EmbeddingTools:
                 ]
             )
             wyckoff_emb_list.append(paddle.concat([emb_array, padding], axis=0))
-            n_wyckoffs_list.append(len(letters))
 
         self.wyckoff_embedding_tensor = paddle.stack(wyckoff_emb_list, axis=0)
-        self.n_wyckoffs_per_space_group = paddle.to_tensor(
-            n_wyckoffs_list, dtype=paddle.int64
-        )
 
     @paddle.no_grad()
     def get_space_group_embedding(
@@ -473,12 +197,10 @@ class EmbeddingTools:
     ) -> paddle.Tensor:
         """Get Wyckoff embedding by index and space group.
 
-        Callers must pass ``wyckoff_index`` values below
-        ``n_wyckoffs_per_space_group[space_group_index]`` (the model derives
-        its indices from ``valid_wyckoff_positions_mask``, which guarantees
-        this). Out-of-range indices read zero padding silently; the per-step
-        validity check was removed from this hot path to avoid a GPU sync on
-        every training step.
+        Callers must pass valid Wyckoff indices for the space group (the model
+        derives them from ``valid_wyckoff_positions_mask``). Out-of-range
+        indices read zero padding silently; the per-step validity check was
+        removed from this hot path to avoid a GPU sync on every training step.
         """
         return self.wyckoff_embedding_tensor[space_group_index, wyckoff_index, :]
 
@@ -501,62 +223,6 @@ MAX_GENERAL_WYCKOFF_OPS = 192
 
 # Fixed random vector keeps 1D hull equations reproducible across runs.
 _deterministic_random_vector = np.random.RandomState(0).rand(3)
-
-_identity = paddle.eye(3)
-
-
-def _transform_pair(
-    p: List[List[float]], inv_p: List[List[float]], scale: float = 1.0
-) -> Dict[str, paddle.Tensor]:
-    """Conventional -> primitive transform pair: ``P`` maps conventional
-    fractional coordinates onto the primitive cell, ``invP`` is its inverse."""
-    return {
-        "P": scale * paddle.to_tensor(p, dtype=paddle.float32),
-        "invP": paddle.to_tensor(inv_p, dtype=paddle.float32),
-    }
-
-
-# Face-centered (F) and body-centered (I) lattices need real transforms; every
-# other lattice (cP/tP/hP/oP/mP/aP) is already primitive and uses identity.
-_face_centered = _transform_pair(
-    [[-0.5, -0.5, 0.0], [-0.5, 0.0, -0.5], [0.0, -0.5, -0.5]],
-    [[-1.0, -1.0, 1.0], [-1.0, 1.0, -1.0], [1.0, -1.0, -1.0]],
-)
-_body_centered = _transform_pair(
-    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-0.5, -0.5, 0.5]],
-    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 2.0]],
-)
-
-conventional_to_primitive_transforms: dict = {
-    "cP": {"P": _identity, "invP": _identity},
-    "tP": {"P": _identity, "invP": _identity},
-    "hP": {"P": _identity, "invP": _identity},
-    "oP": {"P": _identity, "invP": _identity},
-    "mP": {"P": _identity, "invP": _identity},
-    "aP": {"P": _identity, "invP": _identity},
-    "cF": _face_centered,
-    "oF": _face_centered,
-    "cI": _body_centered,
-    "tI": _body_centered,
-    "oI": _body_centered,
-    "hR": _transform_pair(
-        [[-3.0, -3.0, 0.0], [-3.0, 0.0, 0.0], [-2.0, -1.0, -1.0]],
-        [[0.0, -1.0, 0.0], [-1.0, 1.0, 0.0], [1.0, 1.0, -3.0]],
-        scale=1.0 / 3.0,
-    ),
-    "oC": _transform_pair(
-        [[-0.5, -0.5, 0.0], [-0.5, 0.5, 0.0], [0.0, 0.0, -1.0]],
-        [[-1.0, -1.0, 0.0], [-1.0, 1.0, 0.0], [0.0, 0.0, -1.0]],
-    ),
-    "oA": _transform_pair(
-        [[0.0, -0.5, -0.5], [-1.0, 0.0, 0.0], [0.0, 0.5, -0.5]],
-        [[0.0, -1.0, 0.0], [-1.0, 0.0, 1.0], [-1.0, 0.0, -1.0]],
-    ),
-    "mC": _transform_pair(
-        [[0.0, 0.0, 1.0], [-1.0, 0.0, 0.0], [0.5, -0.5, 0.0]],
-        [[0.0, -1.0, 0.0], [0.0, -1.0, -2.0], [1.0, 0.0, 0.0]],
-    ),
-}
 
 
 def _load_wyckoff_sites_dict(wyckoffs_dict: dict) -> dict:
@@ -581,6 +247,7 @@ def _load_wyckoff_sites_dict(wyckoffs_dict: dict) -> dict:
                     faces.append(face_array)
                     face_tensors.append(paddle.to_tensor(face_array.astype("float32")))
                 site["vertices"] = faces
+                # Participates in the derived-asset cache digest.
                 site["vertices_tensors"] = face_tensors
 
             # JSON stores "dim" as a string; normalize in place.
@@ -612,7 +279,6 @@ class WyckoffGeometry:
         )
 
         self._build_symmetry_ops()
-        self._build_conventional_to_primitive_matrices()
         self._build_wyckoff_dimension_tensor()
         self._build_shape_projections()
         self._build_asu_hull_equations()
@@ -720,18 +386,6 @@ class WyckoffGeometry:
         self.padded_inverse_general_wyckoff_matrices = padded_inverse_matrices
         self.padded_general_wyckoff_translations = padded_translations
         self.padded_general_wyckoff_ops_mask = padded_ops_mask
-
-    def _build_conventional_to_primitive_matrices(self) -> None:
-        p_matrices = []
-        inv_p_matrices = []
-        for space_group_number in range(1, NUM_CRYSTALLOGRAPHIC_SPACE_GROUPS + 1):
-            bravais = spgroup_data[space_group_number]
-            p_matrices.append(conventional_to_primitive_transforms[bravais]["P"])
-            inv_p_matrices.append(conventional_to_primitive_transforms[bravais]["invP"])
-        self.conventional_to_primitive_P_matrices = paddle.stack(p_matrices, axis=0)
-        self.conventional_to_primitive_invP_matrices = paddle.stack(
-            inv_p_matrices, axis=0
-        )
 
     def _build_wyckoff_dimension_tensor(self) -> None:
         # -1 marks slots without a Wyckoff site of the space group.
@@ -1003,30 +657,13 @@ def load_wyckoff_shapes(geometry):
 
 
 def _to_array(region) -> np.ndarray:
-    """Convert vertex list to numpy array, supporting fraction strings like "1/2"."""
-    if isinstance(region, np.ndarray):
-        return region.astype(np.float64)
-    result = []
-    for pt in region:
-        if isinstance(pt, (list, tuple)):
-            coords = []
-            for c in pt:
-                if isinstance(c, str):
-                    coords.append(float(Fraction(c)))
-                else:
-                    coords.append(float(c))
-            result.append(coords)
-        else:
-            result.append([float(pt)])
-    return np.array(result, dtype=np.float64)
+    """Convert Wyckoff vertices to a float64 array."""
+    return np.asarray(region, dtype=np.float64)
 
 
 def _fan_triangulate_convex_polygon_3d(vertices_3d: np.ndarray):
     """Fan triangulation of convex polygon in 3D (from centroid)."""
     n = len(vertices_3d)
-    if n < 3:
-        return np.zeros((0, 3, 3), dtype=np.float64), np.zeros(0, dtype=np.float64)
-
     centroid = vertices_3d.mean(axis=0)
     triangles = []
     areas = []
@@ -1044,14 +681,7 @@ def _fan_triangulate_convex_polygon_3d(vertices_3d: np.ndarray):
 
 def _compute_3d_convex_hull_volume(vertices: np.ndarray) -> float:
     """Compute volume of a 3D convex polytope."""
-    if len(vertices) < 4:
-        return 0.0
-    try:
-        hull = ConvexHull(vertices)
-        return float(hull.volume)
-    except Exception:
-        # degenerate case (all points coplanar, etc.)
-        return 0.0
+    return float(ConvexHull(vertices).volume)
 
 
 def build_shape_decomp_dict(
@@ -1079,11 +709,8 @@ def build_shape_decomp_dict(
                 wyckoff_shapes_info = {"dim": 1, "volumes": []}
                 for interval in geometry["vertices"]:
                     arr = _to_array(interval)  # (2, 3)
-                    if arr.shape[0] >= 2:
-                        diff = arr[1] - arr[0]  # (3,)
-                        length = float(np.linalg.norm(diff))
-                    else:
-                        length = 0.0
+                    diff = arr[1] - arr[0]  # (3,)
+                    length = float(np.linalg.norm(diff))
                     wyckoff_shapes_info["volumes"].append(length)
 
             elif site_dim == 2:
@@ -1098,8 +725,7 @@ def build_shape_decomp_dict(
                 for facet in geometry["vertices"]:
                     arr = _to_array(facet)  # (n_v, 3)
                     triangles, areas = _fan_triangulate_convex_polygon_3d(arr)
-                    total_area = float(areas.sum()) if len(areas) > 0 else 0.0
-                    wyckoff_shapes_info["volumes"].append(total_area)
+                    wyckoff_shapes_info["volumes"].append(float(areas.sum()))
                     wyckoff_shapes_info["facet_triangles"].append(triangles)
                     wyckoff_shapes_info["facet_triangle_areas"].append(areas)
                     max_tri = max(max_tri, len(triangles))
@@ -1145,7 +771,6 @@ class BuildAsuCrystal:
     cache_version = 1
 
     def __init__(self, element_encoding_size: int, num_cpus: int = 1):
-        self.element_encoding_size = element_encoding_size
         self.num_cpus = num_cpus
 
         # Packed-layout offsets that depend on the element encoding size.

@@ -313,27 +313,25 @@ def _scale_composition_fingerprints(values):
 
 
 def get_matches(structure, alternatives, matcher):
-    """Indices and RMS distances of alternative structures matching ``structure``."""
-    matches, rms_dists = [], []
+    """Indices of alternative structures matching ``structure``."""
+    matches = []
     for idx, alt in enumerate(alternatives):
-        rms_dist = matcher.get_rms_dist(structure, alt)
-        if rms_dist is not None:
-            rms_dists.append(rms_dist[0])
+        if matcher.get_rms_dist(structure, alt) is not None:
             matches.append(idx)
-    return matches, rms_dists
+    return matches
 
 
 def get_unique_structures(structures, matcher):
-    """Return structurally unique structures (and their first-match indices)."""
+    """Return structurally unique structures."""
     unique_structures = []
     unique_structure_idxs = []
     for i, structure in enumerate(structures):
-        matches, _ = get_matches(structure, structures, matcher)
+        matches = get_matches(structure, structures, matcher)
         first_match = sorted(matches)[0] if matches else i
         if first_match not in unique_structure_idxs:
             unique_structure_idxs.append(first_match)
             unique_structures.append(structures[first_match])
-    return unique_structures, unique_structure_idxs
+    return unique_structures
 
 
 def get_chemsys(structure):
@@ -353,24 +351,21 @@ def get_novel_structures(structures, reference_structures, matcher):
     ]
 
     novel_structures = []
-    novel_structure_idxs = []
-    for i, (compare, structure) in enumerate(zip(gen_to_compare, structures)):
+    for compare, structure in zip(gen_to_compare, structures):
         if not compare:
             novel_structures.append(structure)
-            novel_structure_idxs.append(i)
 
-    for gen_idx, (compare, structure) in enumerate(zip(gen_to_compare, structures)):
+    for compare, structure in zip(gen_to_compare, structures):
         if not compare:
             continue
-        matches, _ = get_matches(structure, filtered_reference, matcher)
+        matches = get_matches(structure, filtered_reference, matcher)
         if len(matches) == 0:
             novel_structures.append(structure)
-            novel_structure_idxs.append(gen_idx)
 
-    return novel_structures, novel_structure_idxs
+    return novel_structures
 
 
-def compute_cov(crys, gt_crys, struc_cutoff, comp_cutoff, num_gen_crystals=None):
+def compute_cov(crys, gt_crys, struc_cutoff, comp_cutoff):
     """Coverage / matching metrics between generated and ground-truth crystals.
 
     Crystals lacking a valid structural OR composition fingerprint are
@@ -395,9 +390,6 @@ def compute_cov(crys, gt_crys, struc_cutoff, comp_cutoff, num_gen_crystals=None)
             "structural/composition fingerprints"
         )
 
-    if num_gen_crystals is None:
-        num_gen_crystals = len(struc_fps)
-
     comp_fps = _scale_composition_fingerprints(comp_fps)
     gt_comp_fps = _scale_composition_fingerprints(gt_comp_fps)
 
@@ -414,15 +406,12 @@ def compute_cov(crys, gt_crys, struc_cutoff, comp_cutoff, num_gen_crystals=None)
             struc_recall_dist <= struc_cutoff, comp_recall_dist <= comp_cutoff
         )
     )
-    cov_precision = (
-        np.sum(
-            np.logical_and(
-                struc_precision_dist <= struc_cutoff,
-                comp_precision_dist <= comp_cutoff,
-            )
+    cov_precision = np.sum(
+        np.logical_and(
+            struc_precision_dist <= struc_cutoff,
+            comp_precision_dist <= comp_cutoff,
         )
-        / num_gen_crystals
-    )
+    ) / len(struc_fps)
 
     return {
         "cov_recall": cov_recall,
@@ -556,13 +545,11 @@ class SGEQuiDiffMetric(StreamingMetricBase):
         uniqueness = 0.0
         novelty = 0.0
         if n_valid > 0:
-            unique, _ = get_unique_structures(valid_structs, self.matcher)
+            unique = get_unique_structures(valid_structs, self.matcher)
             uniqueness = len(unique) / n_valid
 
             gt_valid_structs = [c.structure for c in gt_crys if c.valid]
-            novel, _ = get_novel_structures(
-                valid_structs, gt_valid_structs, self.matcher
-            )
+            novel = get_novel_structures(valid_structs, gt_valid_structs, self.matcher)
             novelty = len(novel) / n_valid
 
         cov_metrics = compute_cov(

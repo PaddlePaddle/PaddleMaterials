@@ -20,7 +20,6 @@ import hashlib
 import json
 import math
 import pickle
-from contextlib import nullcontext
 from typing import Any
 from typing import Dict
 from typing import List
@@ -72,10 +71,9 @@ def sample_point_in_asu_wyckoff_site(
     wyckoff_letters: List[str],
     dictionary_of_wyckoffs_in_asu: dict,
     dictionary_of_wyckoff_shape_decompositions: dict,
+    hull_equations_3d: paddle.Tensor,
     n_samples_per_wyckoff: int = 1,
-    return_sampled_wyckoff_shape_indices: bool = False,
-    hull_equations_3d: Optional[paddle.Tensor] = None,
-) -> Union[paddle.Tensor, Tuple[paddle.Tensor, paddle.Tensor]]:
+) -> Tuple[paddle.Tensor, paddle.Tensor]:
     """Uniformly sample points in ASU Wyckoff sites."""
     random_samples_in_wyckoffs = []
     sampled_wyckoff_shape_indices = []
@@ -150,11 +148,7 @@ def sample_point_in_asu_wyckoff_site(
                 [0], dtype=paddle.int64
             ).expand([n_samples_per_wyckoff])
 
-        h_eq = (
-            hull_equations_3d[int(space_group_number) - 1]
-            if hull_equations_3d is not None
-            else None
-        )
+        h_eq = hull_equations_3d[int(space_group_number) - 1]
         sample_in_wyckoff = uniformly_sample_point_in_convex_shape(
             vertices=vertices,
             wyckoff_site_dimensionality=wyckoff_dof,
@@ -167,9 +161,7 @@ def sample_point_in_asu_wyckoff_site(
 
     random_samples_in_wyckoffs = paddle.stack(random_samples_in_wyckoffs, axis=0)
     sampled_wyckoff_shape_indices = paddle.stack(sampled_wyckoff_shape_indices, axis=0)
-    if return_sampled_wyckoff_shape_indices:
-        return random_samples_in_wyckoffs, sampled_wyckoff_shape_indices
-    return random_samples_in_wyckoffs
+    return random_samples_in_wyckoffs, sampled_wyckoff_shape_indices
 
 
 def is_inside(
@@ -317,24 +309,6 @@ def _scatter_min_indices(
     return result.cast(paddle.int64)
 
 
-def primitive_lattice_matrix_from_conventional_lattice_params(
-    space_group_indices: paddle.Tensor,
-    wyckoff_geometry: "WyckoffGeometry",
-    conventional_lattice_lengths: Optional[paddle.Tensor] = None,
-    conventional_lattice_angles: Optional[paddle.Tensor] = None,
-    conventional_lattice_matrix: Optional[paddle.Tensor] = None,
-) -> paddle.Tensor:
-    """Compute primitive lattice matrix from conventional lattice params."""
-    if conventional_lattice_matrix is None:
-        conventional_lattice_matrix = lattice_params_to_matrix_paddle(
-            conventional_lattice_lengths, conventional_lattice_angles
-        )
-    P_matrices = wyckoff_geometry.conventional_to_primitive_P_matrices[
-        space_group_indices
-    ]
-    return paddle.bmm(P_matrices, conventional_lattice_matrix)
-
-
 def _deduplicate_orbit_coords(
     coords: paddle.Tensor,
     orbit_sizes: paddle.Tensor,
@@ -367,19 +341,6 @@ def _deduplicate_orbit_coords(
     return paddle.unique(min_col_per_row), None
 
 
-class _ASUToPrimitiveResult(NamedTuple):
-    """Named result of batched ASU-to-primitive conversion."""
-
-    coords: paddle.Tensor
-    element_indices: paddle.Tensor
-    wyckoff_indices: paddle.Tensor
-    num_nodes_per_crystal: paddle.Tensor
-    lattice_matrix: paddle.Tensor
-    map_prim_to_asu: paddle.Tensor
-    node_is_original: Optional[paddle.Tensor]
-    asu_frac_coords_of_prim_atoms: paddle.Tensor
-
-
 class _SpaceGroupOpsResult(NamedTuple):
     """Named result of space-group operation expansion.
 
@@ -400,29 +361,15 @@ class _SpaceGroupOpsResult(NamedTuple):
     unique_non_overlapping_atom_indices: paddle.Tensor
 
 
-def batched_convert_asu_frac_coords_to_primitive_cartesian_coords(
+def expand_asu_frac_coords_to_conventional_coords(
     asu_frac_coords: paddle.Tensor,
-    asu_element_indices: paddle.Tensor,
-    asu_wyckoff_indices: paddle.Tensor,
     n_coords_per_asu: paddle.Tensor,
-    conventional_lattice_matrix: paddle.Tensor,
     space_group_indices: paddle.Tensor,
     wyckoff_geometry: "WyckoffGeometry",
-    return_cartesian_coords: bool = True,
-    return_node_is_original: bool = False,
-    map_frac_coords_to_0_1_unit_cell: bool = True,
-    get_primitive_cell: bool = True,
-) -> _ASUToPrimitiveResult:
+) -> Tuple[paddle.Tensor, paddle.Tensor]:
+    """Expand ASU fractional coordinates into de-duplicated conventional-cell
+    fractional coordinates, returning them with the conventional-to-ASU atom map.
     """
-    Batch expand ASU fractional coords to primitive cell Cartesian coords.
-    """
-    batch_size = n_coords_per_asu.shape[0]
-    num_asu_nodes_per_crystal = n_coords_per_asu
-
-    conventional_to_primitive_transformations = (
-        wyckoff_geometry.conventional_to_primitive_invP_matrices[space_group_indices]
-    )
-
     padded_gc_mats = wyckoff_geometry.padded_general_wyckoff_matrices[
         space_group_indices
     ]
@@ -439,9 +386,9 @@ def batched_convert_asu_frac_coords_to_primitive_cartesian_coords(
     def _repeat_interleave_along_asu(tensor_B_X):
         if tensor_B_X.dtype == paddle.bool:
             return paddle.repeat_interleave(
-                tensor_B_X.cast(paddle.int32), num_asu_nodes_per_crystal, axis=0
+                tensor_B_X.cast(paddle.int32), n_coords_per_asu, axis=0
             ).cast(paddle.bool)
-        return paddle.repeat_interleave(tensor_B_X, num_asu_nodes_per_crystal, axis=0)
+        return paddle.repeat_interleave(tensor_B_X, n_coords_per_asu, axis=0)
 
     padded_gc_mats = _repeat_interleave_along_asu(padded_gc_mats)
     padded_gc_trans = _repeat_interleave_along_asu(padded_gc_trans)
@@ -455,7 +402,7 @@ def batched_convert_asu_frac_coords_to_primitive_cartesian_coords(
     # orbit ASU atoms to conventional cell
     asu_multiplicity_per_asu_atom = (
         general_wyckoff_multiplicity_per_crystal.repeat_interleave(
-            num_asu_nodes_per_crystal, axis=0
+            n_coords_per_asu, axis=0
         )
     )
     asu_frac_coords_repeated = asu_frac_coords.repeat_interleave(
@@ -464,90 +411,20 @@ def batched_convert_asu_frac_coords_to_primitive_cartesian_coords(
 
     conventional_frac_coords = (
         paddle.bmm(asu_frac_coords_repeated, stacked_gc_mats) + stacked_gc_trans
-    )
-    if map_frac_coords_to_0_1_unit_cell:
-        conventional_frac_coords = conventional_frac_coords % 1.0
-
-    if get_primitive_cell:
-        stacked_c2p = paddle.repeat_interleave(
-            conventional_to_primitive_transformations,
-            num_asu_nodes_per_crystal * general_wyckoff_multiplicity_per_crystal,
-            axis=0,
-        )
-        primitive_frac_coords = paddle.bmm(
-            conventional_frac_coords, stacked_c2p
-        ).squeeze(1)
-    else:
-        primitive_frac_coords = conventional_frac_coords.reshape([-1, 3])
-
-    if map_frac_coords_to_0_1_unit_cell:
-        primitive_frac_coords = primitive_frac_coords % 1.0
-
-    map_node_to_crystal = paddle.arange(batch_size).repeat_interleave(
-        num_asu_nodes_per_crystal * general_wyckoff_multiplicity_per_crystal, axis=0
-    )
-
-    if return_node_is_original:
-        first_asu_atom_index_per_orbit = (
-            paddle.cumsum(asu_multiplicity_per_asu_atom, axis=0)
-            - asu_multiplicity_per_asu_atom
-        )
-        node_is_original = paddle.zeros(
-            [primitive_frac_coords.shape[0]], dtype=paddle.bool
-        )
-        node_is_original[first_asu_atom_index_per_orbit] = True
+    ) % 1.0
+    conventional_frac_coords = conventional_frac_coords.reshape([-1, 3])
 
     unique_non_overlapping_atom_indices, _ = _deduplicate_orbit_coords(
-        primitive_frac_coords, asu_multiplicity_per_asu_atom
+        conventional_frac_coords, asu_multiplicity_per_asu_atom
     )
-    primitive_frac_coords = primitive_frac_coords[unique_non_overlapping_atom_indices]
-    map_node_to_crystal = map_node_to_crystal[unique_non_overlapping_atom_indices]
-    if return_node_is_original:
-        node_is_original = node_is_original[unique_non_overlapping_atom_indices]
+    conventional_frac_coords = conventional_frac_coords[
+        unique_non_overlapping_atom_indices
+    ]
 
-    num_prim_nodes_per_crystal = scatter(
-        src=paddle.ones([map_node_to_crystal.shape[0]], dtype=paddle.int64),
-        index=map_node_to_crystal,
-        dim_size=batch_size,
-        reduce="sum",
-    )
-
-    map_prim_to_asu = paddle.arange(asu_frac_coords.shape[0]).repeat_interleave(
+    map_conventional_to_asu = paddle.arange(asu_frac_coords.shape[0]).repeat_interleave(
         asu_multiplicity_per_asu_atom, axis=0
     )[unique_non_overlapping_atom_indices]
-    primitive_wyckoff_indices = asu_wyckoff_indices[map_prim_to_asu]
-    primitive_element_indices = asu_element_indices[map_prim_to_asu]
-    asu_frac_coords_of_prim_atoms = asu_frac_coords[map_prim_to_asu]
-
-    primitive_lattice_matrix = None
-    if return_cartesian_coords or get_primitive_cell:
-        primitive_lattice_matrix = (
-            primitive_lattice_matrix_from_conventional_lattice_params(
-                space_group_indices=space_group_indices,
-                wyckoff_geometry=wyckoff_geometry,
-                conventional_lattice_matrix=conventional_lattice_matrix,
-            )
-        )
-
-    if return_cartesian_coords:
-        out_coords = frac_to_cart_coords(
-            primitive_frac_coords,
-            num_prim_nodes_per_crystal,
-            lattices=primitive_lattice_matrix,
-        )
-    else:
-        out_coords = primitive_frac_coords
-
-    return _ASUToPrimitiveResult(
-        coords=out_coords,
-        element_indices=primitive_element_indices,
-        wyckoff_indices=primitive_wyckoff_indices,
-        num_nodes_per_crystal=num_prim_nodes_per_crystal,
-        lattice_matrix=primitive_lattice_matrix,
-        map_prim_to_asu=map_prim_to_asu,
-        node_is_original=node_is_original if return_node_is_original else None,
-        asu_frac_coords_of_prim_atoms=asu_frac_coords_of_prim_atoms,
-    )
+    return conventional_frac_coords, map_conventional_to_asu
 
 
 def atoms_are_in_hull(
@@ -582,7 +459,6 @@ def atoms_are_in_hull(
 @paddle.no_grad()
 def wrap_frac_coords_into_asu(
     frac_coords: paddle.Tensor,
-    wyckoff_indices: paddle.Tensor,
     space_group_indices: paddle.Tensor,
     num_atoms_per_asu: paddle.Tensor,
     hull_equations: paddle.Tensor,
@@ -595,21 +471,13 @@ def wrap_frac_coords_into_asu(
     n_asu_atoms = frac_coords.shape[0]
     frac_coords = frac_coords % 1.0
 
-    conversion_result = batched_convert_asu_frac_coords_to_primitive_cartesian_coords(
+    conversion_result = expand_asu_frac_coords_to_conventional_coords(
         asu_frac_coords=frac_coords,
-        asu_element_indices=paddle.zeros_like(wyckoff_indices),
-        asu_wyckoff_indices=wyckoff_indices,
         n_coords_per_asu=num_atoms_per_asu,
-        conventional_lattice_matrix=paddle.zeros(
-            [space_group_indices.shape[0], 3, 3], dtype=paddle.float32
-        ),
         space_group_indices=space_group_indices,
         wyckoff_geometry=wyckoff_geometry,
-        return_cartesian_coords=False,
-        get_primitive_cell=False,
     )
-    conventional_cell_frac_coords = conversion_result.coords
-    map_conventional_to_asu_coord = conversion_result.map_prim_to_asu
+    conventional_cell_frac_coords, map_conventional_to_asu_coord = conversion_result
 
     supercell_frac_translations = paddle.to_tensor(OFFSET_LIST, dtype=paddle.float32)
     supercell_frac_coords = conventional_cell_frac_coords.unsqueeze(
@@ -1155,9 +1023,7 @@ class FourierLinear(nn.Layer):
         super().__init__()
         if num_layers < 1:
             raise ValueError(f"num_layers must be >= 1, got {num_layers}.")
-        self.num_fourier_frequencies = num_fourier_frequencies
         self.scale = scale
-        self.output_dim = output_dim
         self.num_layers = num_layers
 
         if self.scale > 0:
@@ -1216,7 +1082,6 @@ class GraphNorm(nn.Layer):
 
     def __init__(self, in_channels: int, eps: float = 1e-5):
         super().__init__()
-        self.in_channels = in_channels
         self.eps = eps
         self.weight = self.create_parameter(
             [in_channels],
@@ -1269,7 +1134,6 @@ class CSPLayer(nn.Layer):
 
     Args:
         hidden_dim: Hidden dimension.
-        prop_dim: Property embedding dimension.
         act_fn: Activation function.
         dis_emb: Distance embedding module (optional).
         ln: Whether to use LayerNorm.
@@ -1282,7 +1146,6 @@ class CSPLayer(nn.Layer):
     def __init__(
         self,
         hidden_dim: int = 128,
-        prop_dim: int = 512,
         act_fn: nn.Layer = None,
         dis_emb: nn.Layer = None,
         ln: bool = False,
@@ -1308,13 +1171,6 @@ class CSPLayer(nn.Layer):
         )
         self.node_mlp = nn.Sequential(
             nn.Linear(in_features=hidden_dim * 2, out_features=hidden_dim),
-            act_fn,
-            nn.Linear(in_features=hidden_dim, out_features=hidden_dim),
-            act_fn,
-        )
-
-        self.prop_mlp = nn.Sequential(
-            nn.Linear(in_features=prop_dim, out_features=hidden_dim),
             act_fn,
             nn.Linear(in_features=hidden_dim, out_features=hidden_dim),
             act_fn,
@@ -1378,19 +1234,7 @@ class CSPLayer(nn.Layer):
         edge_index: paddle.Tensor,
         edge2graph: paddle.Tensor,
         frac_diff: paddle.Tensor = None,
-        num_atoms: paddle.Tensor = None,
-        property_emb: paddle.Tensor = None,
-        property_mask: paddle.Tensor = None,
     ) -> paddle.Tensor:
-        if property_emb is not None:
-            property_features = self.prop_mlp(property_emb)
-            if property_mask is not None:
-                property_features = property_features * property_mask
-            property_features = paddle.repeat_interleave(
-                property_features, num_atoms, axis=0
-            )
-            node_features = node_features + property_features
-
         node_input = node_features
         if self.ln:
             node_features = self.layer_norm(node_input)
@@ -1494,18 +1338,6 @@ class TorusMLP(nn.Layer):
             nn.Linear(hidden_dim, 3),
         )
 
-    def forward(
-        self,
-        frac_coords: paddle.Tensor,
-        time_embeddings: paddle.Tensor,
-        *args,
-        **kwargs,
-    ) -> paddle.Tensor:
-        return self.forward_with_graph(
-            frac_coords=frac_coords,
-            time_embeddings=time_embeddings,
-        )
-
     def construct_graph_inputs(
         self,
         frac_coords: paddle.Tensor,
@@ -1563,7 +1395,6 @@ class NodeAndEdgeEmbedder(nn.Layer):
 
     def __init__(
         self,
-        num_cartesian_distance_gaussians: int,
         edge_hidden_dim: int,
         atom_hidden_dim: int,
         fourier_frac_edge_dim: int,
@@ -1654,7 +1485,6 @@ class InteractionBlock(nn.Layer):
     ):
         super().__init__()
         self.act = activation
-        self.hidden_channels = hidden_channels
         self.use_graph_norm = graph_norm
         self.use_vpa = use_vpa
 
@@ -1752,7 +1582,6 @@ class GNN(nn.Layer):
         )
         self.activation = Swish()
         self.embed_block = NodeAndEdgeEmbedder(
-            num_cartesian_distance_gaussians,
             edge_hidden_dim,
             atom_hidden_dim,
             2 * num_plane_wave_freqs,
@@ -1779,35 +1608,6 @@ class GNN(nn.Layer):
             atom_hidden_dim,
         )
         self.mlp_out = nn.Linear(atom_hidden_dim, 3)
-
-    def forward(
-        self,
-        frac_coords: paddle.Tensor,
-        element_indices: paddle.Tensor,
-        n_atoms_per_xtal: paddle.Tensor,
-        lattice_matrices: paddle.Tensor,
-        lattice_lengths: paddle.Tensor,
-        lattice_angles: paddle.Tensor,
-        time_embeddings: paddle.Tensor,
-        differentiate_graph_construction: bool = False,
-    ) -> paddle.Tensor:
-        """GNN forward pass, returns (n_atoms, 3)."""
-        cm = paddle.no_grad() if not differentiate_graph_construction else nullcontext()
-        with cm:
-            graph_inputs = self.construct_graph_inputs(
-                frac_coords=frac_coords,
-                n_atoms_per_xtal=n_atoms_per_xtal,
-                lattice_matrices=lattice_matrices,
-                lattice_lengths=lattice_lengths,
-                lattice_angles=lattice_angles,
-            )
-        return self.forward_with_graph(
-            frac_coords=frac_coords,
-            element_indices=element_indices,
-            time_embeddings=time_embeddings,
-            n_atoms_per_xtal=n_atoms_per_xtal,
-            graph_inputs=graph_inputs,
-        )
 
     def construct_graph_inputs(
         self,
@@ -1989,17 +1789,20 @@ class CSPNet(nn.Layer):
 
         if act_fn == "silu":
             self.act_fn = nn.Silu()
+        else:
+            raise ValueError(f"Unsupported act_fn: {act_fn}")
         if dis_emb == "sin":
             self.dis_emb = SinusoidsEmbedding(n_frequencies=num_freqs, n_space=3)
         elif dis_emb == "none":
             self.dis_emb = None
+        else:
+            raise ValueError(f"Unsupported dis_emb: {dis_emb}")
 
         for i in range(num_layers):
             self.add_sublayer(
                 f"csp_layer_{i}",
                 CSPLayer(
                     hidden_dim=hidden_dim,
-                    prop_dim=0,
                     act_fn=self.act_fn,
                     dis_emb=self.dis_emb,
                     ln=ln,
@@ -2031,33 +1834,6 @@ class CSPNet(nn.Layer):
         fc_edges = paddle.nonzero(fc_graph).T
         frac_diff = (frac_coords[fc_edges[1]] - frac_coords[fc_edges[0]]) % 1.0
         return fc_edges, frac_diff
-
-    def forward(
-        self,
-        frac_coords: paddle.Tensor,
-        element_indices: paddle.Tensor,
-        n_atoms_per_xtal: paddle.Tensor,
-        lattice_matrices: paddle.Tensor,
-        lattice_lengths: paddle.Tensor,
-        lattice_angles: paddle.Tensor,
-        time_embeddings: paddle.Tensor,
-        *args,
-        **kwargs,
-    ) -> paddle.Tensor:
-        """CSPNet forward pass."""
-        graph_inputs = self.construct_graph_inputs(
-            frac_coords=frac_coords,
-            n_atoms_per_xtal=n_atoms_per_xtal,
-            lattice_lengths=lattice_lengths,
-            lattice_angles=lattice_angles,
-        )
-        return self.forward_with_graph(
-            frac_coords=frac_coords,
-            element_indices=element_indices,
-            time_embeddings=time_embeddings,
-            n_atoms_per_xtal=n_atoms_per_xtal,
-            graph_inputs=graph_inputs,
-        )
 
     def construct_graph_inputs(
         self,
@@ -2297,7 +2073,6 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
             angle_offsets,
             self.min_bin_edge,
             self.max_bin_edge,
-            norm_gamma_separately=False,
         )
         _discretized_normed_params = self.get_discretized_normed_lattice_params(
             _normed_params, angle_offsets[:, :2]
@@ -2316,7 +2091,6 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
         lattice_angles,
         min_normed_param: float = -1.0,
         max_normed_param: float = 1.0,
-        norm_gamma_separately: bool = True,
     ):
         normed_param_range = max_normed_param - min_normed_param
         normed_lattice_lengths = (
@@ -2328,13 +2102,8 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
             + min_normed_param
         )
 
-        if norm_gamma_separately:
-            min_gamma_angle, max_gamma_angle = self.get_valid_gamma_angle_interval(
-                alpha_and_beta_angles=lattice_angles[:, :2]
-            )
-        else:
-            min_gamma_angle = self.MIN_LATTICE_ANGLE
-            max_gamma_angle = self.MAX_LATTICE_ANGLE
+        min_gamma_angle = self.MIN_LATTICE_ANGLE
+        max_gamma_angle = self.MAX_LATTICE_ANGLE
 
         normed_lattice_angles = paddle.concat(
             [
@@ -2408,7 +2177,7 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
             min_bin_edge = self.min_bin_edge * paddle.ones([batch_size])
             max_bin_edge = self.max_bin_edge * paddle.ones([batch_size])
             x = normed_lattice_parameters[:, i]
-            for j in range(self.n_telescopes):
+            for _ in range(self.n_telescopes):
                 bin_edges = self._build_bin_edges(min_bin_edge, max_bin_edge)
                 bins = paddle.stack([bin_edges[:, :-1], bin_edges[:, 1:]], axis=-1)
                 normalized_x = (x - min_bin_edge) / (max_bin_edge - min_bin_edge)
@@ -2502,7 +2271,6 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
             lattice_angles,
             self.min_bin_edge,
             self.max_bin_edge,
-            norm_gamma_separately=False,
         )
         normed_noisy_lattice_parameters = (
             self._get_normed_lattice_parameters(
@@ -2510,7 +2278,6 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
                 noisy_lattice_angles,
                 self.min_bin_edge,
                 self.max_bin_edge,
-                norm_gamma_separately=False,
             )
             if self.training
             else normed_lattice_parameters
@@ -2593,7 +2360,6 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
         Returns:
             lengths: (batch_size, 3)
             angles: (batch_size, 3)
-            log_pfs: (batch_size,)
         """
         batch_size = space_group_indices.shape[0]
         sg_features = self.space_group_encoder(space_group_indices)
@@ -2630,7 +2396,6 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
         current_lattice_embedding = paddle.zeros(
             [batch_size, NUM_LATTICE_PARAMS * self.lattice_param_dim]
         )
-        log_pfs = []
         lattice_mask = paddle.zeros([NUM_LATTICE_PARAMS])
         alpha_and_beta_angles = None
         bravais_length_transforms = self.bravais_length_transforms[space_group_indices]
@@ -2669,7 +2434,7 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
                     / (self.max_bin_edge - self.min_bin_edge)
                 ) * lattice_params_transform[:, 3:5] + lattice_params_offset[:, 3:5]
 
-            sample, log_prob = self._sample_and_log_prob(
+            sample, _ = self._sample_and_log_prob(
                 lattice_param_index=i,
                 bin_embedder=self.length_bin_embedder
                 if i < 3
@@ -2682,7 +2447,6 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
 
             normed_lattice_parameters[:, i] = sample
             lattice_mask[i] = 1.0
-            log_pfs.append(log_prob)
 
             if i < 3:
                 normed_lattice_parameters[:, :3] = paddle.bmm(
@@ -2698,8 +2462,6 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
                     + discretized_normed_bravais_angle_offsets
                 )
 
-        log_pfs = paddle.stack(log_pfs, axis=1)
-
         lattice_parameters = (
             (normed_lattice_parameters - self.min_bin_edge)
             / (self.max_bin_edge - self.min_bin_edge)
@@ -2707,11 +2469,7 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
 
         lengths = lattice_parameters[:, :num_lengths]
         angles = lattice_parameters[:, num_lengths:]
-
-        log_pf_masks = self.bravais_log_prob_masks[space_group_indices]
-        log_pfs = (log_pfs * log_pf_masks).sum(axis=1)
-
-        return lengths, angles, log_pfs
+        return lengths, angles
 
     def _sample_and_log_prob(
         self,
@@ -2795,10 +2553,11 @@ class TelescopingDiscreteLatticeSampler(nn.Layer):
             else:
                 normalized_x = (x - min_bin_edge) / (max_bin_edge - min_bin_edge)
                 bin_idxs = paddle.bucketize(normalized_x, self.grid_pts[1:])
-
-            log_probs = log_probs + paddle.take_along_axis(
-                F.log_softmax(bin_logits, axis=-1), bin_idxs.unsqueeze(-1), axis=-1
-            ).squeeze(-1)
+                log_probs = log_probs + paddle.take_along_axis(
+                    F.log_softmax(bin_logits, axis=-1),
+                    bin_idxs.unsqueeze(-1),
+                    axis=-1,
+                ).squeeze(-1)
 
             chosen_bins = bins[_batch_idxs, bin_idxs]
             min_bin_edge = chosen_bins[:, 0]
@@ -3024,7 +2783,6 @@ class WyckoffElementTransformer(nn.Layer):
                 f"got {self.hidden_dim}."
             )
         half_dim = int(self.hidden_dim / 2)
-        self.half_dim = half_dim
         self.wyckoff_dim = half_dim
         self.element_dim = half_dim
 
@@ -3129,7 +2887,7 @@ class WyckoffElementTransformer(nn.Layer):
         self.register_buffer("zero_dimensional_wyckoff_mask", _zero_dim_mask)
 
     @paddle.no_grad()
-    def sample_and_log_prob(
+    def sample(
         self,
         lattice_lengths,
         lattice_angles,
@@ -3216,13 +2974,6 @@ class WyckoffElementTransformer(nn.Layer):
         padded_element_indices = paddle.full(
             [n_crystals, max_allowed_atoms], fill_value=-1, dtype="int64"
         )
-        padded_wyckoff_probs = paddle.full(
-            [n_crystals, max_allowed_atoms], fill_value=-1.0
-        )
-        padded_element_probs = paddle.full(
-            [n_crystals, max_allowed_atoms], fill_value=-1.0
-        )
-        termination_probs = paddle.zeros([n_crystals])
 
         iteration = 0
         arange_n_crystals = paddle.arange(n_crystals, dtype="int64")
@@ -3276,19 +3027,6 @@ class WyckoffElementTransformer(nn.Layer):
             sampled_stop_token = wyckoff_or_stop_sample == 0
             sampled_wyckoff_indices = wyckoff_or_stop_sample[~sampled_stop_token] - 1
 
-            if (~sampled_stop_token).sum() > 0:
-                sampled_wyckoff_probs = paddle.take_along_axis(
-                    wyckoff_and_stop_probs[~sampled_stop_token].squeeze(1),
-                    (1 + sampled_wyckoff_indices[:, None]),
-                    axis=1,
-                ).squeeze(-1)
-            else:
-                sampled_wyckoff_probs = paddle.zeros([0])
-
-            termination_probs[incomplete_mask] = (
-                sampled_stop_token.cast("float32") * wyckoff_and_stop_probs[:, 0, 0]
-            )
-
             idxs_of_xtals_to_update = arange_n_crystals[incomplete_mask][
                 ~sampled_stop_token
             ]
@@ -3296,9 +3034,6 @@ class WyckoffElementTransformer(nn.Layer):
                 padded_wyckoff_indices[
                     idxs_of_xtals_to_update, iteration
                 ] = sampled_wyckoff_indices
-                padded_wyckoff_probs[
-                    idxs_of_xtals_to_update, iteration
-                ] = sampled_wyckoff_probs
                 n_asu_atoms_per_xtal[idxs_of_xtals_to_update] += 1
 
             iteration += 1
@@ -3375,18 +3110,10 @@ class WyckoffElementTransformer(nn.Layer):
                 sampled_element_indices = paddle.multinomial(
                     element_probs.squeeze(1), num_samples=1
                 ).squeeze(-1)
-                sampled_element_probs = paddle.take_along_axis(
-                    element_probs.squeeze(1),
-                    sampled_element_indices[:, None],
-                    axis=1,
-                ).squeeze(-1)
 
                 padded_element_indices[
                     idxs_of_xtals_to_update, iteration - 1
                 ] = sampled_element_indices
-                padded_element_probs[
-                    idxs_of_xtals_to_update, iteration - 1
-                ] = sampled_element_probs
 
                 sampled_element_embeddings = self.element_emb(
                     self.embedding_tools.get_element_embedding(
@@ -3439,21 +3166,7 @@ class WyckoffElementTransformer(nn.Layer):
 
         element_indices = padded_element_indices[atom_mask]
         wyckoff_indices = padded_wyckoff_indices[atom_mask]
-        _element_probs = padded_element_probs[atom_mask]
-        _wyckoff_probs = padded_wyckoff_probs[atom_mask]
-
-        elements_log_prob = paddle.log(_element_probs + 1e-12)
-        wyckoffs_log_prob = paddle.log(_wyckoff_probs + 1e-12)
-        termination_log_prob = paddle.log(termination_probs + 1e-12)
-
-        return (
-            element_indices,
-            wyckoff_indices,
-            n_asu_atoms_per_xtal,
-            elements_log_prob,
-            wyckoffs_log_prob,
-            termination_log_prob,
-        )
+        return element_indices, wyckoff_indices, n_asu_atoms_per_xtal
 
     def forward(
         self,
@@ -3663,21 +3376,17 @@ class WyckoffElementTransformer(nn.Layer):
         lattice_lengths: paddle.Tensor,
         lattice_angles: paddle.Tensor,
         space_group_indices: paddle.Tensor,
-        max_atoms: Optional[int] = None,
+        max_atoms: int,
     ):
         """Log probabilities of the given elements and Wyckoff positions.
 
         Args:
             max_atoms: Static padding width for the teacher-forced forward.
                 Passing the dataset-wide maximum keeps forward shapes static
-                (no GPU->CPU sync, CINN-friendly). When omitted, the batch
-                maximum is computed with ``.max()`` which forces a GPU->CPU
-                sync every call. Callers must guarantee
+                (no GPU->CPU sync, CINN-friendly). Callers must guarantee
                 ``n_asu_atoms_per_xtal <= max_atoms`` (the bundled ASU
                 datasets satisfy this by construction).
         """
-        if max_atoms is None:
-            max_atoms = int(n_asu_atoms_per_xtal.max())
         n_crystals = n_asu_atoms_per_xtal.shape[0]
         n_asu_atoms = element_indices.shape[0]
         atom_mask = (
@@ -3790,12 +3499,11 @@ def compute_sigma_norms(
             dictionary_of_wyckoff_shape_decompositions=wyckoff_shape_decomp_dict,
             hull_equations_3d=wyckoff_geometry.asu_hull_equations,
             n_samples_per_wyckoff=num_monte_carlo_samples,
-            return_sampled_wyckoff_shape_indices=True,
         )
 
         space_group_idx = paddle.to_tensor([sg_num - 1], dtype=paddle.int64)
 
-        for i, letter in enumerate(wyckoff_letters):
+        for i in range(len(wyckoff_letters)):
             _wyckoff_idx = paddle.to_tensor([i], dtype=paddle.int64)
             _wyckoff_idx_expanded = _wyckoff_idx.expand([num_monte_carlo_samples])
 
@@ -3873,7 +3581,6 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
             raise ValueError(f"sigma_min must be positive, got {sigma_min}")
         if not isinstance(time_emb_dim, int) or time_emb_dim <= 0:
             raise ValueError(f"time_emb_dim must be a positive int, got {time_emb_dim}")
-        self.model_type = model_type
         self.num_lattice_translations = num_lattice_translations
 
         if noise_scheduler_cfg is None:
@@ -3979,7 +3686,6 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
 
             (noisy_asu_frac_coords, wyckoff_shape_indices,) = wrap_frac_coords_into_asu(
                 noisy_asu_frac_coords,
-                wyckoff_indices,
                 space_group_indices,
                 n_atoms_per_xtal,
                 self.padded_hull_equations[_sg_per_asu_atom, wyckoff_indices].clone(),
@@ -4080,7 +3786,6 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
             dictionary_of_wyckoff_shape_decompositions=self.wyckoff_shape_decomposition_dict,
             hull_equations_3d=self.wyckoff_geometry.asu_hull_equations,
             n_samples_per_wyckoff=1,
-            return_sampled_wyckoff_shape_indices=True,
         )
         x_T = x_T.squeeze(1)
         wyckoff_shape_indices = wyckoff_shape_indices.squeeze(1)
@@ -4153,7 +3858,6 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
         x_final = x_t_plus_1 % 1.0
         x_final, _ = wrap_frac_coords_into_asu(
             x_final,
-            wyckoff_indices,
             space_group_indices,
             n_atoms_per_xtal,
             self.padded_hull_equations[space_group_indices_per_atom, wyckoff_indices],
@@ -4197,7 +3901,6 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
         lattice_matrices: Optional[paddle.Tensor] = None,
         lattice_lengths: Optional[paddle.Tensor] = None,
         lattice_angles: Optional[paddle.Tensor] = None,
-        differentiate_graph_construction: bool = False,
     ) -> paddle.Tensor:
         """Equivariant vector field: mean(A^-1 @ f(Ax + t))."""
         frac_coords = frac_coords % 1.0
@@ -4234,8 +3937,7 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
         )
 
         drift = self.non_equivariant_drift_model
-        cm = paddle.no_grad() if not differentiate_graph_construction else nullcontext()
-        with cm:
+        with paddle.no_grad():
             graph_inputs = drift.construct_graph_inputs(
                 frac_coords=frac_coords_of_conv_atoms,
                 n_atoms_per_xtal=n_conv_atoms_per_xtal,
@@ -4374,19 +4076,12 @@ class SpaceGroupSampler(nn.Layer):
             default_initializer=nn.initializer.Constant(1.0),
         )
 
-    def sample_and_log_prob(self, batch_size: int = 1, temperature: float = 1.0):
+    def sample(self, batch_size: int = 1, temperature: float = 1.0) -> paddle.Tensor:
         log_probs = F.log_softmax(
             self.marginal_space_group_logits / temperature, axis=-1
         )
         log_probs = log_probs.unsqueeze(0).expand([batch_size, -1])
-
-        dist = Categorical(logits=log_probs)
-        sample = dist.sample([1]).squeeze(0)
-
-        sample_log_probs = paddle.take_along_axis(
-            log_probs, sample.unsqueeze(-1), axis=-1
-        ).squeeze(-1)
-        return sample, sample_log_probs
+        return Categorical(logits=log_probs).sample([1]).squeeze(0)
 
     def log_prob(self, space_group_indices):
         normed_logits = F.log_softmax(self.marginal_space_group_logits, axis=-1)
@@ -4644,8 +4339,8 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
             noisy_lattice_lengths = lattice_lengths
             noisy_lattice_angles = lattice_angles
 
-        space_group_log_prob = self.space_group_log_probs(space_group_indices)
-        lattice_log_prob = self.lattice_param_log_probs(
+        space_group_log_prob = self.space_group_sampler.log_prob(space_group_indices)
+        lattice_log_prob = self.lattice_sampler.log_prob(
             lattice_lengths,
             lattice_angles,
             space_group_indices,
@@ -4656,13 +4351,15 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
             elements_log_prob,
             wyckoffs_log_prob,
             termination_log_prob,
-        ) = self.element_and_wyckoff_log_probs(
+        ) = self.wyckoff_and_element_sampler.log_prob(
             element_indices,
             wyckoff_indices,
             n_asu_atoms_per_xtal,
             noisy_lattice_lengths,
             noisy_lattice_angles,
             space_group_indices,
+            # Static pad width keeps shapes CINN-friendly.
+            max_atoms=max_atoms_per_dataset[self.dataset_name],
         )
         score_matching_loss = self.atom_coord_diffusion_model.compute_loss(
             asu_frac_coords,
@@ -4715,50 +4412,6 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
             + (elements_log_prob + wyckoffs_log_prob).mean()
         )
         return nll + score_matching_loss, artifacts
-
-    def space_group_log_probs(
-        self, space_group_indices: paddle.Tensor
-    ) -> paddle.Tensor:
-        """Log probabilities of the given space group indices."""
-        return self.space_group_sampler.log_prob(space_group_indices)
-
-    def lattice_param_log_probs(
-        self,
-        lattice_lengths: paddle.Tensor,
-        lattice_angles: paddle.Tensor,
-        space_group_indices: paddle.Tensor,
-        noisy_lattice_lengths: paddle.Tensor = None,
-        noisy_lattice_angles: paddle.Tensor = None,
-    ) -> paddle.Tensor:
-        log_probs = self.lattice_sampler.log_prob(
-            lattice_lengths,
-            lattice_angles,
-            space_group_indices,
-            noisy_lattice_lengths,
-            noisy_lattice_angles,
-        )
-        return log_probs
-
-    def element_and_wyckoff_log_probs(
-        self,
-        element_indices: paddle.Tensor,
-        wyckoff_indices: paddle.Tensor,
-        n_asu_atoms_per_xtal: paddle.Tensor,
-        lattice_lengths: paddle.Tensor,
-        lattice_angles: paddle.Tensor,
-        space_group_indices: paddle.Tensor,
-    ):
-        return self.wyckoff_and_element_sampler.log_prob(
-            element_indices,
-            wyckoff_indices,
-            n_asu_atoms_per_xtal,
-            lattice_lengths,
-            lattice_angles,
-            space_group_indices,
-            # Static pad width: avoids the per-step GPU sync of
-            # ``.max()`` and keeps shapes CINN-friendly.
-            max_atoms=max_atoms_per_dataset[self.dataset_name],
-        )
 
     def get_noisy_lattice_lengths_and_angles(
         self,
@@ -5002,56 +4655,23 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
         batch_size: int,
         diffusion_snr: float = 0.4,
         temperature: float = 1.0,
-        space_group_numbers=None,
-        lattice_parameters=None,
-        wyckoff_element_data=None,
     ) -> List[Dict]:
         """Full crystal sampling pipeline."""
-
-        if space_group_numbers is None:
-            space_group_indices, _ = self.sample_and_log_prob_space_group(
-                batch_size, temperature
-            )
-        else:
-            if space_group_numbers.shape[0] != batch_size:
-                raise ValueError(
-                    "space_group_numbers batch size "
-                    f"({space_group_numbers.shape[0]}) does not match "
-                    f"batch_size ({batch_size})."
-                )
-            space_group_indices = space_group_numbers - 1
-
-        if lattice_parameters is None:
-            (
-                lattice_lengths,
-                lattice_angles,
-                _,
-            ) = self.sample_and_log_prob_lattice_parameters(space_group_indices)
-        else:
-            lattice_lengths = lattice_parameters[:, :3]
-            lattice_angles = lattice_parameters[:, 3:]
-
+        space_group_indices = self.space_group_sampler.sample(batch_size, temperature)
+        lattice_lengths, lattice_angles = self.lattice_sampler(space_group_indices)
         lattice_matrices = lattice_params_to_matrix_paddle(
             lattice_lengths, lattice_angles
         )
 
-        if wyckoff_element_data is None:
-            (
-                element_indices,
-                wyckoff_indices,
-                n_asu_atoms_per_xtal,
-                elements_log_prob,
-                wyckoffs_log_prob,
-                termination_log_prob,
-            ) = self.sample_and_log_prob_elements_and_wyckoffs(
-                lattice_lengths, lattice_angles, space_group_indices, temperature
-            )
-        else:
-            element_indices = wyckoff_element_data["element_indices"]
-            wyckoff_indices = wyckoff_element_data["wyckoff_indices"]
-            n_asu_atoms_per_xtal = wyckoff_element_data["n_asu_atoms_per_xtal"]
+        (
+            element_indices,
+            wyckoff_indices,
+            n_asu_atoms_per_xtal,
+        ) = self.wyckoff_and_element_sampler.sample(
+            lattice_lengths, lattice_angles, space_group_indices, temperature
+        )
 
-        frac_coords = self.sample_frac_coords(
+        frac_coords = self.atom_coord_diffusion_model.sample(
             wyckoff_indices,
             element_indices,
             space_group_indices,
@@ -5061,7 +4681,7 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
             lattice_angles,
             snr=diffusion_snr,
             max_step_size=1e6,
-        )
+        )[0]
 
         asu_crystals = []
         atom_offsets = paddle.concat(
@@ -5089,45 +4709,6 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
                 }
             )
         return asu_crystals
-
-    def sample_and_log_prob_space_group(self, batch_size, temperature=1.0):
-        return self.space_group_sampler.sample_and_log_prob(batch_size, temperature)
-
-    def sample_and_log_prob_lattice_parameters(self, space_group_indices):
-        lengths, angles, log_probs = self.lattice_sampler(space_group_indices)
-        return lengths, angles, log_probs
-
-    def sample_and_log_prob_elements_and_wyckoffs(
-        self, lattice_lengths, lattice_angles, space_group_indices, temperature=1.0
-    ):
-        return self.wyckoff_and_element_sampler.sample_and_log_prob(
-            lattice_lengths, lattice_angles, space_group_indices, temperature
-        )
-
-    def sample_frac_coords(
-        self,
-        wyckoff_indices,
-        element_indices,
-        space_group_indices,
-        n_asu_atoms_per_xtal,
-        lattice_matrices,
-        lattice_lengths,
-        lattice_angles,
-        snr=0.4,
-        max_step_size=1e6,
-    ):
-        trajectory = self.atom_coord_diffusion_model.sample(
-            wyckoff_indices,
-            element_indices,
-            space_group_indices,
-            n_asu_atoms_per_xtal,
-            lattice_matrices,
-            lattice_lengths,
-            lattice_angles,
-            snr,
-            max_step_size,
-        )
-        return trajectory[0]
 
     @paddle.no_grad()
     def sample(self, batch_data: Dict) -> Dict:

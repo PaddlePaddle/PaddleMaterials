@@ -109,8 +109,6 @@ class AsymmetricUnitDataset(Dataset):
             "element_encoding_size": ELEMENT_ENCODING_SIZE,
             **(build_crystal_cfg or {}),
         }
-        self.build_crystal_cfg = build_crystal_cfg
-        self.overwrite = overwrite
         flat_crystals, self.num_samples = self.read_data(path)
         logger.info(f"Load {self.num_samples} samples from {path}")
         source_digest = hashlib.sha256()
