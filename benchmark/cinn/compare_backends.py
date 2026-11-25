@@ -31,6 +31,7 @@ def family_name(model_name: str) -> str:
     if model_name.startswith("spherenet_qm9_"):
         return "SphereNet QM9"
     families = {
+        "chemeleon_": "Chemeleon",
         "chgnet_": "CHGNet",
         "comformer_": "ComFormer",
         "diffcsp_": "DiffCSP",

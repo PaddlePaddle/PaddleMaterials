@@ -99,7 +99,10 @@ Model:
       text_embed_dim: 768 # embedding dimension of the text encoder
       max_text_len: 256 # max length of text guide
       text_dim: 512
+      clip_dim: 768 # output size of the bundled text projection head
       trainable_text_encoder: false # freeze the transformer backbone
+
+Vocabulary: chemeleon_mattpu_scibert
 
 Optimizer:
   # gradient clipping by global norm
