@@ -123,13 +123,6 @@ class StructureSampler:
         sample_config = config.get("Sample", None)
         self.sample_config = sample_config
 
-        self.save_format = self.sample_config.get("save_format", "cif")
-        if self.save_format not in ("cif", "npz"):
-            raise ValueError(
-                f"Unsupported Sample.save_format '{self.save_format}'; "
-                "expected 'cif' or 'npz'."
-            )
-
         self.post_transforms_cfg = self.sample_config.get("post_transforms", None)
         if self.post_transforms_cfg is not None:
             self.post_transforms = build_post_transforms(self.post_transforms_cfg)
@@ -169,11 +162,8 @@ class StructureSampler:
         dataset_cfg = self.sample_config["data"]
         data_loader = build_dataloader(dataset_cfg)
 
-        structure_converter = None
-        if self.save_format == "cif":
-            structure_converter = BuildStructure(
-                **self.sample_config["build_structure_cfg"]
-            )
+        build_structure_cfg = self.sample_config["build_structure_cfg"]
+        structure_converter = BuildStructure(**build_structure_cfg)
 
         logger.info(f"Total iterations: {len(data_loader)}")
         logger.info("Start sampling process...\n")
@@ -181,39 +171,30 @@ class StructureSampler:
         total_results = []
         for iter_id, batch_data in enumerate(data_loader):
             pred_data = self.sample(batch_data)
-            if self.save_format == "npz":
-                self._save_npz(pred_data["result"], save_path, iter_id + 1)
-            else:
-                structures = structure_converter(pred_data["result"])
-                if save_path is not None:
-                    os.makedirs(save_path, exist_ok=True)
-                    for i, structure in enumerate(structures):
-                        formula = structure.formula.replace(" ", "-")
-                        tar_file = os.path.join(
-                            save_path, f"{formula}_{iter_id + 1}_{i + 1}.cif"
+            structures = structure_converter(pred_data["result"])
+            if save_path is not None:
+                os.makedirs(save_path, exist_ok=True)
+                for i, structure in enumerate(structures):
+                    formula = structure.formula.replace(" ", "-")
+                    tar_file = os.path.join(
+                        save_path, f"{formula}_{iter_id + 1}_{i + 1}.cif"
+                    )
+                    if structure is not None:
+                        writer = CifWriter(structure)
+                        writer.write_file(tar_file)
+                    else:
+                        logger.info(
+                            f"No structure generated for iteration {iter_id}, index {i}"
                         )
-                        if structure is not None:
-                            writer = CifWriter(structure)
-                            writer.write_file(tar_file)
-                        else:
-                            logger.info(
-                                f"No structure generated for iteration {iter_id}, "
-                                f"index {i}"
-                            )
             total_results.extend(pred_data["result"])
         return total_results
 
     def sample_by_num_atoms(self, num_atoms, save_path=None, sample_params=None):
         assert isinstance(num_atoms, int), "num_atoms must be an integer."
         if not getattr(self.model, "supports_num_atoms_sampling", True):
-            alternative = (
-                "sample_by_chemical_formula"
-                if getattr(self.model, "supports_chemical_formula_sampling", True)
-                else "sample_by_dataloader"
-            )
             raise NotImplementedError(
                 f"{type(self.model).__name__} requires atom types. "
-                f"Use {alternative} instead."
+                "Use sample_by_chemical_formula instead."
             )
         data = {
             "structure_array": {
@@ -229,11 +210,6 @@ class StructureSampler:
         self, chemical_formula, save_path=None, sample_params=None
     ):
         assert isinstance(chemical_formula, str), "chemical_formula must be a string."
-        if not getattr(self.model, "supports_chemical_formula_sampling", True):
-            raise NotImplementedError(
-                f"{type(self.model).__name__} requires a model-specific "
-                "conditioning input. Use sample_by_dataloader instead."
-            )
         composition = Composition(chemical_formula)
         atom_types = []
         for elem, num in composition.items():
@@ -293,9 +269,6 @@ class StructureSampler:
         return result
 
     def _save_result(self, result, save_path):
-        if self.save_format == "npz":
-            self._save_npz(result["result"], save_path)
-            return
         if save_path is None:
             return
         os.makedirs(save_path, exist_ok=True)
@@ -311,24 +284,3 @@ class StructureSampler:
             formula = structure.formula.replace(" ", "-")
             writer = CifWriter(structure)
             writer.write_file(os.path.join(save_path, f"{formula}_{i + 1}.cif"))
-
-    def _save_npz(self, result_items, save_path, batch_index=None):
-        if save_path is None:
-            return
-        os.makedirs(save_path, exist_ok=True)
-        logger.info(f"Save results to {save_path}")
-        name_key = self.sample_config.get("save_name_key")
-        for index, item in enumerate(result_items):
-            stem = (
-                str(item[name_key])
-                if name_key is not None and name_key in item
-                else "sample"
-            )
-            if batch_index is None:
-                file_name = f"{stem}_{index + 1}.npz"
-            else:
-                file_name = f"{stem}_{batch_index}_{index + 1}.npz"
-            np.savez(
-                os.path.join(save_path, file_name),
-                **{key: np.asarray(value) for key, value in item.items()},
-            )

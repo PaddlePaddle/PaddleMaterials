@@ -21,8 +21,11 @@ import numpy as np
 import paddle
 import pytest
 from omegaconf import OmegaConf
+from pymatgen.core import DummySpecies
+from scipy.optimize import linear_sum_assignment
 
 from ppmat.datasets import build_dataloader
+from ppmat.datasets.build_structure import BuildStructure
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.models import MODEL_REGISTRY
@@ -34,6 +37,7 @@ from ppmat.models.xrd2mof.xrd2mof import Xrd2Mof
 from ppmat.sampler import StructureSampler
 from ppmat.trainer.base_trainer import BaseTrainer
 from ppmat.utils import download
+from ppmat.utils.crystal import lattice_params_to_matrix
 
 CONFIG_PATH = (
     Path(__file__).resolve().parents[2]
@@ -78,16 +82,9 @@ def load_config():
     return OmegaConf.to_container(config, resolve=True)
 
 
-def _build_dataset_loader(dataset_cfg):
-    try:
-        return build_dataloader(dataset_cfg)
-    except Exception as exc:  # pragma: no cover - depends on network access
-        pytest.skip(f"dataset unavailable: {exc}")
-
-
 def build_training_batch():
     config = load_config()
-    loader = _build_dataset_loader(config["Dataset"]["train"])
+    loader = build_dataloader(config["Dataset"]["train"])
     return next(iter(loader))
 
 
@@ -112,17 +109,31 @@ def test_model_training_loss_and_step():
     )
     before = [param.numpy().copy() for param in model.parameters()]
     loss.backward()
+    for param in model.parameters():
+        if not param.stop_gradient:
+            assert param.grad is not None
+            assert bool(paddle.isfinite(param.grad).all())
     optimizer.step()
     optimizer.clear_grad()
     after = [param.numpy() for param in model.parameters()]
+    assert all(np.isfinite(param).all() for param in after)
     assert any(not np.allclose(prev, curr) for prev, curr in zip(before, after))
 
 
 def test_val_dataset_end_to_end_forward():
     config = load_config()
-    loader = _build_dataset_loader(config["Dataset"]["val"])
+    loader = build_dataloader(config["Dataset"]["val"])
     batch = next(iter(loader))
     structure_array = batch["structure_array"]
+    assert set(structure_array) == {
+        "num_atoms",
+        "atom_types",
+        "frac_coords",
+        "lattice",
+        "lengths",
+        "angles",
+    }
+    assert batch["feature_embedding"].shape[0] == len(structure_array["num_atoms"])
     assert (
         int(structure_array["num_atoms"].sum())
         == structure_array["frac_coords"].shape[0]
@@ -137,12 +148,22 @@ def test_sample_produces_valid_cg_structures():
     config = load_config()
     model = build_model(config["Model"])
     model.eval()
-    loader = _build_dataset_loader(config["Sample"]["data"])
+    loader = build_dataloader(config["Sample"]["data"])
     batch = next(iter(loader))
 
-    outputs = model.sample(batch, num_inference_steps=5)
+    with mock.patch.object(
+        model.decoder, "gen_edges", wraps=model.decoder.gen_edges
+    ) as gen_edges:
+        outputs = model.sample(batch, num_inference_steps=5)
+    assert gen_edges.call_count == 1
 
     assert len(outputs["result"]) == int(batch["structure_array"]["num_atoms"].shape[0])
+    expected_species = np.asarray(["Xmetal", "Xlinker"])[
+        batch["structure_array"]["atom_types"].numpy()
+    ].tolist()
+    assert [
+        specie for item in outputs["result"] for specie in item["atom_types"]
+    ] == expected_species
     for item in outputs["result"]:
         lattice = np.asarray(item["lattice"])
         frac_coords = np.asarray(item["frac_coords"])
@@ -151,7 +172,14 @@ def test_sample_produces_valid_cg_structures():
         assert abs(np.linalg.det(lattice)) > 0.0
         assert frac_coords.min() >= 0.0 and frac_coords.max() < 1.0
         assert len(item["atom_types"]) == item["num_atoms"]
-        assert set(item["atom_types"]).issubset({0, 1})
+        assert set(item["atom_types"]).issubset({"Xmetal", "Xlinker"})
+        structure = BuildStructure.build_one(
+            item, **config["Sample"]["build_structure_cfg"]
+        )
+        assert len(structure) == item["num_atoms"]
+        assert all(isinstance(site.specie, DummySpecies) for site in structure)
+        assert [site.specie.symbol for site in structure] == item["atom_types"]
+    assert [item["mof_id"] for item in outputs["result"]] == batch["mof_id"]
 
 
 def build_feature_extractor_batch():
@@ -169,33 +197,29 @@ def build_feature_extractor_batch():
     }
 
 
-def test_feature_extractor_forward():
-    model = Xrd2MofFeatureExtractor()
-    model.eval()
-    batch = build_feature_extractor_batch()
-
-    with paddle.no_grad():
-        outputs = model(batch)
-
-    assert outputs["feature_embedding"].shape == [3, 256]
-    assert bool(paddle.isfinite(outputs["feature_embedding"]).all())
-
-
 def test_registered_model_full_chain():
-    try:
-        model, config = build_model_from_name(MODEL_NAME)
-        extracted_path = download.get_weights_path_from_url(MODEL_REGISTRY[MODEL_NAME])
-    except Exception as exc:  # pragma: no cover - depends on network access
-        pytest.skip(f"registered weights unavailable: {exc}")
+    model, config = build_model_from_name(MODEL_NAME)
+    extracted_path = download.get_weights_path_from_url(MODEL_REGISTRY[MODEL_NAME])
 
     assert type(model).__name__ == "Xrd2Mof"
     assert "Model" in config and "Sample" in config
 
     package_dir = resolve_model_package_dir(MODEL_NAME, extracted_path)
-    extractor = Xrd2MofFeatureExtractor()
-    extractor.set_state_dict(
-        paddle.load(osp.join(package_dir, "checkpoints", "feature_extractor.pdparams"))
+    assert (
+        Path(package_dir, f"{MODEL_NAME}.yaml").read_bytes() == CONFIG_PATH.read_bytes()
     )
+    checkpoint = paddle.load(osp.join(package_dir, "checkpoints", "best.pdparams"))
+    assert checkpoint.keys() == model.state_dict().keys()
+    for key, value in model.state_dict().items():
+        assert checkpoint[key].shape == value.shape
+    extractor = Xrd2MofFeatureExtractor()
+    feature_checkpoint = paddle.load(
+        osp.join(package_dir, "checkpoints", "feature_extractor.pdparams")
+    )
+    assert feature_checkpoint.keys() == extractor.state_dict().keys()
+    for key, value in extractor.state_dict().items():
+        assert feature_checkpoint[key].shape == value.shape
+    extractor.set_state_dict(feature_checkpoint)
     extractor.eval()
     with paddle.no_grad():
         extractor_outputs = extractor(build_feature_extractor_batch())
@@ -203,40 +227,65 @@ def test_registered_model_full_chain():
     assert bool(paddle.isfinite(extractor_outputs["feature_embedding"]).all())
 
     model.eval()
-    loader = _build_dataset_loader(config["Sample"]["data"])
+    sample_cfg = copy.deepcopy(config["Sample"]["data"])
+    sample_cfg["sampler"]["__init_params__"]["batch_size"] = 3
+    loader = build_dataloader(sample_cfg)
     batch = next(iter(loader))
+    batch["feature_embedding"] = extractor_outputs["feature_embedding"]
     outputs = model.sample(batch, num_inference_steps=2)
-    assert len(outputs["result"]) > 0
+    assert len(outputs["result"]) == 3
+    with pytest.raises(ValueError, match="p_unconditional"):
+        model.sample(batch, num_inference_steps=2, guidance_scale=2.0)
 
 
 def test_sample_through_structure_sampler(tmp_path):
-    try:
-        sampler = StructureSampler(model_name=MODEL_NAME)
-    except Exception as exc:  # pragma: no cover - depends on network access
-        pytest.skip(f"registered weights unavailable: {exc}")
+    sampler = StructureSampler(model_name=MODEL_NAME)
 
     sampler.sample_config["model_sample_params"]["num_inference_steps"] = 2
     results = sampler.sample_by_dataloader(save_path=tmp_path)
 
     assert len(results) == 16
-    files = sorted(tmp_path.glob("*.npz"))
+    files = sorted(tmp_path.glob("*.cif"))
     assert len(files) == 16
-    assert not list(tmp_path.glob("*.cif"))
-    data = np.load(files[0])
-    assert set(data.files) >= {
-        "num_atoms",
-        "atom_types",
-        "frac_coords",
-        "lattice",
-        "mof_id",
-    }
-    assert data["mof_id"].ndim == 0
+    assert not list(tmp_path.glob("*.npz"))
+    with pytest.warns(UserWarning, match="not a valid Element"):
+        for index, item in enumerate(results, start=1):
+            reference = BuildStructure.build_one(
+                item, **sampler.sample_config["build_structure_cfg"]
+            )
+            formula = reference.formula.replace(" ", "-")
+            restored = BuildStructure.build_one(
+                str(tmp_path / f"{formula}_1_{index}.cif"),
+                "cif_file",
+                niggli=False,
+                canocial=False,
+            )
+            assert all(isinstance(site.specie, DummySpecies) for site in restored)
+            restored_species = [site.specie.symbol for site in restored]
+            assert sorted(restored_species) == sorted(item["atom_types"])
+            np.testing.assert_allclose(
+                restored.lattice.parameters,
+                reference.lattice.parameters,
+                atol=1e-7,
+                rtol=1e-7,
+            )
+            for symbol in set(item["atom_types"]):
+                expected_coords = reference.frac_coords[
+                    np.asarray(item["atom_types"]) == symbol
+                ]
+                restored_coords = restored.frac_coords[
+                    np.asarray(restored_species) == symbol
+                ]
+                delta = expected_coords[:, None, :] - restored_coords[None, :, :]
+                delta -= np.round(delta)
+                rows, cols = linear_sum_assignment(np.sum(delta**2, axis=-1))
+                np.testing.assert_allclose(delta[rows, cols], 0, atol=1e-4)
 
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError, match="feature_embedding"):
         sampler.sample_by_chemical_formula("LiMnO2")
 
 
-def _make_tiny_model(execution_backend="eager"):
+def _make_tiny_model(execution_backend="eager", p_unconditional=0.0):
     with paddle.utils.unique_name.guard():
         return Xrd2Mof(
             decoder_cfg=dict(TINY_DECODER_CFG),
@@ -246,7 +295,95 @@ def _make_tiny_model(execution_backend="eager"):
             lattice_loss_weight=0.1,
             coord_loss_weight=1.0,
             execution_backend=execution_backend,
+            p_unconditional=p_unconditional,
         )
+
+
+def test_classifier_free_training_and_sampling():
+    model = _make_tiny_model(p_unconditional=0.5)
+    loader = paddle.io.DataLoader(
+        [_make_cg_sample(3 + i % 2, seed=i) for i in range(8)],
+        batch_size=8,
+        collate_fn=DefaultCollator(),
+        return_list=True,
+    )
+    batch = next(iter(loader))
+    original_embedding = batch["feature_embedding"].numpy().copy()
+    paddle.seed(42)
+    with mock.patch.object(
+        model.decoder, "forward_with_edges", wraps=model.decoder.forward_with_edges
+    ) as decoder:
+        loss = model(batch)["loss_dict"]["loss"]
+    embedding = decoder.call_args.args[0].numpy()
+    dropped = np.all(embedding == 0, axis=1)
+    assert dropped.any() and (~dropped).any()
+    np.testing.assert_array_equal(embedding[~dropped], original_embedding[~dropped])
+    optimizer = paddle.optimizer.Adam(learning_rate=1e-3, parameters=model.parameters())
+    loss.backward()
+    for parameter in model.parameters():
+        assert parameter.grad is not None
+        assert bool(paddle.isfinite(parameter.grad).all())
+    optimizer.step()
+    optimizer.clear_grad()
+    assert all(
+        bool(paddle.isfinite(parameter).all()) for parameter in model.parameters()
+    )
+    np.testing.assert_array_equal(
+        batch["feature_embedding"].numpy(), original_embedding
+    )
+
+    model.eval()
+    batch = _make_structure_batch()
+    with mock.patch.object(
+        model.decoder, "forward_with_edges", wraps=model.decoder.forward_with_edges
+    ) as decoder:
+        with paddle.no_grad():
+            model(batch)
+    np.testing.assert_array_equal(
+        decoder.call_args.args[0].numpy(), batch["feature_embedding"].numpy()
+    )
+    paddle.seed(123)
+    unconditional = model.sample(batch, num_inference_steps=2, guidance_scale=0.0)
+    zero_batch = {
+        **batch,
+        "feature_embedding": paddle.zeros_like(batch["feature_embedding"]),
+    }
+    paddle.seed(123)
+    expected = model.sample(zero_batch, num_inference_steps=2)
+    assert unconditional == expected
+
+    predictions = []
+    decode = model._runtime_decode
+
+    def record_predictions(*args):
+        prediction = decode(*args)
+        predictions.append(prediction)
+        return prediction
+
+    with mock.patch.object(
+        model, "_runtime_decode", side_effect=record_predictions
+    ), mock.patch.object(
+        model.lattice_scheduler, "step", wraps=model.lattice_scheduler.step
+    ) as lattice_step, mock.patch.object(
+        model.coord_scheduler, "step_pred", wraps=model.coord_scheduler.step_pred
+    ) as coord_step:
+        guided = model.sample(batch, num_inference_steps=2, guidance_scale=2.0)
+    assert len(guided["result"]) == 2
+    assert len(predictions) == 8
+    for step in range(2):
+        conditional_l, conditional_x = predictions[4 * step + 2]
+        unconditional_l, unconditional_x = predictions[4 * step + 3]
+        np.testing.assert_allclose(
+            lattice_step.call_args_list[step].args[0].numpy(),
+            (unconditional_l + 2.0 * (conditional_l - unconditional_l)).numpy(),
+        )
+        np.testing.assert_allclose(
+            coord_step.call_args_list[step].args[0].numpy(),
+            (unconditional_x + 2.0 * (conditional_x - unconditional_x)).numpy(),
+        )
+    for item in guided["result"]:
+        assert np.isfinite(item["frac_coords"]).all()
+        assert np.isfinite(item["lattice"]).all()
 
 
 def _clone_state_dict(model):
@@ -263,15 +400,21 @@ def _record_cinn_boundaries(names):
 
 def _make_cg_sample(num_atoms, seed):
     rng = np.random.RandomState(seed)
+    feature_embedding = rng.rand(FEATURE_DIM).astype("float32")
+    atom_types = rng.randint(0, 2, size=num_atoms).astype("int64")
+    frac_coords = rng.rand(num_atoms, 3).astype("float32")
+    lengths = rng.rand(3).astype("float32") + 3.0
+    angles = np.full(3, 90.0, dtype="float32")
     return {
+        "feature_embedding": feature_embedding,
         "structure_array": {
-            "feature_embedding": rng.rand(FEATURE_DIM).astype("float32"),
             "num_atoms": ConcatData(np.array([num_atoms], dtype="int64")),
-            "atom_types": ConcatData(rng.randint(0, 2, size=num_atoms).astype("int64")),
-            "frac_coords": ConcatData(rng.rand(num_atoms, 3).astype("float32")),
-            "lengths": rng.rand(3).astype("float32") + 3.0,
-            "angles": np.full(3, 90.0, dtype="float32"),
-        }
+            "atom_types": ConcatData(atom_types),
+            "frac_coords": ConcatData(frac_coords),
+            "lattice": lattice_params_to_matrix(*lengths, *angles).astype("float32"),
+            "lengths": lengths,
+            "angles": angles,
+        },
     }
 
 
@@ -292,9 +435,9 @@ def _make_structure_loader():
 def _make_dispatch_pair():
     initial_state = _clone_state_dict(_make_tiny_model())
     paddle.seed(2026)
-    eager_model = _make_tiny_model()
+    eager_model = _make_tiny_model(p_unconditional=0.5)
     paddle.seed(2026)
-    cinn_model = _make_tiny_model(execution_backend="cinn")
+    cinn_model = _make_tiny_model(execution_backend="cinn", p_unconditional=0.5)
     eager_model.set_state_dict(initial_state)
     cinn_model.set_state_dict(initial_state)
     eager_model.eval()
@@ -323,19 +466,24 @@ def test_cinn_dispatch_matches_eager():
     assert cinn_model.state_dict().keys() == eager_model.state_dict().keys()
 
     paddle.seed(123)
-    eager_result = eager_model.sample(batch, num_inference_steps=3)["result"]
+    eager_result = eager_model.sample(batch, num_inference_steps=3, guidance_scale=2.0)[
+        "result"
+    ]
 
     names = []
     paddle.seed(123)
     with mock.patch.object(Xrd2Mof, "_run_runtime", _record_cinn_boundaries(names)):
-        cinn_result = cinn_model.sample(batch, num_inference_steps=3)["result"]
+        cinn_result = cinn_model.sample(
+            batch, num_inference_steps=3, guidance_scale=2.0
+        )["result"]
 
     assert names
     assert set(names) == {"denoise_step"}
     assert len(cinn_result) == len(eager_result)
     for eager_entry, cinn_entry in zip(eager_result, cinn_result):
         assert eager_entry["num_atoms"] == cinn_entry["num_atoms"]
-        for key in ("atom_types", "frac_coords", "lattice"):
+        assert eager_entry["atom_types"] == cinn_entry["atom_types"]
+        for key in ("frac_coords", "lattice"):
             np.testing.assert_allclose(
                 cinn_entry[key], eager_entry[key], atol=0, rtol=0
             )
@@ -389,7 +537,7 @@ def test_cinn_trainer_resume_workflow(mocked_cinn_runtime, tmp_path):
     paddle.seed(2026)
     first_model = _make_tiny_model(execution_backend="cinn")
     first_model.set_state_dict(initial_state)
-    first_trainer, _ = _build_trainer(first_model, tmp_path / "first", 1)
+    first_trainer, first_optimizer = _build_trainer(first_model, tmp_path / "first", 1)
     with paddle.utils.unique_name.guard():
         first_trainer.train()
 
@@ -398,6 +546,7 @@ def test_cinn_trainer_resume_workflow(mocked_cinn_runtime, tmp_path):
         for suffix in ("pdparams", "pdopt", "pdstates"):
             assert (checkpoint_dir / f"{prefix}.{suffix}").is_file()
     saved_state = paddle.load(str(checkpoint_dir / "latest.pdparams"))
+    saved_optimizer = paddle.load(str(checkpoint_dir / "latest.pdopt"))
     assert saved_state.keys() == first_model.state_dict().keys()
 
     paddle.seed(2026)
@@ -405,8 +554,26 @@ def test_cinn_trainer_resume_workflow(mocked_cinn_runtime, tmp_path):
     resumed_trainer, resumed_optimizer = _build_trainer(
         resumed_model, tmp_path / "resumed", 2
     )
+    restored_steps = []
+
+    def check_restored_state(model, inputs):
+        if restored_steps:
+            return
+        assert resumed_trainer.state.global_step == first_trainer.state.global_step
+        assert resumed_optimizer.get_lr() == first_optimizer.get_lr()
+        for key, value in model.state_dict().items():
+            np.testing.assert_array_equal(value.numpy(), saved_state[key].numpy())
+        optimizer_state = resumed_optimizer.state_dict()
+        assert optimizer_state.keys() == saved_optimizer.keys()
+        for key, value in optimizer_state.items():
+            np.testing.assert_array_equal(value.numpy(), saved_optimizer[key].numpy())
+        restored_steps.append(resumed_trainer.state.global_step)
+
+    resume_hook = resumed_model.register_forward_pre_hook(check_restored_state)
     with paddle.utils.unique_name.guard():
         resumed_trainer.train(resume_from_checkpoint=str(checkpoint_dir / "latest"))
+    resume_hook.remove()
+    assert restored_steps == [1]
 
     paddle.seed(2026)
     straight_model = _make_tiny_model(execution_backend="cinn")
@@ -443,10 +610,10 @@ def test_gpu_cinn_matches_eager(tmp_path):
 
     initial_state = _clone_state_dict(_make_tiny_model())
     paddle.seed(2026)
-    eager_model = _make_tiny_model()
+    eager_model = _make_tiny_model(p_unconditional=0.5)
     eager_model.set_state_dict(initial_state)
     paddle.seed(2026)
-    cinn_model = _make_tiny_model(execution_backend="cinn")
+    cinn_model = _make_tiny_model(execution_backend="cinn", p_unconditional=0.5)
     cinn_model.set_state_dict(initial_state)
 
     paddle.seed(2026)
@@ -487,5 +654,58 @@ def test_gpu_cinn_matches_eager(tmp_path):
         cinn_loss.numpy(), eager_loss.numpy(), atol=2e-5, rtol=2e-5
     )
 
-    result = cinn_model.sample(batch, num_inference_steps=2)["result"]
+    paddle.seed(123)
+    expected = eager_model.sample(batch, num_inference_steps=2, guidance_scale=2.0)[
+        "result"
+    ]
+    paddle.seed(123)
+    result = cinn_model.sample(batch, num_inference_steps=2, guidance_scale=2.0)[
+        "result"
+    ]
     assert len(result) == 2
+    for eager_item, compiled_item in zip(expected, result):
+        for key in ("frac_coords", "lattice"):
+            np.testing.assert_allclose(
+                compiled_item[key], eager_item[key], atol=2e-5, rtol=2e-5
+            )
+
+    sampler = StructureSampler(
+        model_name=MODEL_NAME,
+        config_overrides=[
+            "Sample.data.sampler.__init_params__.batch_size=2",
+            "Sample.model_sample_params.num_inference_steps=2",
+        ],
+    )
+    batch = next(iter(build_dataloader(sampler.sample_config["data"])))
+    state_shapes = {
+        key: list(value.shape) for key, value in sampler.model.state_dict().items()
+    }
+    paddle.seed(42)
+    np.random.seed(42)
+    eager_result = sampler.sample(batch)["result"]
+    sampler.model.set_execution_backend("cinn")
+    paddle.seed(42)
+    np.random.seed(42)
+    compiled_result = sampler.sample(batch)["result"]
+    runtime_cache = dict(sampler.model._runtime_cache)
+    paddle.seed(42)
+    np.random.seed(42)
+    repeated_result = sampler.sample(batch)["result"]
+    assert runtime_cache
+    for key, runtime in runtime_cache.items():
+        assert sampler.model._runtime_cache[key] is runtime
+    for expected, actual, repeated in zip(
+        eager_result, compiled_result, repeated_result
+    ):
+        assert expected["num_atoms"] == actual["num_atoms"] == repeated["num_atoms"]
+        assert expected["atom_types"] == actual["atom_types"] == repeated["atom_types"]
+        assert expected["mof_id"] == actual["mof_id"] == repeated["mof_id"]
+        for key in ("frac_coords", "lattice"):
+            assert np.isfinite(actual[key]).all()
+            np.testing.assert_allclose(actual[key], expected[key], atol=2e-5, rtol=2e-5)
+            np.testing.assert_allclose(repeated[key], actual[key], atol=2e-5, rtol=2e-5)
+    assert state_shapes == {
+        key: list(value.shape) for key, value in sampler.model.state_dict().items()
+    }
+    sampler.model.set_execution_backend("eager")
+    assert not sampler.model._runtime_cache

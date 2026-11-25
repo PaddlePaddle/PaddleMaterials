@@ -84,6 +84,7 @@ Model:
     num_train_timesteps: ${Global.num_train_timesteps}
     lattice_loss_weight: 0.1
     coord_loss_weight: 1.0
+    p_unconditional: 0.0
 
 Optimizer:
   __class_name__: Adam
@@ -127,10 +128,14 @@ Dataset:
         shuffle: False
         drop_last: False
         batch_size: 4
+  test: null
 
 Sample:
-  save_format: npz
-  save_name_key: mof_id
+  build_structure_cfg:
+    format: array
+    primitive: False
+    niggli: False
+    canocial: False
   data:
     dataset:
       __class_name__: Xrd2MofTestDataset
@@ -144,3 +149,4 @@ Sample:
         batch_size: 16
   model_sample_params:
     num_inference_steps: 1000
+    guidance_scale: 1.0
