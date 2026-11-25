@@ -133,6 +133,12 @@ class MPTrjDataset(Dataset):
             path if it already exists. Defaults to False.
         filter_unvalid (bool, optional): Whether to filter out unvalid samples. Defaults
             to True.
+        energy_source (Optional[str], optional): If set, the ``energy_per_atom``
+            label is built from this raw field instead of the stored
+            ``energy_per_atom`` value, i.e. ``row_data[energy_source] / natoms``.
+            MACE-MP-0 is trained on the raw VASP total energy, so it passes
+            ``uncorrected_total_energy``. Defaults to None, which keeps the
+            MP2020-corrected label used by CHGNet.
     """
 
     name = "MPtrj_2022.9_full"
@@ -149,6 +155,7 @@ class MPTrjDataset(Dataset):
         cache_path: Optional[str] = None,
         overwrite: bool = False,
         filter_unvalid: bool = True,
+        energy_source: Optional[str] = None,
         **kwargs,  # for compatibility
     ):
         super().__init__()
@@ -192,6 +199,7 @@ class MPTrjDataset(Dataset):
 
         self.overwrite = overwrite
         self.filter_unvalid = filter_unvalid
+        self.energy_source = energy_source
 
         self.cache_exists = True if osp.exists(self.cache_path) else False
         self.row_data = self.read_data(path)
@@ -433,6 +441,30 @@ class MPTrjDataset(Dataset):
 
         row_data = self.row_data[mp_id][graph_id]
         for property_name in self.property_names:
+            if property_name == "energy_per_atom" and self.energy_source is not None:
+                # The stored ``energy_per_atom`` is the MP2020-corrected energy used
+                # by CHGNet, while MACE-MP-0 is trained on the raw VASP total
+                # energy. Rebuild the label as ``raw_total_energy / natoms``.
+                if self.energy_source not in row_data:
+                    raise KeyError(
+                        f"Energy source {self.energy_source} not found in the data."
+                    )
+                total_energy = row_data[self.energy_source]
+                num_atoms = (
+                    data["graph"].node_feat["num_atoms"]
+                    if "graph" in data.keys()
+                    else data["structure_array"]["num_atoms"].data
+                )
+                num_atoms = int(np.asarray(num_atoms).reshape(-1)[0])
+                if total_energy is None or (
+                    isinstance(total_energy, float) and math.isnan(total_energy)
+                ):
+                    value = np.nan
+                else:
+                    value = float(total_energy) / num_atoms
+                data[property_name] = np.array([value]).astype("float32")
+                continue
+
             if property_name in row_data.keys():
                 value = row_data[property_name]
                 if isinstance(value, str):

@@ -17,6 +17,7 @@ import os.path as osp
 from collections import defaultdict
 from collections.abc import Sequence
 
+import paddle
 import pandas as pd
 from tqdm import tqdm
 
@@ -24,6 +25,13 @@ from ppmat.datasets.build_molecule import BuildMolecule
 from ppmat.datasets.build_structure import BuildStructure
 from ppmat.predictor.base import BasePredictor
 from ppmat.utils import logger
+
+
+def _to_numpy(value):
+    """Convert Paddle tensors to numpy arrays so CSV cells are numeric."""
+    if isinstance(value, paddle.Tensor):
+        return value.numpy()
+    return value
 
 
 class PotentialPredictor(BasePredictor):
@@ -83,10 +91,14 @@ class PotentialPredictor(BasePredictor):
 
     def from_structures(self, structures):
         data = self.graph_converter(structures)
+        # Crystal graph converters emit numpy features; PGL graphs must be
+        # converted to Paddle tensors before being passed to the model.
+        data = data.tensor()
         return self._run_model(data)
 
     def from_molecule(self, molecule):
         data = self.graph_converter(molecule)
+        data = data.tensor()
         return self._run_model(data)
 
     def from_cif_file(self, cif_file_path, save_path=None):
@@ -127,7 +139,7 @@ class PotentialPredictor(BasePredictor):
             result_properties = defaultdict(list)
             for key in keys:
                 for result in results:
-                    result_properties[key].append(result[key])
+                    result_properties[key].append(_to_numpy(result[key]))
 
             df = pd.DataFrame({"cif_file": cif_files, **result_properties})
             df.to_csv(save_path, index=False)
@@ -174,7 +186,7 @@ class PotentialPredictor(BasePredictor):
             props = defaultdict(list)
             for key in keys:
                 for result in results:
-                    props[key].append(result[key])
+                    props[key].append(_to_numpy(result[key]))
             df = pd.DataFrame(
                 {"xyz_file": [osp.basename(path) for path in xyz_files], **props}
             )
