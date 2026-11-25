@@ -11,33 +11,151 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""CrystalDiT: a diffusion transformer for crystal structure generation.
+"""CrystalDiT joint lattice and atom diffusion transformer.
 
-Migrated from https://github.com/hanyi2021/CrystalDiT (AAAI 2026). The model
-denoises lattice vectors ``[B, 3, 3]`` and atom features
-``[B, max_atoms, 5]`` (period, group, frac x/y/z) jointly with a unified
-DiT backbone (adaLN-Zero conditioning). The periodic-table 2D atomic
-representation and the standard DDPM schedule follow the original
-implementation.
+Reference: https://github.com/hanyi2021/CrystalDiT (AAAI 2026).
 """
 
 import functools
 import math
+from typing import Sequence
 
 import numpy as np
 import paddle
 import paddle.nn as nn
 from scipy.special import erf
 
+from ppmat.models.common import initializer
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
 from ppmat.models.common.time_embedding import uniform_sample_t
 from ppmat.schedulers import build_scheduler
-from ppmat.utils.periodic_table import ATOMIC_NUMBER_TO_POSITION
-from ppmat.utils.periodic_table import MAX_GROUP
-from ppmat.utils.periodic_table import MAX_PERIOD
-from ppmat.utils.periodic_table import normalize_column
-from ppmat.utils.periodic_table import normalize_row
+from ppmat.utils.misc import ragged_range
+
+MAX_PERIOD = 7
+MAX_GROUP = 18
+
+ATOMIC_NUMBER_TO_POSITION = {
+    0: (0, 0),
+    1: (1, 1),
+    2: (1, 18),
+    3: (2, 1),
+    4: (2, 2),
+    5: (2, 13),
+    6: (2, 14),
+    7: (2, 15),
+    8: (2, 16),
+    9: (2, 17),
+    10: (2, 18),
+    11: (3, 1),
+    12: (3, 2),
+    13: (3, 13),
+    14: (3, 14),
+    15: (3, 15),
+    16: (3, 16),
+    17: (3, 17),
+    18: (3, 18),
+    19: (4, 1),
+    20: (4, 2),
+    21: (4, 3),
+    22: (4, 4),
+    23: (4, 5),
+    24: (4, 6),
+    25: (4, 7),
+    26: (4, 8),
+    27: (4, 9),
+    28: (4, 10),
+    29: (4, 11),
+    30: (4, 12),
+    31: (4, 13),
+    32: (4, 14),
+    33: (4, 15),
+    34: (4, 16),
+    35: (4, 17),
+    36: (4, 18),
+    37: (5, 1),
+    38: (5, 2),
+    39: (5, 3),
+    40: (5, 4),
+    41: (5, 5),
+    42: (5, 6),
+    43: (5, 7),
+    44: (5, 8),
+    45: (5, 9),
+    46: (5, 10),
+    47: (5, 11),
+    48: (5, 12),
+    49: (5, 13),
+    50: (5, 14),
+    51: (5, 15),
+    52: (5, 16),
+    53: (5, 17),
+    54: (5, 18),
+    55: (6, 1),
+    56: (6, 2),
+    57: (6, 3),
+    58: (6, 3.01),
+    59: (6, 3.02),
+    60: (6, 3.03),
+    61: (6, 3.04),
+    62: (6, 3.05),
+    63: (6, 3.06),
+    64: (6, 3.07),
+    65: (6, 3.08),
+    66: (6, 3.09),
+    67: (6, 3.10),
+    68: (6, 3.11),
+    69: (6, 3.12),
+    70: (6, 3.13),
+    71: (6, 3.14),
+    72: (6, 4),
+    73: (6, 5),
+    74: (6, 6),
+    75: (6, 7),
+    76: (6, 8),
+    77: (6, 9),
+    78: (6, 10),
+    79: (6, 11),
+    80: (6, 12),
+    81: (6, 13),
+    82: (6, 14),
+    83: (6, 15),
+    84: (6, 16),
+    85: (6, 17),
+    86: (6, 18),
+    87: (7, 1),
+    88: (7, 2),
+    89: (7, 3),
+    90: (7, 3.01),
+    91: (7, 3.02),
+    92: (7, 3.03),
+    93: (7, 3.04),
+    94: (7, 3.05),
+    95: (7, 3.06),
+    96: (7, 3.07),
+    97: (7, 3.08),
+    98: (7, 3.09),
+    99: (7, 3.10),
+    100: (7, 3.11),
+    101: (7, 3.12),
+    102: (7, 3.13),
+    103: (7, 3.14),
+    104: (7, 4),
+    105: (7, 5),
+    106: (7, 6),
+    107: (7, 7),
+    108: (7, 8),
+    109: (7, 9),
+    110: (7, 10),
+    111: (7, 11),
+    112: (7, 12),
+    113: (7, 13),
+    114: (7, 14),
+    115: (7, 15),
+    116: (7, 16),
+    117: (7, 17),
+    118: (7, 18),
+}
 
 
 def modulate(x, shift, scale):
@@ -45,23 +163,8 @@ def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
 
 
-def timestep_embedding(t, dim, max_period=10000):
-    """Sinusoidal timestep embedding (cos-first layout, GLIDE style)."""
-    half = dim // 2
-    freqs = paddle.exp(
-        -math.log(max_period) * paddle.arange(start=0, end=half, dtype="float32") / half
-    )
-    args = t[:, None].cast("float32") * freqs[None]
-    embedding = paddle.concat(x=[paddle.cos(args), paddle.sin(args)], axis=-1)
-    if dim % 2:
-        embedding = paddle.concat(
-            x=[embedding, paddle.zeros_like(embedding[:, :1])], axis=-1
-        )
-    return embedding
-
-
 class TimestepEmbedder(nn.Layer):
-    """Embed scalar timesteps into vector representations."""
+    """Embed timesteps with cos-first GLIDE frequencies and an MLP."""
 
     def __init__(self, hidden_size, frequency_embedding_size=256):
         super().__init__()
@@ -73,50 +176,17 @@ class TimestepEmbedder(nn.Layer):
         self.frequency_embedding_size = frequency_embedding_size
 
     def forward(self, t):
-        t_freq = timestep_embedding(t, self.frequency_embedding_size)
-        t_emb = self.mlp(t_freq)
-        return t_emb
-
-
-class Attention(nn.Layer):
-    """Multi-head self attention equivalent to timm ``vision_transformer``.
-
-    Parameter names (``qkv`` / ``proj``) follow timm so that the released
-    checkpoint keys map directly onto this layer.
-    """
-
-    def __init__(self, dim, num_heads=8, qkv_bias=False):
-        super().__init__()
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        self.scale = head_dim**-0.5
-        self.qkv = nn.Linear(dim, dim * 3, bias_attr=qkv_bias)
-        self.proj = nn.Linear(dim, dim)
-
-    def forward(self, x):
-        batch_size, seq_len, dim = x.shape
-        qkv = self.qkv(x)
-        qkv = qkv.reshape(
-            [batch_size, seq_len, 3, self.num_heads, dim // self.num_heads]
-        ).transpose([2, 0, 3, 1, 4])
-        q, k, v = qkv[0], qkv[1], qkv[2]
-        attn = paddle.matmul(q * self.scale, k, transpose_y=True)
-        attn = paddle.nn.functional.softmax(attn, axis=-1)
-        x = paddle.matmul(attn, v)
-        x = x.transpose([0, 2, 1, 3]).reshape([batch_size, seq_len, dim])
-        return self.proj(x)
-
-
-class Mlp(nn.Layer):
-    """MLP equivalent to timm ``vision_transformer`` with tanh-approx GELU."""
-
-    def __init__(self, in_features, hidden_features):
-        super().__init__()
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.fc2 = nn.Linear(hidden_features, in_features)
-
-    def forward(self, x):
-        return self.fc2(paddle.nn.functional.gelu(self.fc1(x), approximate="tanh"))
+        half = self.frequency_embedding_size // 2
+        freqs = paddle.exp(
+            -math.log(10000) * paddle.arange(half, dtype="float32") / half
+        )
+        args = t[:, None].cast("float32") * freqs[None]
+        embedding = paddle.concat([paddle.cos(args), paddle.sin(args)], axis=-1)
+        if self.frequency_embedding_size % 2:
+            embedding = paddle.concat(
+                [embedding, paddle.zeros_like(embedding[:, :1])], axis=-1
+            )
+        return self.mlp(embedding)
 
 
 class DiTBlock(nn.Layer):
@@ -127,19 +197,23 @@ class DiTBlock(nn.Layer):
         self.norm1 = nn.LayerNorm(
             hidden_size, weight_attr=False, bias_attr=False, epsilon=1e-6
         )
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
+        self.attn = nn.MultiHeadAttention(hidden_size, num_heads)
         self.norm2 = nn.LayerNorm(
             hidden_size, weight_attr=False, bias_attr=False, epsilon=1e-6
         )
         mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim)
-        self.adaLN_modulation = nn.Sequential(
+        self.mlp = nn.Sequential(
+            nn.Linear(hidden_size, mlp_hidden_dim),
+            nn.GELU(approximate="tanh"),
+            nn.Linear(mlp_hidden_dim, hidden_size),
+        )
+        self.ada_ln_modulation = nn.Sequential(
             nn.Silu(), nn.Linear(hidden_size, 6 * hidden_size, bias_attr=True)
         )
 
     def forward(self, x, c):
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = paddle.split(
-            self.adaLN_modulation(c), 6, axis=1
+            self.ada_ln_modulation(c), 6, axis=1
         )
         x = x + gate_msa.unsqueeze(1) * self.attn(
             modulate(self.norm1(x), shift_msa, scale_msa)
@@ -148,21 +222,6 @@ class DiTBlock(nn.Layer):
             modulate(self.norm2(x), shift_mlp, scale_mlp)
         )
         return x
-
-
-def get_1d_sincos_pos_embed(embed_dim, length):
-    """Generate 1D sinusoidal positional embeddings."""
-    positions = np.arange(length)
-    dim_t = np.arange(embed_dim // 2, dtype=np.float32)
-    dim_t = 10000 ** (2 * (dim_t // 2) / embed_dim)
-
-    pos_x = positions[:, np.newaxis] / dim_t
-    pos_embed = np.zeros((length, embed_dim))
-
-    pos_embed[:, 0::2] = np.sin(pos_x)
-    pos_embed[:, 1::2] = np.cos(pos_x)
-
-    return pos_embed
 
 
 class CrystalEmbedder(nn.Layer):
@@ -187,21 +246,18 @@ class CrystalEmbedder(nn.Layer):
             default_initializer=nn.initializer.Constant(0.0),
         )
 
-        self.initialize_weights()
-
-    def initialize_weights(self):
-        nn.init.xavier_uniform_(self.lattice_embedder.weight)
-        nn.init.constant_(self.lattice_embedder.bias, 0.0)
-        nn.init.xavier_uniform_(self.atom_embedder.weight)
-        nn.init.constant_(self.atom_embedder.bias, 0.0)
-
-        pos_embed = get_1d_sincos_pos_embed(self.lattice_pos_embed.shape[-1], 3).astype(
-            "float32"
+        dim_t = np.arange(hidden_size // 2, dtype=np.float32)
+        dim_t = 10000 ** (2 * (dim_t // 2) / hidden_size)
+        pos_x = np.arange(3)[:, None] / dim_t
+        pos_embed = np.zeros((3, hidden_size))
+        pos_embed[:, 0::2] = np.sin(pos_x)
+        pos_embed[:, 1::2] = np.cos(pos_x)
+        self.lattice_pos_embed.set_value(
+            paddle.to_tensor(pos_embed, dtype="float32").unsqueeze(0)
         )
-        self.lattice_pos_embed.set_value(paddle.to_tensor(pos_embed).unsqueeze(0))
 
-        nn.init.normal_(self.lattice_type_embedding, std=0.02)
-        nn.init.normal_(self.atom_type_embedding, std=0.02)
+        initializer.normal_(self.lattice_type_embedding, std=0.02)
+        initializer.normal_(self.atom_type_embedding, std=0.02)
 
     def forward(self, lattice_vectors, atom_features):
         lattice_emb = self.lattice_embedder(lattice_vectors)
@@ -228,13 +284,13 @@ class FinalLayer(nn.Layer):
         self.lattice_linear = nn.Linear(hidden_size, 3, bias_attr=True)
         self.atom_linear = nn.Linear(hidden_size, 5, bias_attr=True)
 
-        self.adaLN_modulation = nn.Sequential(
+        self.ada_ln_modulation = nn.Sequential(
             nn.Silu(), nn.Linear(hidden_size, 4 * hidden_size, bias_attr=True)
         )
 
     def forward(self, atom_features, lattice_features, c):
         shift_atom, scale_atom, shift_lattice, scale_lattice = paddle.split(
-            self.adaLN_modulation(c), 4, axis=1
+            self.ada_ln_modulation(c), 4, axis=1
         )
 
         atom_features = modulate(
@@ -281,22 +337,22 @@ class CrystalDiTBackbone(nn.Layer):
     def initialize_weights(self):
         def _basic_init(module):
             if isinstance(module, nn.Linear):
-                nn.init.xavier_uniform_(module.weight)
+                initializer.xavier_uniform_(module.weight)
                 if module.bias is not None:
-                    nn.init.constant_(module.bias, 0.0)
+                    initializer.constant_(module.bias, 0.0)
 
         self.apply(_basic_init)
 
         for block in self.blocks:
-            nn.init.constant_(block.adaLN_modulation[-1].weight, 0.0)
-            nn.init.constant_(block.adaLN_modulation[-1].bias, 0.0)
+            initializer.constant_(block.ada_ln_modulation[-1].weight, 0.0)
+            initializer.constant_(block.ada_ln_modulation[-1].bias, 0.0)
 
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0.0)
-        nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0.0)
-        nn.init.constant_(self.final_layer.lattice_linear.weight, 0.0)
-        nn.init.constant_(self.final_layer.lattice_linear.bias, 0.0)
-        nn.init.constant_(self.final_layer.atom_linear.weight, 0.0)
-        nn.init.constant_(self.final_layer.atom_linear.bias, 0.0)
+        initializer.constant_(self.final_layer.ada_ln_modulation[-1].weight, 0.0)
+        initializer.constant_(self.final_layer.ada_ln_modulation[-1].bias, 0.0)
+        initializer.constant_(self.final_layer.lattice_linear.weight, 0.0)
+        initializer.constant_(self.final_layer.lattice_linear.bias, 0.0)
+        initializer.constant_(self.final_layer.atom_linear.weight, 0.0)
+        initializer.constant_(self.final_layer.atom_linear.bias, 0.0)
 
     def forward(self, lattice_vectors, atom_features, t):
         lattice_features, atom_features = self.crystal_embedder(
@@ -314,12 +370,7 @@ class CrystalDiTBackbone(nn.Layer):
 
 
 def gaussian_cdf(x, loc, scale):
-    """Standard normal CDF evaluated with the vectorized ``scipy.special.erf``.
-
-    ``scipy.special.ndtr`` / ``scipy.stats.norm.cdf`` are bitwise different
-    (ULP-level) from this erf path; the erf form is kept because the element
-    mapping is verified bitwise against the original implementation.
-    """
+    """Evaluate the normal CDF using the erf form for element discretization."""
     z = (x - loc) / (scale * math.sqrt(2.0))
     return 0.5 * (1.0 + erf(z))
 
@@ -332,45 +383,17 @@ ELEMENT_PROB_THRESHOLD = 1e-6
 
 @functools.lru_cache(maxsize=4)
 def _element_candidate_table(filter_rare_gases, max_atomic_number):
-    """Build and cache the float64 boundary table for candidate atomic numbers.
-
-    All CDF arithmetic stays in float64: the per-sample loop this table
-    replaces promoted the float32 predictions to float64 before evaluation,
-    so keeping float64 here preserves the results bitwise.
-    """
-    rare_gas_elements = [2, 10, 18, 36, 54, 86]
-
-    candidates = [(0, 0, 0)]
-    for atomic_number, (elem_row, elem_column) in ATOMIC_NUMBER_TO_POSITION.items():
-        if atomic_number == 0:
-            continue
-        if filter_rare_gases and atomic_number in rare_gas_elements:
-            continue
-        if atomic_number > max_atomic_number:
-            continue
-        candidates.append((atomic_number, elem_row, elem_column))
-
-    row_step = 1.0 / MAX_PERIOD
-    column_step = 1.0 / MAX_GROUP
-
-    numbers, row_upper, row_lower, column_upper, column_lower = [], [], [], [], []
-    for atomic_number, elem_row, elem_column in candidates:
-        norm_row = normalize_row(elem_row)
-        norm_column = normalize_column(elem_column)
-
-        numbers.append(atomic_number)
-        row_upper.append(norm_row + row_step if norm_row < 1 else np.inf)
-        row_lower.append(norm_row - row_step if norm_row > -1 else -np.inf)
-        column_upper.append(norm_column + column_step if norm_column < 1 else np.inf)
-        column_lower.append(norm_column - column_step if norm_column > -1 else -np.inf)
-
-    return (
-        np.array(numbers, dtype=np.int64),
-        np.array(row_upper, dtype=np.float64),
-        np.array(row_lower, dtype=np.float64),
-        np.array(column_upper, dtype=np.float64),
-        np.array(column_lower, dtype=np.float64),
-    )
+    """Cache float64 candidate boundaries to preserve CDF discretization precision."""
+    numbers = np.array(list(ATOMIC_NUMBER_TO_POSITION), dtype=np.int64)
+    positions = np.array(list(ATOMIC_NUMBER_TO_POSITION.values()), dtype=np.float64)
+    keep = (numbers == 0) | (numbers <= max_atomic_number)
+    if filter_rare_gases:
+        keep &= ~np.isin(numbers, [2, 10, 18, 36, 54, 86])
+    positions = positions[keep] / np.array([MAX_PERIOD, MAX_GROUP]) * 2 - 1
+    step = 1.0 / np.array([MAX_PERIOD, MAX_GROUP])
+    upper = np.where(positions < 1, positions + step, np.inf)
+    lower = np.where(positions > -1, positions - step, -np.inf)
+    return numbers[keep], upper[:, 0], lower[:, 0], upper[:, 1], lower[:, 1]
 
 
 def map_to_element_batch(
@@ -430,12 +453,9 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
     units, and predicted atoms are mapped back to atomic numbers through the
     2D periodic-table representation.
 
-    Unlike the variable-length crystal generators (DiffCSP/MatterGen) that
-    read ``batch_data["structure_array"]``, this model consumes fixed-length
-    top-level fields (``lattice_vectors``/``atom_features``) because the
-    padding/packing happens once in the dataset; ``sample`` still accepts a
-    ``structure_array`` batch for compatibility with the shared sampler
-    entry points.
+    Training consumes the standard concatenated ``structure_array`` batch.
+    Fixed-length continuous atom tokens are derived inside the model; sampling
+    is unconditional and consumes only the number of structures in the batch.
 
     Args:
         noise_scheduler_cfg (dict): DDPM noise scheduler configuration. See
@@ -451,8 +471,6 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
         max_length (float, optional): Lattice normalization constant used in
             both training data and structure reconstruction. Defaults to
             46.7425.
-        num_train_timesteps (int, optional): Diffusion step count. Defaults
-            to 1000.
         atom_loss_weight (float, optional): Atom loss weight. Defaults to
             100.0.
         feature_weights (Sequence[float], optional): Per-feature MSE weights
@@ -468,29 +486,36 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
 
     def __init__(
         self,
-        noise_scheduler_cfg,
-        max_atoms=20,
-        hidden_size=512,
-        depth=18,
-        num_heads=8,
-        mlp_ratio=4.0,
-        frequency_embedding_size=256,
-        max_length=46.7425,
-        num_train_timesteps=1000,
-        atom_loss_weight=100.0,
-        feature_weights=(1.5, 2.0, 1.0, 1.0, 1.0),
-        execution_backend="eager",
-        runtime_options=None,
-    ):
+        noise_scheduler_cfg: dict,
+        max_atoms: int = 20,
+        hidden_size: int = 512,
+        depth: int = 18,
+        num_heads: int = 8,
+        mlp_ratio: float = 4.0,
+        frequency_embedding_size: int = 256,
+        max_length: float = 46.7425,
+        atom_loss_weight: float = 100.0,
+        feature_weights: Sequence[float] = (1.5, 2.0, 1.0, 1.0, 1.0),
+        execution_backend: str = "eager",
+        runtime_options: dict | None = None,
+    ) -> None:
         super().__init__()
         self._init_runtime(execution_backend, runtime_options)
 
         self.max_atoms = max_atoms
         self.max_length = max_length
-        self.num_train_timesteps = num_train_timesteps
         self.atom_loss_weight = atom_loss_weight
-        self.feature_weights = paddle.to_tensor(
-            np.array(feature_weights, dtype="float32")
+        self.register_buffer(
+            "feature_weights",
+            paddle.to_tensor(feature_weights, dtype="float32"),
+            persistable=False,
+        )
+        positions = np.array(list(ATOMIC_NUMBER_TO_POSITION.values()), dtype="float64")
+        positions = positions / np.array([MAX_PERIOD, MAX_GROUP]) * 2 - 1
+        self.register_buffer(
+            "element_positions",
+            paddle.to_tensor(positions.astype("float32")),
+            persistable=False,
         )
 
         self.backbone = CrystalDiTBackbone(
@@ -503,26 +528,37 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
         )
 
         self.noise_scheduler = build_scheduler(noise_scheduler_cfg)
+        self.num_train_timesteps = self.noise_scheduler.num_train_timesteps
 
     @runtime_boundary("denoise_step")
     def _runtime_denoise(self, lattice_vectors, atom_features, t):
         return self.backbone(lattice_vectors, atom_features, t)
 
-    def forward(self, batch, **kwargs):
+    def forward(self, batch):
         """Compute the training loss for a batch.
 
-        Args:
-            batch (dict): Batch dict with ``lattice_vectors`` ``[B, 3, 3]``
-                and ``atom_features`` ``[B, max_atoms, 5]``.
-
-        Returns:
-            dict: ``{"loss_dict": {...}}``. This is an unconditional
-            generation model, so no per-attribute prediction keys exist and
-            ``compute_metric_func_dict`` does not apply.
+        ``batch["structure_array"]`` contains concatenated atom types and
+        fractional coordinates, per-structure atom counts and lattice matrices.
+        Per-attribute ``compute_metric_func_dict`` is not applicable to this
+        unconditional objective. Supervision is exposed through ``label_dict``.
         """
-        lattice_vectors = batch["lattice_vectors"]
-        atom_features = batch["atom_features"]
-        batch_size = lattice_vectors.shape[0]
+        structure = batch["structure_array"]
+        num_atoms = structure["num_atoms"]
+        if bool(paddle.any(num_atoms > self.max_atoms)):
+            raise ValueError("The input structure exceeds max_atoms.")
+        batch_size = num_atoms.shape[0]
+        batch_index = paddle.repeat_interleave(paddle.arange(batch_size), num_atoms)
+        atom_index = ragged_range(num_atoms)
+        features = paddle.concat(
+            [self.element_positions[structure["atom_types"]], structure["frac_coords"]],
+            axis=-1,
+        )
+        atom_features = paddle.scatter(
+            paddle.full([batch_size * self.max_atoms, 5], -1.0),
+            batch_index * self.max_atoms + atom_index,
+            features,
+        ).reshape([batch_size, self.max_atoms, 5])
+        lattice_vectors = structure["lattice"] / self.max_length
 
         times = uniform_sample_t(batch_size, self.num_train_timesteps)
         rand_lattice = paddle.randn(
@@ -554,16 +590,16 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
                 "lattice_loss": lattice_loss.mean(),
                 "atom_loss": atom_loss.mean(),
             },
+            "label_dict": {"structure_array": structure},
         }
 
     @paddle.no_grad()
     def sample(
         self,
         batch_data,
-        num_inference_steps=1000,
+        num_inference_steps=None,
         filter_rare_gases=True,
         max_atomic_number=94,
-        **kwargs,
     ):
         """Generate crystal structures from pure noise.
 
@@ -571,7 +607,7 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
             batch_data (dict): Batch dict; only the batch size is consumed
                 because the model is unconditional.
             num_inference_steps (int, optional): DDPM sampling steps. Defaults
-                to 1000.
+                to the scheduler training step count.
             filter_rare_gases (bool, optional): Exclude rare gas elements from
                 the atom mapping candidates. Defaults to True.
             max_atomic_number (int, optional): Highest atomic number accepted
@@ -581,18 +617,15 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
             dict: ``{"result": [...]}`` where every element holds
             ``num_atoms`` / ``atom_types`` / ``frac_coords`` / ``lattice``.
         """
-        if (
-            "structure_array" in batch_data
-            and batch_data["structure_array"] is not None
-        ):
-            batch_size = batch_data["structure_array"]["num_atoms"].shape[0]
-        elif "lattice_vectors" in batch_data:
-            batch_size = batch_data["lattice_vectors"].shape[0]
-        else:
+        structure = batch_data["structure_array"]
+        if "atom_types" in structure:
             raise ValueError(
-                "batch_data must contain either 'structure_array' with "
-                "'num_atoms' or 'lattice_vectors' to determine the batch size."
+                "CrystalDiT is unconditional. Use a NumAtomsCrystalDataset batch "
+                "with by_dataloader sampling, without chemical-formula constraints."
             )
+        batch_size = structure["num_atoms"].shape[0]
+        if num_inference_steps is None:
+            num_inference_steps = self.num_train_timesteps
 
         lattice_t = paddle.randn([batch_size, 3, 3], dtype="float32")
         atom_t = paddle.randn([batch_size, self.max_atoms, 5], dtype="float32")

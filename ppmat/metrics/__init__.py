@@ -16,6 +16,7 @@ import copy
 
 import paddle  # noqa
 
+from ppmat.metrics.crystal_generation_metric import CrystalGenerationMetric
 from ppmat.metrics.csp_metric import CSPMetric
 from ppmat.metrics.diffnmr_streaming_adapter import DiffNMRStreamingAdapter
 from ppmat.metrics.sfin_metric import SFINStreamingAdapter
@@ -23,6 +24,7 @@ from ppmat.metrics.sfin_metric import SFINStreamingAdapter
 __all__ = [
     "build_metric",
     "CSPMetric",
+    "CrystalGenerationMetric",
     "DiffNMRStreamingAdapter",
     "SFINStreamingAdapter",
     # "DiffNMRMetric",

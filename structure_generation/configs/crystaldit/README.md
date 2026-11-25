@@ -5,12 +5,13 @@
 ## Abstract
 
 CrystalDiT is a diffusion transformer for crystal structure generation that
-achieves state-of-the-art performance by challenging the trend of
-architectural complexity. Instead of intricate, multi-stream designs,
+was proposed to improve crystal generation by simplifying
+the model architecture. Instead of intricate, multi-stream designs,
 CrystalDiT employs a unified transformer that treats lattice and atomic
-properties as a single, interdependent system. On MP-20 it reaches a
-structurally-and-chemically novel (SUN) rate of 8.78%, substantially
-outperforming recent methods.
+properties as a single, interdependent system. The authors report a stable, unique and novel (S.U.N.) rate of 8.78%
+on MP-20; this published DFT result is distinct from the Paddle evaluation below.
+
+![CrystalDiT Architecture](../../docs/crystaldit_architecture.png)
 
 ---
 
@@ -30,7 +31,8 @@ A crystal is represented as a fixed-length token sequence:
   f-block slot) and $(x, y, z)$ are fractional coordinates. Invalid padding
   atoms are $(-1,-1,-1,-1,-1)$.
 
-![CrystalDiT Architecture](../../docs/CrystalDiT-Architecture.png)
+Training preserves the original MP-20 cell and atom order. Niggli reduction
+and canonicalization are disabled to match the pretrained lattice representation.
 
 ### Method
 
@@ -67,7 +69,7 @@ lattice and the atoms influence each other at every layer.
 #### 3) Training objective
 
 $$
-\mathcal{L} = \left\|\epsilon_L - \hat\epsilon_L\right\|^2
+\mathcal{L} = \mathrm{mean}\!\left((\epsilon_L - \hat\epsilon_L)^2\right)
 + 100 \cdot \mathrm{mean}\!\left(W \odot \left(\epsilon_A - \hat\epsilon_A\right)^2\right),
 $$
 
@@ -80,7 +82,7 @@ Predicted atoms are mapped back to elements by DDPM discretization of the
 continuous $(r, c)$ predictions over all candidate periodic-table positions
 (Gaussian CDF, sigma = 0.1), filtering rare gases; predicted lattice rows are
 multiplied by `max_length` to restore Angstrom units. Invalid atoms are
-dropped, yielding structures with 1-20 atoms.
+dropped from the output atom list.
 
 ---
 
@@ -89,55 +91,78 @@ dropped, yielding structures with 1-20 atoms.
 MP-20 (Materials Project subset, max 20 atoms per cell) in CSV form:
 
 #### MP-20 split (download link)
+
 | Dataset | Train | Val | Test |
 | --- | --- | --- | --- |
 | [MP-20](https://paddle-org.bj.bcebos.com/paddlematerial/datasets/mp_20/mp_20.zip) | 27136 | 9047 | 9046 |
-
-Every CIF string is parsed once through `MP20Dataset` and the pymatgen
-structures are cached under `~/.paddlemat/datasets/crystaldit/<split>/`; the
-fixed-length representation (`lattice_vectors [3,3]` + `atom_features [20,5]`)
-is derived on access.
 
 ---
 
 ## Results
 
-| Model Name | Dataset | Val (loss) | Config | Checkpoint / Log |
+Converted pretrained weights evaluated on 1,000 unconditional samples with the
+full 1,000-step DDPM schedule. All rates use the 1,000 requested samples as the
+denominator. Unique counts one representative per StructureMatcher cluster;
+Novel compares each constructed structure against all 27,136 training crystals;
+UN counts unique representatives absent from that training reference.
+
+| Model | Dataset | Struct. Valid (%) | Chem. Valid (%) | Overall Valid (%) | Unique (%) | Novel (%) | UN (%) | Density W1 (g/cm³) | Elements W1 | Config | Checkpoint / Log |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| crystaldit_mp20 | MP-20 | 97.50 | 87.30 | 85.20 | 99.20 | 69.20 | 68.90 | 0.2465 | 0.2094 | [crystaldit_mp20.yaml](crystaldit_mp20.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/CrystalDiT/crystaldit_mp20.zip) |
+
+Wasserstein distances compare jointly valid generated structures with all
+9,046 MP-20 test crystals; lower is better. The matcher uses `ltol=0.2`,
+`stol=0.3` and `angle_tol=5`. Structural and chemical validity reuse the
+project's minimum-distance/volume and SMACT checks. These metrics measure
+unconditional generation, so index-paired CSP match rate/RMS distance is not
+applicable. Stability and S.U.N. require separate energy/convex-hull evaluation
+and are not inferred from validity.
+
+| Model | Dataset | Validation Loss | Test Loss | Config |
 | --- | --- | --- | --- | --- |
-| crystaldit_mp20 | mp20 | 10.92 | [crystaldit_mp20.yaml](crystaldit_mp20.yaml) | [checkpoint / log](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/CrystalDiT/crystaldit_mp20.zip) |
+| crystaldit_mp20 | MP-20 | 8.071255 | 8.115754 | [crystaldit_mp20.yaml](crystaldit_mp20.yaml) |
+
+Losses use the complete validation/test splits with seed 42 and the weighted
+joint denoising objective above. These are evaluations of converted pretrained
+weights, not results of complete training with the current YAML. The generation
+row is one stochastic run; repeated sampling can produce different values.
 
 ---
 
 ## Command
 
 ### Training
+
+The config initializes from the registered pretrained package. To train from
+scratch:
+
 ```bash
-# single-gpu training
-python structure_generation/train.py -c structure_generation/configs/crystaldit/crystaldit_mp20.yaml
+python structure_generation/train.py -c structure_generation/configs/crystaldit/crystaldit_mp20.yaml Trainer.pretrained_model_path=null
 ```
 
 ### Validation
+
 ```bash
-python structure_generation/train.py -c structure_generation/configs/crystaldit/crystaldit_mp20.yaml Global.do_eval=True Global.do_train=False Trainer.pretrained_model_path='path/to/model.pdparams'
+python structure_generation/train.py -c structure_generation/configs/crystaldit/crystaldit_mp20.yaml Global.do_train=False Global.do_eval=True
 ```
 
 ### Testing
+
 ```bash
-python structure_generation/train.py -c structure_generation/configs/crystaldit/crystaldit_mp20.yaml Global.do_eval=False Global.do_train=False Global.do_test=True Trainer.pretrained_model_path='path/to/model.pdparams'
+python structure_generation/train.py -c structure_generation/configs/crystaldit/crystaldit_mp20.yaml Global.do_train=False Global.do_test=True
 ```
 
 ### Sample
+
 ```bash
-# Mode 1: pre-trained model (downloads automatically through MODEL_REGISTRY).
-# by_dataloader samples the MP-20 test split (one structure per test CIF).
-python structure_generation/sample.py --model_name='crystaldit_mp20' --output_path='result_crystaldit_mp20/' --mode=by_dataloader
-
-# Mode 2: custom config + checkpoint
-python structure_generation/sample.py --config_path='structure_generation/configs/crystaldit/crystaldit_mp20.yaml' --checkpoint_path='./output/crystaldit_mp20/checkpoints/latest.pdparams' --output_path='result_crystaldit_mp20/' --mode=by_dataloader
-
-# Mode 3: CSP metrics (match rate and RMS distance against the MP-20 test split)
-python structure_generation/sample.py --model_name='crystaldit_mp20' --output_path='result_crystaldit_mp20/' --mode=compute_metric
+python structure_generation/sample.py --model_name=crystaldit_mp20 --mode=compute_metric
 ```
+
+This downloads the registered weights and missing MP-20 reference data,
+generates 1,000 structures with the full DDPM schedule, writes CIF files to
+`results/`, and prints the generation metrics above. CrystalDiT generates
+composition and atom count jointly; chemical-formula and property conditioning
+are not supported. Use `--mode=by_dataloader` for generation without evaluation.
 
 ---
 
