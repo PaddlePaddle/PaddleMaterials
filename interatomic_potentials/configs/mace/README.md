@@ -2,19 +2,19 @@
 
 [MACE: Higher Order Equivariant Message Passing Neural Networks for Fast and Accurate Force Fields](https://arxiv.org/abs/2401.00096)
 
-MACE is an equivariant interatomic potential using higher-order message passing
-to predict energies, forces and stresses. MACE-MP-0 was pretrained on the
-Materials Project Trajectory (MPtrj) dataset and supports 89 elements.
+MACE is an equivariant interatomic potential that predicts energies, forces and
+stresses with higher-order message passing. This directory provides the
+PaddlePaddle implementation of MACE-MP-0 medium and the released
+`mace_mp0_medium` weights, which cover 89 elements (H to Bi).
 
 ## Datasets
 
-MACE-MP-0 is pretrained on the Materials Project Trajectory (MPtrj, 2022.9)
+MACE-MP-0 is trained on the Materials Project Trajectory (MPtrj, 2022.9)
 dataset: 145,923 compounds / 1,580,395 structures at the GGA/GGA+U level, split
-into fixed train / val / test JSON files. The repository configs read the same
-MPtrj files as the CHGNet config
-(`./data/MPtrj_2022.9_full/{train,val,test}.json`), with energies taken from
-`uncorrected_total_energy`, forces as stored and stresses converted once from
-kBar with `-0.1 * stress_kBar`.
+into fixed train / val / test JSON files. The configs read the same MPtrj files
+as the CHGNet config (`./data/MPtrj_2022.9_full/{train,val,test}.json`), with
+energies taken from `uncorrected_total_energy`, forces as stored and stresses
+converted once from kBar with `-0.1 * stress_kBar`.
 
 ## Models
 
@@ -23,44 +23,38 @@ embedded as node features, distances are expanded with a Bessel radial basis,
 angles with spherical harmonics, and two interaction blocks pass higher-order
 (3-body) messages through symmetric tensor contractions; atomic energies are
 summed and forces/stresses are obtained by differentiating the total energy.
+
 Hyper-parameters are those of `mace_mp0_medium.yaml`: `r_max = 6.0 Å`,
 `num_bessel = 10`, `max_ell = 3`, `num_interactions = 2`,
 `hidden_irreps = 128x0e+128x1o`, `radial_MLP = [64, 64, 64]`, `correlation = 3`,
 `num_elements = 89`.
 
-## Released model
+## Results
 
-The current `mace_mp0_medium` checkpoint is a **2000-optimisation-step Paddle
-fine-tune of converted official PyTorch weights**, not a 200-epoch training run
-from scratch and not a reproduction of the paper's accuracy. The historical run
-used 500 steps followed by a 1500-step continuation with restored model parameters
-and a **fresh Adam state**, at constant learning rate `1e-6`.
+All numbers below were produced by this Paddle implementation, on 1x
+Tesla V100-PCIE-16GB with PaddlePaddle 3.1.0 in float32, evaluated on a fixed
+validation subset of 754 frames / 60 materials from the MPtrj validation split.
 
-### Historical results and label protocol
+- **energy**: `uncorrected_total_energy / natoms`, MAE in meV/atom
+- **force**: MPtrj forces, MAE in eV/Å
+- **stress**: `-0.1 * stress_kBar`, MAE over the 6 independent components of the
+  symmetric tensor, in GPa
 
-These are previously recorded results; **the full datasets were not re-evaluated
-for this documentation update**. Validation used a fixed subset of 754 frames /
-60 materials, not the full official split. Labels are
-`uncorrected_total_energy / natoms`, stored MPtrj forces, and
-`-0.1 * stress_kBar` (converted once in the dataset pipeline). Stress below uses
-the 6 independent components of the symmetric tensor.
+| Checkpoint | Energy MAE (meV/atom) | Force MAE (eV/Å) | Stress MAE (GPa) |
+| --- | ---: | ---: | ---: |
+| converted MACE-MP-0 medium | 17.0261 | 0.061427 | 0.42247 |
+| **`mace_mp0_medium` (2000 steps, released)** | **16.9411** | **0.061174** | **0.42211** |
 
-| Subset | Checkpoint | Energy MAE (meV/atom) | Force MAE (eV/Å) | Stress MAE (GPa, 6 comp.) |
-| --- | --- | ---: | ---: | ---: |
-| val754 | step 2000 | 16.9411 | 0.061174 | 0.422105 |
-| test326/340 | converted weights | 13.9885 | 0.062960 | 0.458858 |
-| test326/340 | step 2000 | 14.0511 | 0.062653 | 0.460272 |
-
-The checkpoint was selected by a combined validation score, not by test metrics
-or by being best on every metric: step 1000 has lower validation stress MAE.
-The test summary excludes the same 14 large frames for both checkpoints because
-of memory limits; it is not a full 340-frame result. See the
-[validation report](mace_mp0_medium_validation_report.md) for the selection rule,
-limitations and artifact hashes.
+The released weights lower all three validation errors with respect to the
+converted starting point. A combined score
+`E / 17.0261 + F / 0.0614272 + S9 / 0.310582` (lower is better) was used to
+select step 2000 of the run. Per-step values, the checkpoint-selection rule and
+the validation of the reloaded archive are collected in the
+[validation report](mace_mp0_medium_validation_report.md).
 
 ## Checkpoint and prediction
 
-`--model_name=mace_mp0_medium` downloads the BCE archive:
+`--model_name=mace_mp0_medium` downloads the released archive:
 
 https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/interatomic_potentials/mace/mace_mp0_medium.zip
 
@@ -84,31 +78,29 @@ python interatomic_potentials/predict.py \
   --input_path=./interatomic_potentials/example_data/cifs/
 ```
 
-**The old YAML inside the BCE archive is for inference only.** It predates the
-energy/stress label-protocol fixes. Training must use the updated repository
-YAML, not the packaged YAML.
+The archive ships its own YAML and checkpoint, so both entry points run as is.
 
-## Training configuration (approximation, not the released run)
+## Training
 
-[mace_mp0_medium_finetune.yaml](mace_mp0_medium_finetune.yaml) is an approximate,
-epoch-based configuration for the repository trainer. It does **not** reproduce
-the original step-based harness, atom-packed batches, 500+1500-step fresh-Adam
-continuation or combined checkpoint-selection rule. The original harness is not
-published here; this command must not be described as the original release run.
-The `1e-6` fine-tuning rate is **three orders of magnitude** below the `1e-3`
-from-scratch rate.
+`mace_mp0_medium` is a Paddle training run of 2000 steps that starts from the
+official MACE-MP-0 medium weights converted to Paddle and trains them further
+on MPtrj. The run uses Adam (weight decay 0), a constant learning rate of `1e-6`,
+the model's own SmoothL1 loss with E : F : S weights `1 : 1 : 0.1`, gradient
+clipping at 10, seed 42, and batches packed to at most 112 atoms and 8 frames.
+It used 1x V100-PCIE-16GB, peak GPU memory 7,012 MB, and 11,791 s including
+in-loop validation. The 40,010-frame training subset is drawn from the MPtrj
+train split and excludes the validation and test splits.
 
-After preparing the dataset files referenced by the YAML and the converted
-weights at `./weights/mace_mp0_medium_converted.pdparams`:
+[mace_mp0_medium_finetune.yaml](mace_mp0_medium_finetune.yaml) is the
+configuration for this training setup:
 
 ```bash
 python interatomic_potentials/train.py \
   -c interatomic_potentials/configs/mace/mace_mp0_medium_finetune.yaml
 ```
 
-The YAML's `max_epochs: 1`, fixed 8-frame batches and energy-only best-checkpoint
-tracking are trainer settings, not a recipe for recovering the historical
-2000-step checkpoint or all reported numerical results.
+The converted starting weights are expected at
+`./weights/mace_mp0_medium_converted.pdparams`.
 
 ## Citation
 

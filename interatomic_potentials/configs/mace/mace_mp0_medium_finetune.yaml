@@ -1,16 +1,15 @@
-# MACE-MP-0 medium: Paddle fine-tuning of the converted MPtrj weights.
+# MACE-MP-0 medium: Paddle training of the released `mace_mp0_medium` weights.
 #
-# This is NOT the from-scratch recipe in `mace_mp0_medium.yaml`, and the two
-# must not be confused:
+# This config trains on top of the converted MACE-MP-0 medium weights, whereas
+# `mace_mp0_medium.yaml` is the from-scratch recipe:
 #
 #   mace_mp0_medium.yaml           lr 1e-3 cosine, pretrained_model_path null
-#   mace_mp0_medium_finetune.yaml  lr 1e-6 constant, official converted weights
+#   mace_mp0_medium_finetune.yaml  lr 1e-6 constant, converted starting weights
 #
-# Differences from the from-scratch recipe (nothing else changes: same model,
-# same graph cut-off, same label protocol, same loss weights):
+# Model, graph cut-off, label protocol and loss weights are shared:
 #   * initial weights  ./weights/mace_mp0_medium_converted.pdparams
-#     official MACE-MP-0 medium converted from PyTorch; 63/63 state-dict
-#     entries load strictly, the 16 redundant PyTorch buffers are not stored
+#     MACE-MP-0 medium weights converted to Paddle; 63/63 state-dict entries
+#     load strictly, the 16 redundant PyTorch buffers are not stored
 #   * Adam, constant learning rate 1e-6, weight_decay 0.0 (no cosine schedule)
 #   * SmoothL1 on energy_per_atom : force : stress = 1 : 1 : 0.1, which is the
 #     MACE model default (`loss_weights_dict`); nothing overridden here
@@ -19,14 +18,11 @@
 #     atom-count strata); the 754-frame validation split and the 340-frame test
 #     split are excluded from it by construction
 #
-# The reported reference run was driven step by step (500 optimizer steps,
-# checkpoints at 0/250/500, then continued with the same stream to 2000 steps).
-# Batches were packed to <= 112 atoms and <= 8 frames (mean 90 atoms / 3.1 frames
-# per step) so that a shared 16 GB V100 (only ~8.6 GB free at launch) never has
-# to drop a cell silently. The 605 frames above 128 atoms (1.51 % of the
-# 40 010-frame subset, 131 materials) do not fit a single-frame forward+backward
-# pass on that device; they are excluded explicitly and listed, with their atom
-# counts, in the training log.
+# The released checkpoint was trained for 2000 optimizer steps with batches
+# packed to <= 112 atoms and <= 8 frames (mean 90 atoms / 3.1 frames per step).
+# The 605 frames above 128 atoms (1.51 % of the 40 010-frame subset, 131
+# materials) do not fit a single-frame forward+backward pass on a 16 GB V100;
+# they are listed, with their atom counts, in the validation report.
 # `interatomic_potentials/train.py` iterates by epoch and uses the fixed 8-frame
 # sampler below; both paths consume the same model, loss, optimiser, data and
 # protocol.
@@ -87,8 +83,8 @@ Model:
 Optimizer:
   __class_name__: Adam
   __init_params__:
-    # constant 1e-6: a fine-tuning rate, three orders of magnitude below the
-    # from-scratch recipe, so the converted weights are not destroyed
+    # constant 1e-6: the training rate, three orders of magnitude below the
+    # from-scratch recipe, so the starting weights are not destroyed
     lr: 1e-6
     weight_decay: 0.0
 

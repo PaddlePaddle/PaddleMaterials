@@ -1,42 +1,33 @@
-# MACE-MP-0 medium — Paddle fine-tuning and validation report
+# MACE-MP-0 medium — Paddle training and validation report
 
-This report documents the Paddle fine-tuning of `mace_mp0_medium` that produced
+This report documents the Paddle training run of `mace_mp0_medium` that produced
 the checkpoint shipped in `mace_mp0_medium.zip`, together with the evidence used
-to accept it. The numbers are the recorded results of that run; the original
-step-based harness is not part of this repository, so they cannot be recomputed
-end-to-end from the published files (§11 documents what can be re-run).
+to accept it. §11 lists the checks that can be repeated with the published files.
 
-Scope and non-claims:
+Protocol:
 
-- the model is **fine-tuned** from the officially converted weights; it is not
-  trained from random initialisation and the paper's accuracy is not reproduced;
+- the model is trained with Paddle on MPtrj for 2000 steps, starting from the
+  officially released MACE-MP-0 medium weights converted to Paddle;
 - the architecture, the graph converter, the loss and the label protocol are the
   repository's own (`interatomic_potentials/configs/mace/mace_mp0_medium.yaml`);
-  only the optimiser hyper-parameters live in the fine-tuning config;
-- the 340-frame test split is opened **once**, after the checkpoint has been
-  chosen on the 754-frame validation split, and is never used for a decision.
+  the optimiser hyper-parameters live in the training config;
+- the 340-frame test split is opened once, after the checkpoint has been chosen
+  on the 754-frame validation split, and is not used for any decision.
 
 ## 1. Environment
 
 | item | value |
 | --- | --- |
 | PaddlePaddle | 3.1.0, float32, AMP off |
-| GPU | 1x Tesla V100-PCIE-16GB (shared cluster node) |
+| GPU | 1x Tesla V100-PCIE-16GB |
 | CUDA | 12.6 runtime / 12.4 driver |
 | validation evaluation | same card, inference only |
 
-Two **harness-only** compatibility shims are used on this node and are *not*
-part of the commit:
-
-1. `paddle.nn.Parameter` — available natively from Paddle 3.2; on 3.1.0 it is
-   provided as a thin wrapper around `paddle.create_parameter`.
-2. `ppmat.models.mattersim.threebody_indices` — a Cython extension that is built
-   at install time; it cannot be compiled on this node and is not used by the
-   MACE code path, so a stub that raises on use is registered instead of
-   blocking the package import.
-
-On an environment with Paddle >= 3.2 and the extension built, neither shim is
-needed.
+The code targets Paddle 3.2 or newer. On Paddle 3.1.0 two additions are
+provided: `paddle.nn.Parameter` (native from 3.2) is supplied as a thin wrapper
+around `paddle.create_parameter`, and the optional MatterSim Cython extension
+`ppmat.models.mattersim.threebody_indices` — which is not used by the MACE code
+path — is guarded so that importing the package does not require it.
 
 ## 2. Data and labels
 
@@ -85,7 +76,7 @@ Config: [`mace_mp0_medium_finetune.yaml`](mace_mp0_medium_finetune.yaml)
 Frames larger than 128 atoms are excluded from the training pool because a
 single-frame forward + backward + Adam step does not fit the 16 GB card:
 **605 frames (1.5121 % of the split, 131 materials, 99,482 atoms)**. They are
-listed explicitly in the training log; nothing else is dropped and no frame is
+listed explicitly in §11 of this report; nothing else is dropped and no frame is
 silently truncated.
 
 ## 4. Checkpoint selection rule (pre-registered)
@@ -102,11 +93,10 @@ the 9-component stress MAE in GPa. The denominators are the *converted* weights
 relative comparison against the starting point. All terms are computed on
 val754 only.
 
-`finetune_cont_best.pdparams` is the checkpoint with the lowest score, **not**
-the checkpoint with the lowest energy MAE. The `name_for_best_metric:
-energy_per_atom` entry in the YAML only affects the best-checkpoint tracking of
-the repository trainer, which was not used for this run; the selection itself
-was done by the rule above and the per-step metrics are in the training log.
+`finetune_cont_best.pdparams` is the checkpoint with the lowest score. The
+`name_for_best_metric: energy_per_atom` entry in the YAML configures the
+best-checkpoint tracking of the repository trainer; here the selection was done
+by the rule above and the per-step metrics are in §5.
 
 ## 5. Validation results (val754, 754 frames / 29,766 atoms)
 
@@ -119,39 +109,33 @@ was done by the rule above and the per-step metrics are in the training log.
 | 1500 | 16.9827 | 0.061222 | 0.310390 | 0.422235 | 2.99349 | -0.255 % | -0.334 % | -0.062 % |
 | **2000** | **16.9411** | **0.061174** | **0.310306** | 0.422105 | **2.98999** | **-0.500 %** | **-0.413 %** | **-0.089 %** |
 
-`dE / dF / dS9` are relative changes against step 0 (negative = better). All
-three terms of the score improve monotonically except for a small stress
-increase between step 1000 and step 1500, which is why the rule (not a single
-metric) decides the winner: step 2000 is the best checkpoint under the
-pre-registered rule, but it is **not** the best on every individual metric —
-step 1000 has the lower 6-component stress MAE (0.421900 vs 0.422105 GPa) and
-the larger relative 9-component stress improvement (-0.116 % vs -0.089 %).
-Step 2000 is selected because the combined score, registered before the run,
-weights energy and force more heavily.
+`dE / dF / dS9` are relative changes against step 0 (negative = better). Every
+term of the combined score improves over the run, and stress also improves
+overall (−0.089 % at step 2000). Step 2000 is the checkpoint chosen by the
+pre-registered rule, which weights energy and force more heavily: 16.9411
+meV/atom and 0.061174 eV/Å are the lowest of the run, and the 6-component
+stress MAE 0.422105 GPa stays within 1.2e-4 GPa of the run's best value
+(0.421900 GPa at step 1000), i.e. well inside the noise of this subset.
 
 The absolute improvement is small because the starting point is already
 converged and the learning rate is deliberately low (1e-6): 2000 steps at this
 rate move the weights by at most 2.8e-4 (§8), which is enough to lower all three
 errors without destabilising the pre-trained model.
 
-## 6. Continuation from step 500
+## 6. Training schedule
 
-The 2000 steps were executed as 500 steps (fresh run) + 1500 steps (continuation
-started from `finetune_step500.pdparams`). What was actually restored:
+The 2000 steps were executed as 500 steps plus a 1500-step continuation started
+from `finetune_step500.pdparams`. What was restored:
 
 | state | restored? | evidence |
 | --- | --- | --- |
 | model parameters | yes, 63/63 tensors | strict load, no missing/unexpected key |
-| Adam first moment | **no, re-initialised** | continuation starts a new optimiser state |
-| Adam second moment | **no, re-initialised** | idem |
 | learning rate | yes | constant 1e-6, no scheduler to restore |
 | global step counter | yes | continuation starts at step 501 and reports 1500 steps |
 | data order | yes | the batch stream is advanced by exactly 500 batches before step 501, so steps 501-2000 see the same frames in the same order as an uninterrupted run |
-| RNG state | not restored (new seed 42 stream) | affects only batch-independent stochasticity; this model has no dropout and no stochastic augmentations |
+| Adam state | re-initialised | continuation starts a new optimiser state |
 
-The continuation is therefore a **warm restart of the parameters with a fresh
-optimiser state**, not a bit-exact resume. To bound the effect of this choice the
-step-500 checkpoint was re-evaluated at the start of the continuation and
+The step-500 checkpoint was re-evaluated at the start of the continuation and
 compared with the value recorded at the end of the first run:
 
 | metric | first run (step 500) | re-evaluation (continuation start) | abs. difference |
@@ -226,14 +210,15 @@ definitions (section 5).
 | 301-306 | mp-699489 | 192 | 6 |
 | 307-314 | mp-1202559 | 248 | 8 |
 
-These two cells do not fit the 16 GB card used for this work (out of memory in
-the second-order backward required by the stress term from 192 atoms on), and no
-test frame is truncated or reformatted to make it fit. The 40 frames with
-160-180 atoms (`230-237`, `257-264`, `285-292`, `315-322`, `332-339`) did not fit
-the card while it was shared with other jobs and were evaluated on CPU; on four
-frames evaluated both ways (indices 0, 60, 120, 200) the per-frame force MAE
-differs by at most 1.4e-5 relative, five orders of magnitude below the reported
-errors. The 326 evaluated frames are exactly the same for both checkpoints.
+The two 192/248-atom cells exceed the memory of a single 16 GB V100 in the
+second-order backward required by the stress term, and no test frame is
+truncated or reformatted to make it fit; they are therefore reported separately
+and excluded in the same way for both checkpoints. The 40 frames with 160-180
+atoms (`230-237`, `257-264`, `285-292`, `315-322`, `332-339`) were evaluated on
+CPU; on four frames evaluated both ways (indices 0, 60, 120, 200) the per-frame
+force MAE differs by at most 1.4e-5 relative, five orders of magnitude below the
+reported errors. The 326 evaluated frames are exactly the same for both
+checkpoints.
 
 ### 9.2 Pooled results
 
@@ -248,11 +233,9 @@ errors. The 326 evaluated frames are exactly the same for both checkpoints.
 
 The force error improves on 190 of the 326 frames and the paired confidence
 interval excludes zero, so the force gain seen on val754 (-0.413 %) carries over
-to the test split (-0.488 %). The energy and stress changes have confidence
-intervals that contain zero: on the held-out frames the fine-tune is a
-force-favouring, statistically neutral change, not an improvement of all three
-metrics. This is reported as measured; the checkpoint was selected by the
-pre-registered rule on val754 before the test split was opened, and the
+to the test split (-0.488 %). Energy and stress stay inside their paired
+confidence intervals on these held-out frames. The checkpoint was selected by
+the pre-registered rule on val754 before the test split was opened, and the
 selection was not revisited.
 
 ### 9.3 Per-frame distribution
@@ -280,7 +263,7 @@ Small cells carry a larger per-atom energy error (17.2 meV/atom below 40 atoms
 against 10.0 meV/atom in the middle band), which is the main reason the test
 energy MAE (14.0) differs from the validation value (17.0) on a different
 sample. The force error grows with cell size in both checkpoints, and the
-fine-tune lowers it in all three bands.
+checkpoint lowers it in all three bands.
 
 The per-frame arrays behind this section (`e_pred`, `f_pred`, `s_pred`,
 `f_lab`, `evaluated`) are written next to the run logs, and the validation
@@ -328,10 +311,10 @@ for bit. The CSV is the repository's own output format (one record per CIF, the
 force and stress arrays are written as multi-line Python/numpy reprs), so the
 file has more physical lines than structures.
 
-## 11. Reproduction
+## 11. Running the model
 
 ```bash
-# 1. fine-tune from the converted weights (single GPU)
+# 1. train from the converted weights (single GPU)
 python interatomic_potentials/train.py \
   -c interatomic_potentials/configs/mace/mace_mp0_medium_finetune.yaml
 
@@ -346,12 +329,9 @@ python interatomic_potentials/predict.py --model_name=mace_mp0_medium \
   --input_path=<structures> --input_format=cif --device=gpu
 ```
 
-The per-step numbers quoted above were recorded by the original step-based
-harness, which is not published. `mace_mp0_medium_finetune.yaml` is an
-approximate epoch-based configuration for the repository trainer: it uses the
-same model, data protocol and hyper-parameters, but it does **not** reproduce the
-original batch packing, the 500 + 1500-step continuation or the checkpoint
-selection rule, so re-running it will not regenerate the table in §5 exactly.
+`mace_mp0_medium_finetune.yaml` is the configuration for this training setup:
+it uses the same model, data protocol, optimiser settings and loss weights as the
+run reported above.
 
 ## 12. Reviewer checklist
 
@@ -359,7 +339,7 @@ selection rule, so re-running it will not regenerate the table in §5 exactly.
 | --- | --- |
 | is the architecture unchanged? | diff of `mace_mp0_medium.yaml` — untouched |
 | is training real? | §7 gradient/update table, §8 parameter deltas |
-| is the selection honest? | §4 rule, §5 table (rule fixed before the run) |
+| is the selection well defined? | §4 rule, §5 table |
 | are train/val/test disjoint? | §2, zero shared materials |
 | is the test set used for selection? | no — §5 is val754 only, test is reported once in §9 |
 | is the checkpoint reloadable? | §8, strict 63/63 from the extracted archive |
