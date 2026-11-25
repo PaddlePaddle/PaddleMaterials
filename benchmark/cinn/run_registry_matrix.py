@@ -43,6 +43,7 @@ CINN_SUPPORTED_PREFIXES = (
     "megnet_",
     "sfin_",
     "spherenet_",
+    "xrd2mof_",
 )
 
 

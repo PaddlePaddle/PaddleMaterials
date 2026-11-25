@@ -140,6 +140,20 @@ def build_workflow(model_name: str, backend: str):
         batch = next(iter(sampler._sample_loader))
         return sampler, lambda: sampler.sample(batch), "full_reverse_diffusion"
 
+    if model_name.startswith("xrd2mof_"):
+        sampler = StructureSampler(
+            model_name=model_name,
+            config_overrides=[
+                *overrides,
+                "Sample.model_sample_params.num_inference_steps=2",
+            ],
+        )
+        return (
+            sampler,
+            lambda: sampler.sample_by_dataloader(),
+            "two_step_structure_sampling",
+        )
+
     if model_name.startswith(("diffcsp_", "mattergen_")):
         sampler = StructureSampler(
             model_name=model_name,

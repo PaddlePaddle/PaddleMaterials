@@ -55,6 +55,8 @@ from ppmat.datasets.qm9_dataset import QM9Dataset  # noqa
 from ppmat.datasets.sfin_dataset import SFINDataset
 from ppmat.datasets.split_mptrj_data import none_to_zero
 from ppmat.datasets.transform import build_transforms
+from ppmat.datasets.xrd2mof_dataset import Xrd2MofDataset
+from ppmat.datasets.xrd2mof_dataset import Xrd2MofTestDataset
 from ppmat.utils import logger
 
 __all__ = [
@@ -79,6 +81,8 @@ __all__ = [
     "SFINDataset",
     "OMol25Dataset",
     "MD17Dataset",
+    "Xrd2MofDataset",
+    "Xrd2MofTestDataset",
 ]
 
 INFO_CLASS_REGISTRY: Dict[str, type] = {
