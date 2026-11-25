@@ -28,6 +28,15 @@ def load_script(name: str):
     return module
 
 
+def test_supported_models_cover_every_qualified_registered_weight():
+    runner = load_script("run_registry_matrix")
+    models = runner.supported_models()
+
+    assert set(MODEL_REGISTRY) - set(models) == {
+        name for name in MODEL_REGISTRY if name.startswith("infgcn_")
+    }
+
+
 def test_valid_result_requires_matching_success_record(tmp_path):
     runner = load_script("run_registry_matrix")
     result_path = tmp_path / "result.json"

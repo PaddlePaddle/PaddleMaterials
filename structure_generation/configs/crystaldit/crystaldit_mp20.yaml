@@ -9,8 +9,7 @@ Global:
   max_atoms: 20
   # Model-side lattice normalization used by the released weights
   max_length: 46.7425
-  pretrained_model_path: http://127.0.0.1/models/crystaldit_mp20.zip
-  # pretrained_model_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/CrystalDiT/crystaldit_mp20.zip
+  pretrained_model_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/CrystalDiT/crystaldit_mp20.zip
 
 Trainer:
   # Max epochs to train

@@ -4,9 +4,9 @@
 
 ## Conclusion
 
-Under the tested workloads, all 79 registered weights in the benchmark matrix
-with a CINN path completed in eager and CINN modes. The median warm speedup
-across all weights was 2.50x, ranging from 0.96x to 5.15x.
+Under the tested workloads, all 79 registered weights with a CINN path
+completed in eager and CINN modes. The median warm speedup across all weights
+was 2.50x, ranging from 0.96x to 5.15x.
 
 - Families where every registered weight was faster, with median speedup:
   DimeNet++ MP2018 4.79x, DimeNet++ QM9 4.38x, MatterSim 3.53x, SphereNet MD17

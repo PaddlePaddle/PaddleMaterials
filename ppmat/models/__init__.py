@@ -91,8 +91,7 @@ __all__ = [
 #         ├── best.pdparams
 #         └── latest.pdparams
 MODEL_REGISTRY = {
-    "crystaldit_mp20": "http://127.0.0.1/models/crystaldit_mp20.zip",
-    # "crystaldit_mp20": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/CrystalDiT/crystaldit_mp20.zip",
+    "crystaldit_mp20": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/CrystalDiT/crystaldit_mp20.zip",
     "comformer_mp2018_train_60k_e_form": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/comformer/comformer_mp2018_train_60k_e_form.zip",
     "comformer_mp2018_train_60k_band_gap": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/comformer/comformer_mp2018_train_60k_band_gap.zip",
     "comformer_mp2018_train_60k_G": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/property_prediction/comformer/comformer_mp2018_train_60k_G.zip",
