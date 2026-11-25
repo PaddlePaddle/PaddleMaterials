@@ -213,24 +213,6 @@ class CrystalEmbedder(nn.Layer):
         return lattice_emb, atom_emb
 
 
-class SimpleDiTBlock(nn.Layer):
-    """DiT block concatenating atom and lattice features for self attention."""
-
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, max_atoms=20):
-        super().__init__()
-        self.max_atoms = max_atoms
-        self.dit_block = DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio)
-
-    def forward(self, atom_features, lattice_features, c):
-        combined_features = paddle.concat(x=[atom_features, lattice_features], axis=1)
-        combined_features = self.dit_block(combined_features, c)
-
-        atom_features_out = combined_features[:, : self.max_atoms, :]
-        lattice_features_out = combined_features[:, self.max_atoms :, :]
-
-        return atom_features_out, lattice_features_out
-
-
 class FinalLayer(nn.Layer):
     """Final layer mapping hidden states back to lattice and atom outputs."""
 
@@ -288,9 +270,7 @@ class CrystalDiTBackbone(nn.Layer):
 
         self.blocks = nn.LayerList(
             [
-                SimpleDiTBlock(
-                    hidden_size, num_heads, mlp_ratio=mlp_ratio, max_atoms=max_atoms
-                )
+                DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio)
                 for _ in range(depth)
             ]
         )
@@ -308,8 +288,8 @@ class CrystalDiTBackbone(nn.Layer):
         self.apply(_basic_init)
 
         for block in self.blocks:
-            nn.init.constant_(block.dit_block.adaLN_modulation[-1].weight, 0.0)
-            nn.init.constant_(block.dit_block.adaLN_modulation[-1].bias, 0.0)
+            nn.init.constant_(block.adaLN_modulation[-1].weight, 0.0)
+            nn.init.constant_(block.adaLN_modulation[-1].bias, 0.0)
 
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0.0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0.0)
@@ -319,19 +299,18 @@ class CrystalDiTBackbone(nn.Layer):
         nn.init.constant_(self.final_layer.atom_linear.bias, 0.0)
 
     def forward(self, lattice_vectors, atom_features, t):
-        lattice_emb, atom_emb = self.crystal_embedder(lattice_vectors, atom_features)
+        lattice_features, atom_features = self.crystal_embedder(
+            lattice_vectors, atom_features
+        )
         c = self.t_embedder(t)
 
-        atom_features = atom_emb
-        lattice_features = lattice_emb
-
+        tokens = paddle.concat(x=[atom_features, lattice_features], axis=1)
         for block in self.blocks:
-            atom_features, lattice_features = block(atom_features, lattice_features, c)
+            tokens = block(tokens, c)
 
-        lattice_out, atom_out = self.final_layer(atom_features, lattice_features, c)
-        lattice_out = lattice_out.reshape([-1, 3, 3])
-
-        return lattice_out, atom_out
+        atom_features = tokens[:, : self.max_atoms, :]
+        lattice_features = tokens[:, self.max_atoms :, :]
+        return self.final_layer(atom_features, lattice_features, c)
 
 
 def gaussian_cdf(x, loc, scale):
@@ -351,8 +330,9 @@ ELEMENT_MAP_SIGMA = 0.1
 ELEMENT_PROB_THRESHOLD = 1e-6
 
 
+@functools.lru_cache(maxsize=4)
 def _element_candidate_table(filter_rare_gases, max_atomic_number):
-    """Build the float64 boundary table for candidate atomic numbers.
+    """Build and cache the float64 boundary table for candidate atomic numbers.
 
     All CDF arithmetic stays in float64: the per-sample loop this table
     replaces promoted the float32 predictions to float64 before evaluation,
@@ -393,12 +373,6 @@ def _element_candidate_table(filter_rare_gases, max_atomic_number):
     )
 
 
-@functools.lru_cache(maxsize=4)
-def _cached_candidate_table(filter_rare_gases, max_atomic_number):
-    """Cache the candidate boundary table per filter configuration."""
-    return _element_candidate_table(filter_rare_gases, max_atomic_number)
-
-
 def map_to_element_batch(
     row_values,
     column_values,
@@ -426,9 +400,8 @@ def map_to_element_batch(
     Returns:
         np.ndarray: ``[N]`` int64 atomic numbers (0 marks invalid atoms).
     """
-    numbers, row_upper, row_lower, column_upper, column_lower = _cached_candidate_table(
-        filter_rare_gases, max_atomic_number
-    )
+    table = _element_candidate_table(filter_rare_gases, max_atomic_number)
+    numbers, row_upper, row_lower, column_upper, column_lower = table
 
     row_values = np.asarray(row_values, dtype=np.float64)[:, None]
     column_values = np.asarray(column_values, dtype=np.float64)[:, None]
@@ -465,6 +438,8 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
     entry points.
 
     Args:
+        noise_scheduler_cfg (dict): DDPM noise scheduler configuration. See
+            `DDPMScheduler` for more details.
         max_atoms (int, optional): Fixed atom sequence length. Defaults to 20.
         hidden_size (int, optional): Transformer hidden dimension. Defaults
             to 512.
@@ -478,15 +453,6 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
             46.7425.
         num_train_timesteps (int, optional): Diffusion step count. Defaults
             to 1000.
-        beta_start (float, optional): Linear schedule start. Defaults to
-            1e-4.
-        beta_end (float, optional): Linear schedule end. Defaults to 0.02.
-        variance_type (str, optional): DDPM posterior variance type. Defaults
-            to ``"fixed_small"`` (the original ``FIXED_SMALL`` choice).
-        clip_sample (bool, optional): Clip the predicted ``x_0`` during
-            sampling. Defaults to True (the original ``clip_denoised``).
-        clip_sample_range (float, optional): Sampling clip range. Defaults
-            to 1.0 (the original ``clamp(-1, 1)``).
         atom_loss_weight (float, optional): Atom loss weight. Defaults to
             100.0.
         feature_weights (Sequence[float], optional): Per-feature MSE weights
@@ -502,6 +468,7 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
 
     def __init__(
         self,
+        noise_scheduler_cfg,
         max_atoms=20,
         hidden_size=512,
         depth=18,
@@ -510,11 +477,6 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
         frequency_embedding_size=256,
         max_length=46.7425,
         num_train_timesteps=1000,
-        beta_start=1e-4,
-        beta_end=0.02,
-        variance_type="fixed_small",
-        clip_sample=True,
-        clip_sample_range=1.0,
         atom_loss_weight=100.0,
         feature_weights=(1.5, 2.0, 1.0, 1.0, 1.0),
         execution_backend="eager",
@@ -524,7 +486,6 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
         self._init_runtime(execution_backend, runtime_options)
 
         self.max_atoms = max_atoms
-        self.hidden_size = hidden_size
         self.max_length = max_length
         self.num_train_timesteps = num_train_timesteps
         self.atom_loss_weight = atom_loss_weight
@@ -541,23 +502,7 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
             frequency_embedding_size=frequency_embedding_size,
         )
 
-        # The original code uses the OpenAI linear beta schedule computed in
-        # float64; passing it as trained_betas keeps the schedule bit-exact.
-        betas = np.linspace(beta_start, beta_end, num_train_timesteps, dtype=np.float64)
-        scheduler_cfg = {
-            "__class_name__": "DDPMScheduler",
-            "__init_params__": {
-                "num_train_timesteps": num_train_timesteps,
-                "trained_betas": betas.astype(np.float32),
-                "variance_type": variance_type,
-                "clip_sample": clip_sample,
-                "clip_sample_range": clip_sample_range,
-            },
-        }
-        self.noise_scheduler = build_scheduler(scheduler_cfg)
-
-    def _denoise(self, lattice_vectors, atom_features, t):
-        return self._runtime_denoise(lattice_vectors, atom_features, t)
+        self.noise_scheduler = build_scheduler(noise_scheduler_cfg)
 
     @runtime_boundary("denoise_step")
     def _runtime_denoise(self, lattice_vectors, atom_features, t):
@@ -571,10 +516,9 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
                 and ``atom_features`` ``[B, max_atoms, 5]``.
 
         Returns:
-            dict: ``{"loss_dict": {...}, "label_dict": {...}}``. This is an
-            unconditional generation model: no per-attribute prediction keys
-            exist, so ``compute_metric_func_dict`` does not apply and the
-            supervised fields are passed through in ``label_dict``.
+            dict: ``{"loss_dict": {...}}``. This is an unconditional
+            generation model, so no per-attribute prediction keys exist and
+            ``compute_metric_func_dict`` does not apply.
         """
         lattice_vectors = batch["lattice_vectors"]
         atom_features = batch["atom_features"]
@@ -593,7 +537,9 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
             atom_features, rand_atom, timesteps=times
         )
 
-        pred_lattice, pred_atom = self._denoise(noisy_lattice, noisy_atom, times)
+        pred_lattice, pred_atom = self._runtime_denoise(
+            noisy_lattice, noisy_atom, times
+        )
 
         lattice_loss = paddle.mean((rand_lattice - pred_lattice) ** 2, axis=[1, 2])
         weighted_sq_diff = (rand_atom - pred_atom) ** 2 * self.feature_weights.reshape(
@@ -602,17 +548,11 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
         atom_loss = paddle.mean(weighted_sq_diff, axis=[1, 2])
 
         loss = paddle.mean(lattice_loss + self.atom_loss_weight * atom_loss)
-        loss_dict = {
-            "loss": loss,
-            "lattice_loss": lattice_loss.mean(),
-            "atom_loss": atom_loss.mean(),
-        }
-
         return {
-            "loss_dict": loss_dict,
-            "label_dict": {
-                "lattice_vectors": lattice_vectors,
-                "atom_features": atom_features,
+            "loss_dict": {
+                "loss": loss,
+                "lattice_loss": lattice_loss.mean(),
+                "atom_loss": atom_loss.mean(),
             },
         }
 
@@ -662,7 +602,7 @@ class CrystalDiT(RuntimeMixin, nn.Layer):
         for timestep in self.noise_scheduler.timesteps:
             t_step = int(timestep)
             times = paddle.full([batch_size], t_step, dtype="int64")
-            pred_lattice, pred_atom = self._denoise(lattice_t, atom_t, times)
+            pred_lattice, pred_atom = self._runtime_denoise(lattice_t, atom_t, times)
             lattice_t = self.noise_scheduler.step(
                 pred_lattice, t_step, lattice_t
             ).prev_sample

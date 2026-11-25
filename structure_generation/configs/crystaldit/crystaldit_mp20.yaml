@@ -76,14 +76,17 @@ Model:
     max_length: ${Global.max_length}
     # Number of training timesteps
     num_train_timesteps: ${Global.num_train_timesteps}
-    # Linear beta schedule bounds (OpenAI DDPM linear schedule)
-    beta_start: 0.0001
-    beta_end: 0.02
-    # DDPM posterior variance type (original FIXED_SMALL choice)
-    variance_type: fixed_small
-    # Sampling clip of the predicted x0 (original clip_denoised=True, [-1, 1])
-    clip_sample: true
-    clip_sample_range: 1.0
+    # DDPM noise scheduler (OpenAI plain linear schedule)
+    noise_scheduler_cfg:
+      __class_name__: DDPMScheduler
+      __init_params__:
+        num_train_timesteps: ${Global.num_train_timesteps}
+        beta_start: 0.0001
+        beta_end: 0.02
+        beta_schedule: linear
+        variance_type: fixed_small
+        clip_sample: true
+        clip_sample_range: 1.0
     # Loss weights
     atom_loss_weight: 100.0
     # Per-feature MSE weights over (period, group, x, y, z)
@@ -163,10 +166,12 @@ Dataset:
 Sample:
   data:
     dataset:
-      __class_name__: NumAtomsCrystalDataset
+      __class_name__: MP20Dataset
       __init_params__:
-        total_num: 16
-        dist_name: ALEX_MP_20
+        path: "./data/mp_20/test.csv"
+        build_structure_cfg:
+          format: cif_str
+          num_cpus: 10
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -175,10 +180,15 @@ Sample:
       __init_params__:
         shuffle: False
         drop_last: False
-        batch_size: 16
+        batch_size: 128
   build_structure_cfg:
     format: array
     niggli: False
+
+  metrics:
+    __class_name__: CSPMetric
+    __init_params__:
+      gt_file_path: "./data/mp_20/test.csv"
 
   model_sample_params:
     num_inference_steps: 1000

@@ -93,9 +93,10 @@ MP-20 (Materials Project subset, max 20 atoms per cell) in CSV form:
 | --- | --- | --- | --- |
 | [MP-20](https://paddle-org.bj.bcebos.com/paddlematerial/datasets/mp_20/mp_20.zip) | 27136 | 9047 | 9046 |
 
-Every CIF string is converted once into the fixed-length representation
-(`lattice_vectors [3,3]` + `atom_features [20,5]`) and cached under
-`~/.paddlemat/datasets/crystaldit/`; parsing runs on first use.
+Every CIF string is parsed once through `MP20Dataset` and the pymatgen
+structures are cached under `~/.paddlemat/datasets/crystaldit/<split>/`; the
+fixed-length representation (`lattice_vectors [3,3]` + `atom_features [20,5]`)
+is derived on access.
 
 ---
 
@@ -128,10 +129,14 @@ python structure_generation/train.py -c structure_generation/configs/crystaldit/
 ### Sample
 ```bash
 # Mode 1: pre-trained model (downloads automatically through MODEL_REGISTRY).
+# by_dataloader samples the MP-20 test split (one structure per test CIF).
 python structure_generation/sample.py --model_name='crystaldit_mp20' --output_path='result_crystaldit_mp20/' --mode=by_dataloader
 
 # Mode 2: custom config + checkpoint
 python structure_generation/sample.py --config_path='structure_generation/configs/crystaldit/crystaldit_mp20.yaml' --checkpoint_path='./output/crystaldit_mp20/checkpoints/latest.pdparams' --output_path='result_crystaldit_mp20/' --mode=by_dataloader
+
+# Mode 3: CSP metrics (match rate and RMS distance against the MP-20 test split)
+python structure_generation/sample.py --model_name='crystaldit_mp20' --output_path='result_crystaldit_mp20/' --mode=compute_metric
 ```
 
 ---

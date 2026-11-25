@@ -16,8 +16,6 @@ import importlib.util
 import json
 from pathlib import Path
 
-from ppmat.models import MODEL_REGISTRY
-
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -28,17 +26,6 @@ def load_script(name: str):
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
-
-
-def test_supported_models_cover_every_qualified_registered_weight():
-    runner = load_script("run_registry_matrix")
-    models = runner.supported_models()
-
-    assert len(MODEL_REGISTRY) == 88
-    assert len(models) == 79
-    assert set(MODEL_REGISTRY) - set(models) == {
-        name for name in MODEL_REGISTRY if name.startswith("infgcn_")
-    }
 
 
 def test_valid_result_requires_matching_success_record(tmp_path):

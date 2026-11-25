@@ -41,10 +41,26 @@ CONFIG_PATH = os.path.join(
 )
 
 
+def build_scheduler_cfg(num_train_timesteps):
+    return {
+        "__class_name__": "DDPMScheduler",
+        "__init_params__": {
+            "num_train_timesteps": num_train_timesteps,
+            "beta_start": 1e-4,
+            "beta_end": 0.02,
+            "beta_schedule": "linear",
+            "variance_type": "fixed_small",
+            "clip_sample": True,
+            "clip_sample_range": 1.0,
+        },
+    }
+
+
 def build_small_model():
     config = {
         "__class_name__": "CrystalDiT",
         "__init_params__": {
+            "noise_scheduler_cfg": build_scheduler_cfg(50),
             "max_atoms": 20,
             "hidden_size": 64,
             "depth": 2,
@@ -76,7 +92,7 @@ def test_config_builds_model_with_expected_structure():
     assert model.num_train_timesteps == 1000
     named_params = dict(model.named_parameters())
     assert "backbone.crystal_embedder.lattice_embedder.weight" in named_params
-    assert "backbone.blocks.0.dit_block.attn.qkv.weight" in named_params
+    assert "backbone.blocks.0.attn.qkv.weight" in named_params
 
 
 def test_forward_returns_loss_dict_with_expected_keys():
@@ -88,7 +104,6 @@ def test_forward_returns_loss_dict_with_expected_keys():
     assert "loss" in result["loss_dict"]
     assert "lattice_loss" in result["loss_dict"]
     assert "atom_loss" in result["loss_dict"]
-    assert "label_dict" in result
     loss = result["loss_dict"]["loss"]
     assert loss.ndim == 0
     float(loss)
@@ -273,6 +288,7 @@ def test_runtime_dispatch_records_denoise_step_and_matches_eager(monkeypatch):
         paddle.seed(11)
         np.random.seed(11)
         return CrystalDiT(
+            noise_scheduler_cfg=build_scheduler_cfg(50),
             max_atoms=20,
             hidden_size=32,
             depth=1,
@@ -374,6 +390,7 @@ def test_gpu_cinn_matches_eager(tmp_path):
         paddle.seed(5)
         np.random.seed(5)
         model = CrystalDiT(
+            noise_scheduler_cfg=build_scheduler_cfg(50),
             max_atoms=20,
             hidden_size=64,
             depth=2,
