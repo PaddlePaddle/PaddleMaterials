@@ -87,7 +87,7 @@ Model:
 Optimizer:
   __class_name__: Adam
   __init_params__:
-    # constant 1e-6: a fine-tuning rate, five orders of magnitude below the
+    # constant 1e-6: a fine-tuning rate, three orders of magnitude below the
     # from-scratch recipe, so the converted weights are not destroyed
     lr: 1e-6
     weight_decay: 0.0

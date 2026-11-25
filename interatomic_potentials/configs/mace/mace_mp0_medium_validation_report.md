@@ -2,8 +2,9 @@
 
 This report documents the Paddle fine-tuning of `mace_mp0_medium` that produced
 the checkpoint shipped in `mace_mp0_medium.zip`, together with the evidence used
-to accept it. It is written so that a reviewer can check every number from the
-commands in §12 without access to the machine the run was performed on.
+to accept it. The numbers are the recorded results of that run; the original
+step-based harness is not part of this repository, so they cannot be recomputed
+end-to-end from the published files (§11 documents what can be re-run).
 
 Scope and non-claims:
 
@@ -79,7 +80,7 @@ Config: [`mace_mp0_medium_finetune.yaml`](mace_mp0_medium_finetune.yaml)
 | seed | 42 |
 | AMP | off |
 | batch | <= 112 atoms **and** <= 8 frames per step (greedy packing); mean 90.8 atoms / 3.13 frames |
-| effective steps | **2000** optimistic steps (500 + 1500 in a continuation run) |
+| effective steps | **2000** optimiser steps (500 + 1500 in a continuation run) |
 
 Frames larger than 128 atoms are excluded from the training pool because a
 single-frame forward + backward + Adam step does not fit the 16 GB card:
@@ -122,8 +123,11 @@ was done by the rule above and the per-step metrics are in the training log.
 three terms of the score improve monotonically except for a small stress
 increase between step 1000 and step 1500, which is why the rule (not a single
 metric) decides the winner: step 2000 is the best checkpoint under the
-pre-registered rule, and it is also the best or joint-best value of every
-individual metric.
+pre-registered rule, but it is **not** the best on every individual metric —
+step 1000 has the lower 6-component stress MAE (0.421900 vs 0.422105 GPa) and
+the larger relative 9-component stress improvement (-0.116 % vs -0.089 %).
+Step 2000 is selected because the combined score, registered before the run,
+weights energy and force more heavily.
 
 The absolute improvement is small because the starting point is already
 converged and the learning rate is deliberately low (1e-6): 2000 steps at this
@@ -342,8 +346,12 @@ python interatomic_potentials/predict.py --model_name=mace_mp0_medium \
   --input_path=<structures> --input_format=cif --device=gpu
 ```
 
-The exact per-step numbers of this run are the ones quoted above; the config in
-this directory is the one that produced them.
+The per-step numbers quoted above were recorded by the original step-based
+harness, which is not published. `mace_mp0_medium_finetune.yaml` is an
+approximate epoch-based configuration for the repository trainer: it uses the
+same model, data protocol and hyper-parameters, but it does **not** reproduce the
+original batch packing, the 500 + 1500-step continuation or the checkpoint
+selection rule, so re-running it will not regenerate the table in §5 exactly.
 
 ## 12. Reviewer checklist
 
