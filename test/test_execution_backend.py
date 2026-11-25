@@ -177,6 +177,7 @@ def test_models_accepting_a_backend_implement_the_protocol():
         ("CHGNet", "_runtime_forward"),
         ("M3GNet", "_runtime_forward"),
         ("SphereNet", "_runtime_forward"),
+        ("CrystalDiT", "_runtime_denoise"),
         ("DiffCSP", "_runtime_decode"),
         ("MatterGen", "_runtime_denoise"),
         ("MatterGenWithCondition", "_runtime_denoise"),
