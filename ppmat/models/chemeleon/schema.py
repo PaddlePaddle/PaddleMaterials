@@ -57,24 +57,24 @@ class TrajectoryContainer:
     """
 
     def __init__(self, total_steps: int):
-        self.trajectory_continaer: Dict[int, TrajectoryStep] = OrderedDict()
+        self.trajectory_container: Dict[int, TrajectoryStep] = OrderedDict()
         self.total_steps = total_steps
         for t in range(self.total_steps):
-            self.trajectory_continaer[t] = None
+            self.trajectory_container[t] = None
 
     def __setitem__(self, t: int, step: TrajectoryStep) -> None:
-        self.trajectory_continaer[t] = step
+        self.trajectory_container[t] = step
 
     def __getitem__(self, t: int) -> TrajectoryStep:
         if t == -1:
             t = self.total_steps
-        return self.trajectory_continaer[t]
+        return self.trajectory_container[t]
 
     def __len__(self) -> int:
-        return len(self.trajectory_continaer)
+        return len(self.trajectory_container)
 
     def __iter__(self):
-        return iter(self.trajectory_continaer)
+        return iter(self.trajectory_container)
 
     def get_atoms(self, t: int = 0, idx: int = None) -> Union[Atoms, List[Atoms]]:
         trajectory_step = self[t]

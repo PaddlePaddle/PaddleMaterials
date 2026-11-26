@@ -160,8 +160,8 @@ class Chemeleon(RuntimeMixin, paddle.nn.Layer):
         self.mask_lattice_matrix = paddle.to_tensor(
             [[1, 0, 1], [1, 1, 1], [0, 0, 1]]
         ).astype("bool")
-        # all lattice matrix are re-defined from a function "from_paramters" in pymatgen
-        # it will zero out three elements of the lattice matrix
+        # the lattice is canonicalized to an upper-triangular form, so the
+        # mask keeps the 6 free entries and excludes the other 3
         # decoder
         self.decoder = CSPNet(
             hidden_dim=_config["hidden_dim"],
@@ -421,7 +421,8 @@ class Chemeleon(RuntimeMixin, paddle.nn.Layer):
         # (tail shared with TextEncoder.get_text_embeds)
         text_embeds = None
         if text_vec_768 is not None:
-            assert text_keep_mask is not None, "text_vec_768 needs text_keep_mask"
+            if text_keep_mask is None:
+                raise ValueError("text_vec_768 needs text_keep_mask")
             vec = self._to_tensor(text_vec_768).astype(
                 self.text_encoder.null_text_embeds.dtype
             )  # [B, 768]
@@ -617,9 +618,10 @@ class Chemeleon(RuntimeMixin, paddle.nn.Layer):
             natoms = [natoms]
         if texts is not None and isinstance(texts, str):
             texts = [texts]
-            assert len(natoms) == len(
-                texts
-            ), "natoms and texts must have the same number of elements."
+        if texts is not None and len(natoms) != len(texts):
+            raise ValueError(
+                "natoms and texts must have the same number of elements."
+            )
 
         batch_natoms = paddle.to_tensor(natoms, dtype="int64").to(self._param_place)
         batch_size = batch_natoms.shape[0]
@@ -667,9 +669,10 @@ class Chemeleon(RuntimeMixin, paddle.nn.Layer):
             # draw site: text embeddings entering after get_text_embeds (the
             # post-MLP [B, D] tensors replace both text encoder calls)
             if inject_text_embeds is not None or inject_null_text_embeds is not None:
-                assert inject_text_embeds is not None and (
-                    inject_null_text_embeds is not None
-                ), "text embed injection needs both cond and null tensors"
+                if inject_text_embeds is None or inject_null_text_embeds is None:
+                    raise ValueError(
+                        "text embed injection needs both cond and null tensors"
+                    )
                 dtype = self.text_encoder.null_text_embeds.dtype
                 text_embeds = self._to_tensor(inject_text_embeds).astype(dtype)
                 null_text_embeds = self._to_tensor(inject_null_text_embeds).astype(
@@ -885,6 +888,11 @@ class Chemeleon(RuntimeMixin, paddle.nn.Layer):
         deterministic-replay hooks documented on _sample_generator (all
         default None keep the random draw path)."""
         if isinstance(text_input, dict):
+            if n_atoms is not None or n_samples is not None:
+                raise ValueError(
+                    "n_atoms and n_samples are taken from the batch dict; do "
+                    "not pass them alongside a batch"
+                )
             batch = text_input
             natoms = (
                 paddle.to_tensor(batch["structure_array"]["num_atoms"])

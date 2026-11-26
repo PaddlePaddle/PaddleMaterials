@@ -35,11 +35,7 @@ DECODER_OUTPUTS = namedtuple(
 
 
 class Swish(paddle.nn.Layer):
-    """SiLU as the composite x * sigmoid(x) expression.
-
-    Forward-equal to the fused SiLU kernel; the composite form keeps the
-    CPU fp32 backward finite for large-magnitude negative inputs.
-    """
+    """Module wrapper of the shared swish activation."""
 
     def forward(self, x):
         return swish(x)
@@ -242,10 +238,14 @@ class CSPNet(paddle.nn.Layer):
             self.film_layer = FilmLayer(hidden_dim, time_dim, text_dim)
         if act_fn == "silu":
             self.act_fn = Swish()
+        else:
+            raise ValueError(f"Invalid act_fn: {act_fn}")
         if dis_emb == "sin":
             self.dis_emb = SinusoidsEmbedding(n_frequencies=num_freqs)
         elif dis_emb == "none":
             self.dis_emb = None
+        else:
+            raise ValueError(f"Invalid dis_emb: {dis_emb}")
         for i in range(0, num_layers):
             setattr(
                 self,

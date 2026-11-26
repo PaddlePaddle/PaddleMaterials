@@ -4,7 +4,7 @@
 
 ## Abstract
 
-Chemeleon is a text-conditioned diffusion model for crystal structure generation: given a text prompt such as a composition, it denoises atom types, the lattice matrix, and fractional coordinates into a periodic crystal. Three diffusion processes run in lockstep — an absorbing-state discrete diffusion (D3PM) over atom types, a variance-preserving diffusion over the lattice, and a variance-exploding diffusion over fractional coordinates on a torus — and share a single CSPNet decoder pass per step. Text conditions enter the decoder through a FiLM layer, and sampling combines a predictor-corrector scheme with classifier-free guidance. The architecture follows the official work; this directory contains the PaddlePaddle implementation, verified in fp64.
+Chemeleon is a text-conditioned diffusion model for crystal structure generation: given a text prompt such as a composition, it denoises atom types, the lattice matrix, and fractional coordinates into a periodic crystal. Three diffusion processes run in lockstep — an absorbing-state discrete diffusion (D3PM) over atom types, a variance-preserving diffusion over the lattice, and a variance-exploding diffusion over fractional coordinates on a torus — and share a single CSPNet decoder pass per step. Text conditions enter the decoder through a FiLM layer, and sampling combines a predictor-corrector scheme with classifier-free guidance. The architecture follows the official work; this directory contains the PaddlePaddle implementation, verified against the official implementation by deterministic replay in fp64.
 
 ![Chemeleon Overview](../../docs/chemeleon.png)
 

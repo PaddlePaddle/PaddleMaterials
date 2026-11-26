@@ -83,6 +83,15 @@ def sigma_norm(sigma, T=1.0, sn=10000):
     return (normal_**2).mean(axis=0)
 
 
+def uniform_sample_t(timesteps, batch_size, device=None):
+    # numpy RNG on purpose: seeded runs consume a fixed draw sequence
+    ts = np.random.choice(np.arange(1, timesteps + 1), batch_size)
+    t = paddle.to_tensor(ts)
+    if device is not None:
+        t = t.to(device)
+    return t
+
+
 class ChemeleonBetaScheduler(paddle.nn.Layer):
     def __init__(self, timesteps, scheduler_mode, beta_start=0.0001, beta_end=0.02):
         super(ChemeleonBetaScheduler, self).__init__()
@@ -133,12 +142,7 @@ class ChemeleonBetaScheduler(paddle.nn.Layer):
         register_buffer("sigmas", sigmas)
 
     def uniform_sample_t(self, batch_size, device=None):
-        # numpy RNG on purpose: seeded runs consume a fixed draw sequence
-        ts = np.random.choice(np.arange(1, self.timesteps + 1), batch_size)
-        t = paddle.to_tensor(ts)
-        if device is not None:
-            t = t.to(device)
-        return t
+        return uniform_sample_t(self.timesteps, batch_size, device)
 
 
 class ChemeleonSigmaScheduler(paddle.nn.Layer):
@@ -172,11 +176,7 @@ class ChemeleonSigmaScheduler(paddle.nn.Layer):
         )
 
     def uniform_sample_t(self, batch_size, device=None):
-        ts = np.random.choice(np.arange(1, self.timesteps + 1), batch_size)
-        t = paddle.to_tensor(ts)
-        if device is not None:
-            t = t.to(device)
-        return t
+        return uniform_sample_t(self.timesteps, batch_size, device)
 
 
 # D3PM for atom types

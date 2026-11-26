@@ -150,16 +150,17 @@ class MP40Dataset(MP20Dataset):
 
         Args:
             path (str): Path to the csv file.
+
+        Returns:
+            Tuple[dict, int]: The column-wise data and the number of samples.
         """
-        data = pd.read_csv(path)
-        if self.indices is not None:
-            data = data.iloc[self.indices]
-        logger.info(f"Read {len(data)} structures from {path}")
-        data = {key: data[key].tolist() for key in data if "Unnamed" not in key}
-        num_samples = 0
-        for key in data:
-            num_samples = max(num_samples, len(data[key]))
-        return data, num_samples
+        if self.indices is None:
+            return super().read_data(path)
+        data, num_samples = super().read_data(path)
+        data = {
+            key: [value[i] for i in self.indices] for key, value in data.items()
+        }
+        return data, len(self.indices)
 
     def get_structure_array(self, structure):
         """Get the Chemeleon structure array from a pymatgen Structure.
