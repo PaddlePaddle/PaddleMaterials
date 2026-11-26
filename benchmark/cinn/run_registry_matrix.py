@@ -39,6 +39,7 @@ CINN_SUPPORTED_PREFIXES = (
     "diffnmr_",
     "dimenetpp_",
     "mattergen_",
+    "matinvent_",
     "mattersim_",
     "megnet_",
     "sfin_",
@@ -49,7 +50,7 @@ CINN_SUPPORTED_PREFIXES = (
 def model_timeout(model_name: str) -> int:
     """Return the per-process timeout in seconds."""
 
-    if model_name.startswith("mattergen_"):
+    if model_name.startswith(("mattergen_", "matinvent_")):
         return 1800
     return 900
 

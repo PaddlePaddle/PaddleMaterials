@@ -24,6 +24,8 @@ import subprocess
 import time
 import traceback
 from pathlib import Path
+from typing import Callable
+from typing import NamedTuple
 
 import numpy as np
 import paddle
@@ -74,7 +76,14 @@ def build_graph(predictor, input_format: str, input_path: Path):
 FULL_GRAPH_PREFIXES = ("mattersim_", "chgnet_", "spherenet_md17_")
 
 
-def build_workflow(model_name: str, backend: str):
+class Workload(NamedTuple):
+    workflow: object
+    call: Callable[[], object]
+    scope: str
+    required_runtime_keys: tuple[str, ...] = ()
+
+
+def build_workflow(model_name: str, backend: str) -> Workload:
     overrides = [f"Execution.backend={backend}"]
     if backend == "cinn" and model_name.startswith(FULL_GRAPH_PREFIXES):
         overrides.append("Execution.__init_params__.full_graph=true")
@@ -85,7 +94,7 @@ def build_workflow(model_name: str, backend: str):
             config_overrides=overrides,
         )
         graph = build_graph(predictor, "xyz", XYZ)
-        return predictor, lambda: predictor._run_model(graph), "model_predict"
+        return Workload(predictor, lambda: predictor._run_model(graph), "model_predict")
 
     if model_name.startswith(("comformer_", "megnet_", "dimenetpp_")):
         predictor = PropertyPredictor(
@@ -94,7 +103,7 @@ def build_workflow(model_name: str, backend: str):
             config_overrides=overrides,
         )
         graph = build_graph(predictor, "cif", CIF)
-        return predictor, lambda: predictor._run_model(graph), "model_predict"
+        return Workload(predictor, lambda: predictor._run_model(graph), "model_predict")
 
     if model_name.startswith(("mattersim_", "chgnet_")):
         predictor = PotentialPredictor(
@@ -103,7 +112,7 @@ def build_workflow(model_name: str, backend: str):
             config_overrides=overrides,
         )
         graph = build_graph(predictor, "cif", CIF)
-        return predictor, lambda: predictor._run_model(graph), "model_predict"
+        return Workload(predictor, lambda: predictor._run_model(graph), "model_predict")
 
     if model_name.startswith("spherenet_md17_"):
         predictor = PotentialPredictor(
@@ -112,7 +121,7 @@ def build_workflow(model_name: str, backend: str):
             config_overrides=overrides,
         )
         graph = build_graph(predictor, "xyz", MD17_XYZ[model_name])
-        return predictor, lambda: predictor._run_model(graph), "model_predict"
+        return Workload(predictor, lambda: predictor._run_model(graph), "model_predict")
 
     if model_name.startswith("sfin_"):
         predictor = SpectrumPredictor(
@@ -124,7 +133,7 @@ def build_workflow(model_name: str, backend: str):
         image = BuildImage(format="image_file", mode="L", dtype="float32")(
             str(image_path)
         )
-        return predictor, lambda: predictor.from_image(image), "model_predict"
+        return Workload(predictor, lambda: predictor.from_image(image), "model_predict")
 
     if model_name == "diffnmr_msdnmr_nless15":
         sampler = MolecularSampler(
@@ -138,7 +147,17 @@ def build_workflow(model_name: str, backend: str):
             ],
         )
         batch = next(iter(sampler._sample_loader))
-        return sampler, lambda: sampler.sample(batch), "full_reverse_diffusion"
+        return Workload(
+            sampler, lambda: sampler.sample(batch), "full_reverse_diffusion"
+        )
+
+    if model_name.startswith("matinvent_"):
+        from ppmat.models.matinvent.benchmark import build_train_workload
+
+        workflow, call, scope, required_runtime_keys = build_train_workload(
+            model_name, backend
+        )
+        return Workload(workflow, call, scope, required_runtime_keys)
 
     if model_name.startswith(("diffcsp_", "mattergen_")):
         sampler = StructureSampler(
@@ -180,7 +199,7 @@ def build_workflow(model_name: str, backend: str):
                     sample_params=sample_params,
                 )
 
-        return sampler, call, "two_step_structure_sampling"
+        return Workload(sampler, call, "two_step_structure_sampling")
 
     raise ValueError(f"Unsupported registered CINN benchmark model: {model_name}")
 
@@ -239,7 +258,10 @@ def main() -> None:
         paddle.set_device("gpu:0")
         np.random.seed(2026)
         paddle.seed(2026)
-        workflow, call, scope = build_workflow(args.model_name, args.backend)
+        workload = build_workflow(args.model_name, args.backend)
+        workflow = workload.workflow
+        call = workload.call
+        scope = workload.scope
 
         def seeded_call():
             np.random.seed(2026)

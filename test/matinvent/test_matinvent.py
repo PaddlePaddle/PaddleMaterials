@@ -19,6 +19,7 @@ registered weight packages, the round-based trainer and the CINN boundary.
 """
 
 import copy
+import importlib.util
 import os
 import pathlib
 import tempfile
@@ -41,6 +42,7 @@ from ppmat.datasets.transform import build_transforms
 from ppmat.models import build_model
 from ppmat.models.matinvent import MatinventDiffCSP
 from ppmat.models.matinvent import MatinventMatterGen
+from ppmat.models.matinvent import benchmark as matinvent_benchmark
 from ppmat.models.matinvent.dataset import RLDataset
 from ppmat.models.matinvent.dataset import create_rl_dataloader
 from ppmat.models.matinvent.dataset import to_tensor_batch
@@ -1005,6 +1007,18 @@ class TestQualification:
             core.set_prim_eager_enabled(prim_enabled)
 
 
+_BENCHMARK_ROOT = _REPO_ROOT / "benchmark" / "cinn"
+
+
+def _load_benchmark_script(name):
+    path = _BENCHMARK_ROOT / f"{name}.py"
+    spec = importlib.util.spec_from_file_location(f"cinn_benchmark_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 def _cinn_gpu_available():
     return (
         paddle.is_compiled_with_cuda()
@@ -1110,3 +1124,39 @@ def test_gpu_cinn_rl_loss_matches_eager(monkeypatch):
     assert outputs[0][0] == pytest.approx(outputs[1][0], rel=2e-5, abs=2e-5)
     for name, gradient in outputs[0][1].items():
         np.testing.assert_allclose(gradient, outputs[1][1][name], atol=2e-5, rtol=2e-5)
+
+
+class TestCinnBenchmarkWorkload:
+    """The public CINN benchmark delegates the MatInvent workload to this package."""
+
+    def test_family_name(self):
+        comparison = _load_benchmark_script("compare_backends")
+        assert comparison.family_name("matinvent_diffcsp_mp20") == "MatInvent"
+        assert comparison.family_name("matinvent_mattergen_mp20") == "MatInvent"
+
+    def test_build_workflow_returns_train_step(self, monkeypatch):
+        cinn_benchmark = _load_benchmark_script("benchmark_registered")
+
+        class _DummyModel(paddle.nn.Layer):
+            def __init__(self):
+                super().__init__()
+                self.linear = paddle.nn.Linear(2, 2)
+
+        monkeypatch.setattr(
+            matinvent_benchmark,
+            "build_model_from_name",
+            lambda name: (_DummyModel(), {}),
+        )
+        monkeypatch.setattr(
+            matinvent_benchmark,
+            "configure_execution_backend",
+            lambda *args, **kwargs: "eager",
+        )
+
+        workload = cinn_benchmark.build_workflow("matinvent_diffcsp_mp20", "eager")
+        assert workload.scope == matinvent_benchmark.TRAIN_SCOPE
+        assert workload.required_runtime_keys == (
+            matinvent_benchmark.TRAIN_RUNTIME_KEY,
+        )
+        assert isinstance(workload.workflow.model, _DummyModel)
+        assert callable(workload.call)
