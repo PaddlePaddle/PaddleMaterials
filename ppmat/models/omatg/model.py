@@ -21,7 +21,6 @@ not apply.
 
 import math
 from typing import Dict
-from typing import Optional
 
 import paddle
 import paddle.nn as nn
@@ -41,6 +40,7 @@ from ppmat.utils.crystal import frac_to_cart_coords_with_lattice
 from ppmat.utils.crystal import lattices_to_params_shape_paddle
 from ppmat.utils.crystal import radius_graph_pbc
 from ppmat.utils.misc import repeat_blocks
+from ppmat.utils.scatter import scatter_mean
 
 __all__ = [
     "OMATGCSPNet",
@@ -79,7 +79,6 @@ _SAMPLER_CFG_KEYS = {
     "lattice_stds",
     "mirror_species",
     "mask_species",
-    "max_atoms",
 }
 
 
@@ -96,33 +95,21 @@ def sample_lattice_cell(lattice_means, lattice_stds):
 
 
 def _normalize_sample_dict(data: dict) -> dict:
-    """Normalize collated sample dict keys to n_atoms/species/cell/pos/batch/ptr."""
+    """Normalize a collated sample dict to n_atoms/species/cell/pos/batch/ptr."""
     out = {
-        "n_atoms": data.get("n_atoms", data.get("num_atoms")),
-        "species": data.get("species", data.get("atom_types")),
-        "cell": data.get("cell", data.get("lattices")),
-        "pos": data.get("pos", data.get("frac_coords")),
+        "n_atoms": data["n_atoms"],
+        "species": data["species"],
+        "cell": data["cell"],
+        "pos": data["pos"],
+        "pos_is_fractional": data["pos_is_fractional"],
     }
-    batch = data.get("batch", data.get("node2graph"))
     n_atoms = out["n_atoms"]
-    if n_atoms.ndim > 1:
-        n_atoms = n_atoms.squeeze(-1)
-        out["n_atoms"] = n_atoms
-    if out["cell"] is not None and out["cell"].ndim == 2:
-        out["cell"] = out["cell"].unsqueeze(0)
-    pos_is_fractional = data.get("pos_is_fractional")
-    if pos_is_fractional is not None and pos_is_fractional.ndim > 1:
-        pos_is_fractional = pos_is_fractional.squeeze(-1)
-    out["pos_is_fractional"] = (
-        pos_is_fractional
-        if pos_is_fractional is not None
-        else paddle.ones_like(n_atoms, dtype="bool")
-    )
-    if batch is None:
-        batch = paddle.repeat_interleave(
+    if "batch" in data:
+        out["batch"] = data["batch"]
+    else:
+        out["batch"] = paddle.repeat_interleave(
             paddle.arange(n_atoms.shape[0], dtype="int64"), n_atoms
         )
-    out["batch"] = batch
     out["ptr"] = paddle.concat(
         [
             paddle.to_tensor([0], dtype="int64"),
@@ -246,8 +233,6 @@ class OMATGCSPNet(CSPNet):
             self.time_embedder = None
             self.atom_latent_emb = nn.Linear(hidden_dim + 1, hidden_dim)
 
-        self.dis_dim = (num_freqs * 2 * 3) if dis_emb == "sin" else 0
-
         self.coord_out_2 = nn.Linear(hidden_dim, 3, bias_attr=False)
         self.lattice_out_2 = nn.Linear(hidden_dim, 9, bias_attr=False)
         if not self.pred_type:
@@ -302,7 +287,7 @@ class OMATGCSPNet(CSPNet):
         )
         return edge_index_new, cell_offsets_new, neighbors_new, edge_vector_new
 
-    def gen_edges(self, num_atoms, frac_coords, lattices, node2graph):
+    def gen_edges(self, num_atoms, frac_coords, lattices):
         if self.edge_style == "fc":
             return CSPNet.gen_edges(self, num_atoms, frac_coords)
 
@@ -336,10 +321,7 @@ class OMATGCSPNet(CSPNet):
     ):
         edge2graph = node2graph[edges[0]]
 
-        if self.smooth:
-            node_features = self.node_embedding(atom_types.cast("float32"))
-        else:
-            node_features = self.node_embedding(atom_types - self.species_shift)
+        node_features = self.node_embedding(atom_types - self.species_shift)
 
         if t.ndim == 0:
             t = t.unsqueeze(0)
@@ -370,7 +352,9 @@ class OMATGCSPNet(CSPNet):
         coord_out = self.coord_out(node_features)
         coord_out_2 = self.coord_out_2(node_features)
 
-        graph_features = paddle.geometric.segment_mean(node_features, node2graph)
+        graph_features = scatter_mean(
+            node_features, node2graph, dim=0, dim_size=lattices.shape[0]
+        )
 
         lattice_out = self.lattice_out(graph_features)
         lattice_out = lattice_out.reshape([-1, 3, 3])
@@ -397,7 +381,7 @@ class OMATGCSPNet(CSPNet):
         return lattice_out, coord_out, lattice_out_2, coord_out_2
 
     def forward_dict(self, t, atom_types, frac_coords, lattices, num_atoms, node2graph):
-        edges, frac_diff = self.gen_edges(num_atoms, frac_coords, lattices, node2graph)
+        edges, frac_diff = self.gen_edges(num_atoms, frac_coords, lattices)
         return self._runtime_forward_dict(
             t,
             atom_types,
@@ -537,12 +521,6 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
         with labels, so compute_metric_func_dict does not apply; evaluation is
         loss-based (eval_loss).
         """
-        atom_types = data.get("atom_types", data.get("species"))
-        frac_coords = data.get("frac_coords", data.get("pos"))
-        lattices = data.get("lattices", data.get("cell"))
-        num_atoms = data.get("num_atoms", data.get("n_atoms"))
-        node2graph = data.get("node2graph", data.get("batch"))
-
         if self.use_si:
             if self._si is None or self._sampler is None:
                 raise ValueError(
@@ -550,6 +528,12 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
                     "and valid (got si_cfg that built no stochastic interpolants)."
                 )
             return self._si_forward(data)
+
+        atom_types = data["species"]
+        frac_coords = data["pos"]
+        lattices = data["cell"]
+        num_atoms = data["n_atoms"]
+        node2graph = data["batch"]
 
         if t is None:
             batch_size = lattices.shape[0]
@@ -649,7 +633,6 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
         gen = self._si.integrate(
             x_0,
             self._make_model_function(),
-            save_intermediate=False,
             integration_time_steps=num_inference_steps,
         )
 
@@ -698,10 +681,6 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
                 "Fixed-species interpolation requires pred_type=False and "
                 "sampler_cfg.mask_species=False."
             )
-        elif not sampler_cfg.get("mirror_species", True):
-            raise ValueError(
-                "Fixed-species interpolation requires mirror_species=True."
-            )
 
         active_costs = dict(self._relative_si_costs)
         if not self.pred_type:
@@ -711,10 +690,6 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
 
         if sampler_cfg:
             self._sampler = build_sampler_from_cfg(sampler_cfg)
-            # Bind the parent model so a sampler without an explicit max_atoms
-            # resolves the atomic-number range from the model itself.
-            if isinstance(self._sampler, IndependentSampler):
-                self._sampler.bind_model(self)
 
         if self.use_min_perm_dist:
             self._min_perm_dist_corrector = self._si.get_stochastic_interpolant(
@@ -746,7 +721,6 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
         data = {
             k: (paddle.to_tensor(v) if not paddle.is_tensor(v) else v)
             for k, v in data.items()
-            if v is not None
         }
         sample = _normalize_sample_dict(data)
         if not bool(paddle.all(sample["pos_is_fractional"])):
@@ -782,12 +756,8 @@ class IndependentSampler:
     """Sample SI base distributions (lattice / species).
 
     Internal SI x_0 sampler; bridged to the public StructureSampler via
-    model.sample() in sample.py.
-
-    ``max_atoms`` defaults to ``None`` and is resolved at first use against
-    the bound ``OMATGCSPNet`` model via :meth:`bind_model`; if used standalone
-    without a model and no explicit value, falls back to ``DEFAULT_MAX_ATOMS``
-    (the released-checkpoint default).
+    model.sample() in sample.py. Masked-species interpolation starts from the
+    mask token, fixed-species interpolation mirrors the target species.
     """
 
     def __init__(
@@ -795,9 +765,7 @@ class IndependentSampler:
         dataset_name=None,
         lattice_means=None,
         lattice_stds=None,
-        mirror_species=True,
         mask_species=False,
-        max_atoms: Optional[int] = None,
     ):
         if (lattice_means is None) != (lattice_stds is None):
             raise ValueError(
@@ -819,42 +787,11 @@ class IndependentSampler:
             lattice_means, lattice_stds = params["means"], params["stds"]
         self._lattice_means = list(lattice_means)
         self._lattice_stds = list(lattice_stds)
-        self._mirror_species = mirror_species
         self._mask_species = mask_species
-        self._max_atoms = max_atoms
-        self._bound_model: Optional["OMATGCSPNetFull"] = None
-
-    def bind_model(self, model: "OMATGCSPNetFull") -> None:
-        """Bind the parent OMatG model so that the species range resolves to it.
-
-        When ``max_atoms`` was not provided explicitly, the bound model's
-        ``num_classes`` (the atomic-number cardinality of the released
-        checkpoints) becomes the inclusive upper bound of the uniform species
-        distribution. An explicit constructor ``max_atoms`` is not overridden.
-        """
-        self._bound_model = model
-        if self._max_atoms is None:
-            self._max_atoms = int(model.num_classes)
-
-    def _resolve_max_atoms(self) -> int:
-        if self._max_atoms is None and self._bound_model is not None:
-            self._max_atoms = int(self._bound_model.num_classes)
-        if self._max_atoms is None:
-            return DEFAULT_MAX_ATOMS
-        return int(self._max_atoms)
 
     def sample_p_0(self, x_1: Dict[str, paddle.Tensor]) -> Dict[str, paddle.Tensor]:
         batch_size = len(x_1["n_atoms"])
-        ptr = (
-            x_1["ptr"]
-            if "ptr" in x_1
-            else paddle.concat(
-                [
-                    paddle.to_tensor([0], dtype="int64"),
-                    paddle.cumsum(x_1["n_atoms"], axis=0).cast("int64"),
-                ]
-            )
-        )
+        ptr = x_1["ptr"]
         n_atoms_list = []
         species_list = []
         pos_list = []
@@ -869,15 +806,8 @@ class IndependentSampler:
             )
             if self._mask_species:
                 species = paddle.zeros_like(x_1["species"][sl])
-            elif self._mirror_species:
-                species = x_1["species"][sl].clone()
             else:
-                species = paddle.randint(
-                    1,
-                    self._resolve_max_atoms() + 1,
-                    x_1["species"][sl].shape,
-                    dtype=x_1["species"][sl].dtype,
-                )
+                species = x_1["species"][sl].clone()
             n = len(species)
             n_atoms_list.append(paddle.to_tensor([n], dtype="int64"))
             species_list.append(species)
@@ -914,11 +844,14 @@ def build_sampler_from_cfg(sampler_cfg: dict):
             f"sampler_cfg has unknown keys {unknown_keys}; allowed keys are "
             f"{sorted(_SAMPLER_CFG_KEYS)}."
         )
+    mask_species = sampler_cfg.get("mask_species", False)
+    if not mask_species and not sampler_cfg.get("mirror_species", True):
+        raise ValueError(
+            "Fixed-species sampling requires sampler_cfg.mirror_species=True."
+        )
     return IndependentSampler(
         dataset_name=sampler_cfg.get("dataset_name"),
         lattice_means=sampler_cfg.get("lattice_means"),
         lattice_stds=sampler_cfg.get("lattice_stds"),
-        mirror_species=sampler_cfg.get("mirror_species", True),
-        mask_species=sampler_cfg.get("mask_species", False),
-        max_atoms=sampler_cfg.get("max_atoms"),
+        mask_species=mask_species,
     )

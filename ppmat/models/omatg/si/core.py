@@ -16,6 +16,7 @@
 and config-driven factory.
 """
 
+import importlib
 from enum import Enum
 from typing import Any
 from typing import Callable
@@ -25,10 +26,11 @@ from typing import List
 from typing import Optional
 from typing import Sequence
 from typing import Tuple
-from typing import Union
 
 import paddle
 from scipy.optimize import linear_sum_assignment
+
+from ppmat.utils.scatter import scatter_mean
 
 from .interpolants import Corrector
 from .interpolants import Epsilon
@@ -59,8 +61,6 @@ def _clone_dict(data: Dict[str, paddle.Tensor]) -> Dict[str, paddle.Tensor]:
 def _compute_mean_velocity(
     velocity: paddle.Tensor, batch_indices: paddle.Tensor
 ) -> paddle.Tensor:
-    from ppmat.utils.scatter import scatter_mean
-
     mean_vel = scatter_mean(velocity, batch_indices, dim=0)
     return mean_vel[batch_indices]
 
@@ -318,9 +318,6 @@ class SingleStochasticInterpolant(StochasticInterpolant):
 class SingleStochasticInterpolantIdentity(StochasticInterpolantSpecies):
     """Stochastic interpolant x_t = x_0 = x_1 (species constant)."""
 
-    def __init__(self) -> None:
-        super().__init__()
-
     def uses_masked_species(self) -> bool:
         return False
 
@@ -516,9 +513,6 @@ class StochasticInterpolants:
         self._stochastic_interpolants = stochastic_interpolants
         self._integration_time_steps = integration_time_steps
 
-    def __len__(self) -> int:
-        return len(self._stochastic_interpolants)
-
     def loss_keys(self) -> List[str]:
         """Return the ``{data_field}_{loss_key}`` keys produced by :meth:`losses`."""
         return [
@@ -627,12 +621,8 @@ class StochasticInterpolants:
         self,
         x_0: Dict[str, paddle.Tensor],
         model_function: Any,
-        save_intermediate: bool = False,
         integration_time_steps: Optional[int] = None,
-    ) -> Union[
-        Dict[str, paddle.Tensor],
-        Tuple[Dict[str, paddle.Tensor], List[Dict[str, paddle.Tensor]]],
-    ]:
+    ) -> Dict[str, paddle.Tensor]:
         num_steps = (
             self._integration_time_steps
             if integration_time_steps is None
@@ -645,11 +635,6 @@ class StochasticInterpolants:
 
         x_t = _clone_dict(x_0)
         new_x_t = _clone_dict(x_0)
-
-        if save_intermediate:
-            inter_list = [x_t]
-        else:
-            inter_list = None
 
         with paddle.no_grad():
             for t_index in range(1, len(times)):
@@ -691,13 +676,7 @@ class StochasticInterpolants:
 
                 x_t = _clone_dict(new_x_t)
 
-                if save_intermediate:
-                    inter_list.append(x_t)
-
-        if save_intermediate:
-            return x_t, inter_list
-        else:
-            return x_t
+        return x_t
 
 
 def correct_for_minimum_permutation_distance(
@@ -740,8 +719,6 @@ def _pairwise_periodic_distances(
 
 def _resolve_si_class(class_name: str, default_module: str):
     """Resolve a class by name within the OMatG SI namespace."""
-    import importlib
-
     if "." in class_name:
         module_path, cls_name = class_name.rsplit(".", 1)
         module = importlib.import_module(module_path)

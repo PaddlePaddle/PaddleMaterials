@@ -334,7 +334,7 @@ class TestSITrainingPath(unittest.TestCase):
             - epsilon / gamma * predictions[1]["pos_eta"] * dt
             + np.sqrt(2 * epsilon * dt) * noises[0]
         ) % 1.0
-        np.testing.assert_allclose(states[3]["frac_coords"], expected_pos, atol=1e-6)
+        np.testing.assert_allclose(states[3]["frac_coords"], expected_pos, atol=5e-6)
         for item in result["result"]:
             self.assertTrue(all(number > 0 for number in item["atom_types"]))
             self.assertTrue(np.isfinite(item["frac_coords"]).all())

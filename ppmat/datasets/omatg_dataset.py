@@ -21,7 +21,6 @@ import pickle
 import zlib
 from pathlib import Path
 from typing import Any
-from typing import Callable
 from typing import Dict
 from typing import List
 from typing import Optional
@@ -34,83 +33,36 @@ import pandas as pd
 from ppmat.datasets.custom_data_type import ConcatData
 
 
-def _open_lmdb(
-    file_path: str,
-    *,
-    subdir: Optional[bool] = None,
-    max_readers: int = 126,
-) -> lmdb.Environment:
-    """Open an LMDB environment read-only with memory-safe defaults.
-
-    Args:
-        file_path: Path to the LMDB file or directory.
-        subdir: Whether ``file_path`` is a directory. When None (default),
-            it is auto-detected from the path.
-        max_readers: Maximum number of concurrent readers.
-
-    Returns:
-        A read-only :class:`lmdb.Environment`.
-    """
-    if subdir is None:
-        subdir = os.path.isdir(file_path)
+def _open_lmdb(file_path: str) -> lmdb.Environment:
+    """Open an LMDB file or directory read-only with memory-safe defaults."""
     return lmdb.open(
         file_path,
-        subdir=subdir,
+        subdir=os.path.isdir(file_path),
         readonly=True,
         lock=False,
         readahead=False,
         meminit=False,
-        max_readers=max_readers,
     )
 
 
-def _lmdb_keys(
-    env: lmdb.Environment,
-    *,
-    skip_meta: bool = True,
-) -> List[str]:
-    """List all keys in the environment.
-
-    Args:
-        env: An open LMDB environment.
-        skip_meta: Whether to skip metadata keys (starting with "__").
-
-    Returns:
-        List of keys (decoded to str).
-    """
+def _lmdb_keys(env: lmdb.Environment) -> List[str]:
+    """List the data keys, excluding metadata keys (starting with "__")."""
     with env.begin() as txn:
         all_keys = [
             k.decode("ascii") if isinstance(k, bytes) else k
             for k in txn.cursor().iternext(values=False)
         ]
-    if skip_meta:
-        all_keys = [k for k in all_keys if not k.startswith("__")]
-    return all_keys
+    return [k for k in all_keys if not k.startswith("__")]
 
 
-def _lmdb_get(
-    env: lmdb.Environment, key: str, *, decoder: Optional[Callable] = None
-) -> Any:
-    """Fetch the record stored under ``key``.
-
-    Args:
-        env: An open LMDB environment.
-        key: Record key.
-        decoder: Optional payload decoder; defaults to ``_decode_payload``.
-
-    Returns:
-        The deserialized object.
-
-    Raises:
-        KeyError: If ``key`` does not exist in the environment.
-    """
+def _lmdb_get(env: lmdb.Environment, key: str) -> Any:
+    """Fetch and decode the record stored under ``key``."""
     key_bytes = key.encode("ascii") if isinstance(key, str) else key
     with env.begin() as txn:
         value = txn.get(key_bytes)
     if value is None:
         raise KeyError(f"Key {key} not found in LMDB.")
-    decoder = decoder or _decode_payload
-    return decoder(value)
+    return _decode_payload(value)
 
 
 def _decode_payload(payload: bytes) -> Any:
@@ -258,12 +210,6 @@ class OMATGStructureDataset(paddle.io.Dataset):
         finally:
             temp_env.close()
 
-    def _apply_transforms(self, structure: _OMATGStructure) -> None:
-        if self.convert_to_fractional:
-            structure.convert_to_fractional()
-        if self.niggli_reduce:
-            structure.niggli_reduce()
-
     def _build_sample(
         self,
         cell: paddle.Tensor,
@@ -277,7 +223,10 @@ class OMATGStructureDataset(paddle.io.Dataset):
             pos=pos,
             pos_is_fractional=pos_is_fractional,
         )
-        self._apply_transforms(structure)
+        if self.convert_to_fractional:
+            structure.convert_to_fractional()
+        if self.niggli_reduce:
+            structure.niggli_reduce()
 
         # Wrap fields in ConcatData so DefaultCollator concatenates atom-level
         # fields and stacks sample-level fields (same pattern as MP20Dataset).
@@ -356,14 +305,10 @@ class OMATGStructureDataset(paddle.io.Dataset):
             return len(self.structures)
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
-        return self._get_sample(idx)
-
-    def _get_sample(self, idx: int) -> Dict[str, Any]:
         if self.lazy_storage:
             data = _lmdb_get(self.env, self.keys[idx])
             return self._create_structure(data)
-        else:
-            return self.structures[idx]
+        return self.structures[idx]
 
     def __del__(self) -> None:
         if self._env is not None:

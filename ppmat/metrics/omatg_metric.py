@@ -309,21 +309,13 @@ _COMP_FP_STDS = np.array(
 )
 
 
-class _StandardScaler:
-    """Z-score normalization with NaN replacement, matching the upstream utility."""
-
-    def __init__(
-        self, means: np.ndarray, stds: np.ndarray, replace_nan_token: float = 0.0
-    ) -> None:
-        self._means = means
-        self._stds = stds
-        self._replace_nan_token = replace_nan_token
-
-    def transform(self, x: np.ndarray) -> np.ndarray:
-        x = np.asarray(x, dtype=np.float64)
-        out = (x - self._means) / (self._stds + 1.0e-30)
-        out[np.isnan(out)] = self._replace_nan_token
-        return out
+def _normalize_comp_fps(fps) -> np.ndarray:
+    """Z-score composition fingerprints and replace NaNs with zero."""
+    normalized = (np.asarray(fps, dtype=np.float64) - _COMP_FP_MEANS) / (
+        _COMP_FP_STDS + 1.0e-30
+    )
+    normalized[np.isnan(normalized)] = 0.0
+    return normalized
 
 
 def _mean_coordination_number(structure) -> float:
@@ -348,10 +340,10 @@ def _element_check(
         # Crystal.comps stores the gcd-reduced counts of each element.
         return crystal_one.comps == crystal_two.comps
     counts_one = np.bincount(
-        np.asarray(crystal_one.atom_types, dtype=np.int64).reshape(-1), minlength=1
+        np.asarray(crystal_one.atom_types, dtype=np.int64), minlength=1
     )
     counts_two = np.bincount(
-        np.asarray(crystal_two.atom_types, dtype=np.int64).reshape(-1), minlength=1
+        np.asarray(crystal_two.atom_types, dtype=np.int64), minlength=1
     )
     length = max(len(counts_one), len(counts_two))
     counts_one = np.pad(counts_one, (0, length - len(counts_one)))
@@ -416,7 +408,6 @@ def match_rmsds(
     stol: float = 0.5,
     angle_tol: float = 10.0,
     check_reduced: bool = True,
-    enable_progress_bar: bool = False,
 ) -> Tuple[float, float, float, float, float, float]:
     """Per-index match rate and normalized RMSD (non-matching pairs use stol)."""
 
@@ -496,7 +487,6 @@ def get_cov(
     ref_crystals: Sequence[Crystal],
     struc_cutoff: float,
     comp_cutoff: float,
-    num_gen_crystals: Optional[int] = None,
 ) -> Tuple[float, float]:
     """Coverage recall / precision on fingerprint distances.
 
@@ -524,14 +514,11 @@ def get_cov(
             filtered_gen_struc_fps.append(crystal.struct_fp)
             filtered_gen_comp_fps.append(crystal.comp_fp)
 
-    if num_gen_crystals is None:
-        num_gen_crystals = len(gen_crystals)
-    if not filtered_gen_comp_fps or num_gen_crystals == 0:
+    if not filtered_gen_comp_fps or not gen_crystals:
         return 0.0, 0.0
 
-    scaler = _StandardScaler(_COMP_FP_MEANS, _COMP_FP_STDS)
-    ref_comp_fps = scaler.transform(ref_comp_fps)
-    gen_comp_fps = scaler.transform(np.asarray(filtered_gen_comp_fps))
+    ref_comp_fps = _normalize_comp_fps(ref_comp_fps)
+    gen_comp_fps = _normalize_comp_fps(filtered_gen_comp_fps)
     gen_struc_fps = np.asarray(filtered_gen_struc_fps)
 
     from scipy.spatial.distance import cdist
@@ -557,7 +544,7 @@ def get_cov(
                 struc_precision_dist <= struc_cutoff, comp_precision_dist <= comp_cutoff
             )
         )
-        / num_gen_crystals
+        / len(gen_crystals)
     )
     return cov_recall, cov_precision
 
