@@ -44,7 +44,6 @@ from ppmat.utils.scatter import scatter_mean
 
 __all__ = [
     "OMatG",
-    "OMATGCSPNetFull",
     "IndependentSampler",
     "build_sampler_from_cfg",
 ]
@@ -563,69 +562,6 @@ class OMatG(RuntimeMixin, OMATGCSPNet):
                 ]
             ),
         }
-
-
-class OMATGCSPNetFull(OMatG):
-    """Constructor shim for the released checkpoints.
-
-    The published packages pin this class name and a flat ``__init_params__``
-    layout. New configurations should use :class:`OMatG` with ``decoder_cfg``.
-    """
-
-    def __init__(
-        self,
-        hidden_dim: int = 512,
-        num_layers: int = 6,
-        max_atoms: int = DEFAULT_MAX_ATOMS,
-        act_fn: str = "silu",
-        dis_emb: str = "sin",
-        num_freqs: int = 128,
-        edge_style: str = "fc",
-        cutoff: float = 7.0,
-        max_neighbors: int = 20,
-        ln: bool = True,
-        ip: bool = True,
-        smooth: bool = False,
-        pred_type: bool = False,
-        pred_scalar: bool = False,
-        time_embed_dim: int = 256,
-        use_si: bool = True,
-        si_scheduler_cfg: dict = None,
-        sampler_cfg: dict = None,
-        use_min_perm_dist: bool = False,
-        execution_backend: str = "eager",
-        runtime_options: dict = None,
-    ):
-        if not use_si:
-            raise ValueError(
-                "OMATGCSPNetFull always uses stochastic interpolants; set "
-                "use_si=True or build OMatG with a si_scheduler_cfg."
-            )
-        decoder_cfg = {
-            "hidden_dim": hidden_dim,
-            "num_layers": num_layers,
-            "max_atoms": max_atoms,
-            "act_fn": act_fn,
-            "dis_emb": dis_emb,
-            "num_freqs": num_freqs,
-            "edge_style": edge_style,
-            "cutoff": cutoff,
-            "max_neighbors": max_neighbors,
-            "ln": ln,
-            "ip": ip,
-            "smooth": smooth,
-            "pred_type": pred_type,
-            "pred_scalar": pred_scalar,
-            "time_embed_dim": time_embed_dim,
-        }
-        super().__init__(
-            decoder_cfg=decoder_cfg,
-            si_scheduler_cfg=si_scheduler_cfg,
-            sampler_cfg=sampler_cfg,
-            use_min_perm_dist=use_min_perm_dist,
-            execution_backend=execution_backend,
-            runtime_options=runtime_options,
-        )
 
 
 class IndependentSampler:

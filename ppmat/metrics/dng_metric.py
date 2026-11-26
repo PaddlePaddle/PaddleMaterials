@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""De novo generation metrics for OMatG on MP-20."""
+"""De novo generation (DNG) metrics for crystal structure generation."""
 
 import json
 import os
@@ -29,9 +29,7 @@ from ppmat.metrics.utils import Crystal
 from ppmat.utils import logger
 
 _COMP_FP_STATS_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "models",
-    "omatg",
+    os.path.dirname(os.path.abspath(__file__)),
     "comp_fp_stats.json",
 )
 with open(_COMP_FP_STATS_PATH) as _stats_file:
@@ -286,7 +284,7 @@ class _OMatGCrystal(Crystal):
             self.valid = False
             self.comp_fp = None
             self.struct_fp = None
-            logger.warning(f"[OMatGMetric] Invalid structure: {error}")
+            logger.warning(f"[DNGMetric] Invalid structure: {error}")
 
     def _apply_upstream_validity(self):
         # Upstream only evaluates SMACT when the structure itself is valid.
@@ -340,19 +338,21 @@ def _constructible(crystals: Sequence[Crystal], label: str) -> List[Crystal]:
     dropped = len(crystals) - len(constructible)
     if dropped:
         logger.warning(
-            f"[OMatGMetric] {dropped} of {len(crystals)} {label} structures could not "
+            f"[DNGMetric] {dropped} of {len(crystals)} {label} structures could not "
             f"be constructed; they are excluded from the distribution metrics and "
             f"counted as invalid."
         )
     return constructible
 
 
-class OMatGMetric:
-    """De novo generation metrics for OMatG on MP-20.
+class DNGMetric:
+    """De novo generation (DNG) metrics for crystal structure generation.
 
     Reports the validity rate, match-everyone-to-reference (METRe) statistics,
     Wasserstein distances over density / n-arity / coordination number and, for
-    datasets with published cutoffs, composition-structure coverage.
+    datasets with published cutoffs, composition-structure coverage. The metric
+    only consumes generated structure dictionaries and a reference set, so it is
+    independent of the model that produced them.
 
     Args:
         gt_file_path (str): CSV file with a ``cif`` column holding the reference
@@ -367,7 +367,6 @@ class OMatGMetric:
         self,
         gt_file_path: Optional[str] = None,
         dataset_name: Optional[str] = "mp_20",
-        metric_type: Optional[str] = None,
         ltol: float = 0.3,
         stol: float = 0.5,
         angle_tol: float = 10.0,
@@ -375,18 +374,11 @@ class OMatGMetric:
     ) -> None:
         self._dataset_name = dataset_name
         self._gt_file_path = gt_file_path
-        self._metric_type = metric_type
         self._ltol = ltol
         self._stol = stol
         self._angle_tol = angle_tol
         self._check_reduced = check_reduced
         self._gt_crystals: Optional[List[Crystal]] = None
-        if metric_type == "match":
-            # Released packages pin metric_type: match; route it to the shared
-            # CSP metric so the packaged configs keep working.
-            from ppmat.metrics.csp_metric import CSPMetric
-
-            self._csp_metric = CSPMetric(gt_file_path=gt_file_path)
 
     def _load_reference(self, gt_data: Optional[Sequence]) -> List[Crystal]:
         if gt_data is not None:
@@ -394,7 +386,7 @@ class OMatGMetric:
         if self._gt_crystals is None:
             if self._gt_file_path is None:
                 raise ValueError(
-                    "gt_data is None, but no gt_file_path was provided to OMatGMetric."
+                    "gt_data is None, but no gt_file_path was provided to DNGMetric."
                 )
             import pandas as pd
 
@@ -419,7 +411,7 @@ class OMatGMetric:
         ref_measurable = _constructible(ref_crystals, "reference")
         if not gen_measurable or not ref_measurable:
             logger.warning(
-                "[OMatGMetric] Distribution metrics need at least one constructible "
+                "[DNGMetric] Distribution metrics need at least one constructible "
                 "generated and reference structure; reporting the validity rate only."
             )
             return {
@@ -497,16 +489,14 @@ class OMatGMetric:
         self, pred_data: Sequence[dict], gt_data: Optional[Sequence] = None
     ) -> Dict[str, float]:
         """Score generated structures against the reference set."""
-        if self._metric_type == "match":
-            return self._csp_metric(pred_data, gt_data)
         if len(pred_data) == 0:
-            logger.warning("[OMatGMetric] No generated structures to evaluate.")
+            logger.warning("[DNGMetric] No generated structures to evaluate.")
             return {}
         gen_crystals = _parse_crystals(pred_data)
         ref_crystals = self._load_reference(gt_data)
         if len(ref_crystals) == 0:
             logger.warning(
-                "[OMatGMetric] The reference set is empty; nothing to score."
+                "[DNGMetric] The reference set is empty; nothing to score."
             )
             return {}
         return self._dng_metrics(gen_crystals, ref_crystals)

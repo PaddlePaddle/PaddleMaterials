@@ -43,7 +43,6 @@ from ppmat.models.mattersim.m3gnet import M3GNet
 from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
 from ppmat.models.megnet.megnet import MEGNetPlus
 from ppmat.models.omatg.omatg import OMatG
-from ppmat.models.omatg.omatg import OMATGCSPNetFull
 from ppmat.models.sfin.sfin import SFIN
 from ppmat.models.spherenet.spherenet import SphereNet
 from ppmat.utils import download
@@ -76,7 +75,6 @@ __all__ = [
     "DiffNMR",
     "InfGCN",
     "OMatG",
-    "OMATGCSPNetFull",
     "SFIN",
     "SphereNet",
 ]

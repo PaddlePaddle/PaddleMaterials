@@ -188,7 +188,7 @@ Sample:
     num_inference_steps: ${Model.__init_params__.si_scheduler_cfg.integration_time_steps}
 
   metrics:
-    __class_name__: OMatGMetric
+    __class_name__: DNGMetric
     __init_params__:
       dataset_name: mp_20
       gt_file_path: "./data/mp_20/test.csv"

@@ -133,7 +133,7 @@ Both rows are produced by the released checkpoints with the evaluation commands 
 on a single GPU: CSP generates one structure for every MP-20 test entry (9046
 structures, 210 integration steps), while DNG generates 1000 structures (710
 integration steps) and scores them against the MP-20 test split. The CSP row uses the
-shared `CSPMetric`; the DNG row uses `OMatGMetric`, cross-checked against the
+shared `CSPMetric`; the DNG row uses the model-agnostic `DNGMetric`, cross-checked against the
 upstream `ValidAtoms`, `get_cov` and `metre_rmsds` implementations. `Valid` follows
 the upstream validity conjunction (SMACT composition validity, pairwise-distance
 structural validity, non-degenerate polar sine and computable CrystalNN/Magpie
@@ -197,7 +197,7 @@ python structure_generation/sample.py --config_path='structure_generation/config
 # CSP: one structure per MP-20 test entry, scored with the shared CSPMetric.
 python structure_generation/sample.py --config_path='structure_generation/configs/omatg/omatg_mp20_csp.yaml' --checkpoint_path='path/to/model.pdparams' --mode='compute_metric' --output_path='result_omatg_mp20_csp_metric/'
 
-# DNG: 1000 structures scored with OMatGMetric (validity, METRe, coverage).
+# DNG: 1000 structures scored with DNGMetric (validity, METRe, coverage).
 python structure_generation/sample.py --config_path='structure_generation/configs/omatg/omatg_mp20_dng.yaml' --checkpoint_path='path/to/model.pdparams' --mode='compute_metric' --output_path='result_omatg_mp20_dng_metric/'
 ```
 
