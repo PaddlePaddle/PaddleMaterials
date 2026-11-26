@@ -42,8 +42,9 @@ class CrystalGenerationMetric(StreamingMetricBase):
 
     ``matcher_cfg`` configures StructureMatcher. ``coverage_cfg`` must specify
     struc_cutoff, comp_cutoff, distance_batch_size, and either statistics_path
-    or statistics_resource. Statistics contain mean/std and ordered Magpie
-    feature_labels; no normalization is fitted to generated/evaluation data.
+    or statistics_resource (package/name). Statistics contain mean/std and
+    ordered Magpie feature_labels; no normalization is fitted to generated or
+    evaluation data.
     No generated fingerprints means zero coverage and undefined (NaN) distances;
     a reference pool without fingerprints is rejected.
 
@@ -97,13 +98,13 @@ class CrystalGenerationMetric(StreamingMetricBase):
             has_resource = "statistics_resource" in coverage_cfg
             if has_path == has_resource:
                 raise ValueError("Specify one statistics_path or statistics_resource.")
-            statistics_path = (
-                Path(coverage_cfg["statistics_path"]).expanduser()
-                if has_path
-                else resources.files("ppmat.metrics").joinpath(
-                    coverage_cfg["statistics_resource"]
+            if has_path:
+                statistics_path = Path(coverage_cfg["statistics_path"]).expanduser()
+            else:
+                resource = coverage_cfg["statistics_resource"]
+                statistics_path = resources.files(resource["package"]).joinpath(
+                    resource["name"]
                 )
-            )
             with statistics_path.open(encoding="utf-8") as file_obj:
                 statistics = json.load(file_obj)
             labels = CompFP.feature_labels()

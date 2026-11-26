@@ -236,4 +236,6 @@ Sample:
         struc_cutoff: 0.4
         comp_cutoff: 10.0
         distance_batch_size: 256
-        statistics_resource: magpie_legacy_statistics.json
+        statistics_resource:
+          package: ppmat.models.sgequidiff
+          name: magpie_legacy_statistics.json

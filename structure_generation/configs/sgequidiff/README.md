@@ -51,8 +51,8 @@ novelty, and coverage through `metrics`.
 Structure/SMACT checks, matcher tolerances, coverage cutoffs, and distance batch
 size are configured explicitly under `Sample.metrics.__init_params__`.
 
-The configured [Magpie statistics](../../../ppmat/metrics/magpie_legacy_statistics.json)
-preserve the previous evaluation scale, with ordered feature names and source
+SGEquiDiff's configured [Magpie statistics](../../../ppmat/models/sgequidiff/magpie_legacy_statistics.json)
+preserve its previous evaluation scale, with ordered feature names and source
 metadata. Their original fitting population is not verified. Supply `coverage_cfg.statistics_path` instead of `statistics_resource`
 to use a separately calibrated statistics file; evaluation never fits a scaler
 to generated samples. Validity and uniqueness alone need neither statistics

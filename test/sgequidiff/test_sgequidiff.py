@@ -556,6 +556,7 @@ def test_sgequidiff_metric(tmp_path, monkeypatch):
     )["Sample"]["metrics"]
     cfg["__init_params__"]["gt_file_path"] = str(gt_csv)
     cfg["__init_params__"]["coverage_cfg"]["distance_batch_size"] = 2
+    monkeypatch.chdir(tmp_path)
     metric = build_metric(cfg)
     result = metric(duplicated)
 
