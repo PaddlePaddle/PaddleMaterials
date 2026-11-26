@@ -1,0 +1,153 @@
+Global:
+  do_train: true
+  do_eval: false
+  do_test: false
+  data_dir: ./data/geodiff_qm9_data
+
+Trainer:
+  max_iter: 10000000
+  max_epochs: ${Trainer.max_iter}
+  seed: 2021
+  output_dir: ./output/geodiff_qm9_default
+  save_freq: 100
+  save_freq_steps: 5000
+  log_freq: 100
+  start_eval_epoch: 1
+  eval_freq: 1
+  eval_freq_steps: 5000
+  pretrained_model_path: null
+  resume_from_checkpoint: null
+  use_amp: false
+  eval_with_no_grad: true
+  gradient_accumulation_steps: 1
+  best_metric_indicator: eval_metric
+  name_for_best_metric: geodiff_loss
+  greater_is_better: false
+  compute_metric_during_train: false
+  use_tensorboard: false
+
+Model:
+  __class_name__: GeoDiff
+  __init_params__:
+    type: diffusion
+    network: dualenc
+    hidden_dim: 128
+    num_convs: 6
+    num_convs_local: 4
+    cutoff: 10.0
+    mlp_act: relu
+    beta_schedule: sigmoid
+    beta_start: 1.0e-7
+    beta_end: 2.0e-3
+    num_diffusion_timesteps: 5000
+    edge_order: 3
+    edge_encoder: mlp
+    smooth_conv: false
+
+Optimizer:
+  clip_norm_global: 10000.0
+  groups:
+    global:
+      model_attr: model_global
+      __class_name__: Adam
+      __init_params__:
+        beta1: 0.95
+        beta2: 0.999
+        weight_decay: 0.0
+        lr:
+          __class_name__: ReduceOnPlateau
+          __init_params__:
+            learning_rate: 1.0e-3
+            factor: 0.6
+            patience: 10
+            indicator: eval_metric
+            indicator_name: geodiff_loss_global
+    local:
+      model_attr: model_local
+      __class_name__: Adam
+      __init_params__:
+        beta1: 0.95
+        beta2: 0.999
+        weight_decay: 0.0
+        lr:
+          __class_name__: ReduceOnPlateau
+          __init_params__:
+            learning_rate: 1.0e-3
+            factor: 0.6
+            patience: 10
+            indicator: eval_metric
+            indicator_name: geodiff_loss_local
+
+Metric:
+  __class_name__: GeoDiffValidationLoss
+  __init_params__: {}
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: GeomConformerDataset
+      __init_params__:
+        path: ${Global.data_dir}
+        split: train
+    loader:
+      num_workers: 0
+      collate_fn: GeomConformerCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 64
+        shuffle: true
+        drop_last: false
+  val:
+    dataset:
+      __class_name__: GeomConformerDataset
+      __init_params__:
+        path: ${Global.data_dir}
+        split: val
+    loader:
+      num_workers: 0
+      collate_fn: GeomConformerCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 64
+        shuffle: false
+        drop_last: false
+  test:
+    dataset:
+      __class_name__: GeomConformerDataset
+      __init_params__:
+        path: ${Global.data_dir}
+        split: test
+        include_rdkit: true
+    loader:
+      num_workers: 0
+      collate_fn: GeomConformerCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 1
+        shuffle: false
+        drop_last: false
+
+Sampler:
+  data:
+    dataset:
+      __class_name__: GeomConformerDataset
+      __init_params__:
+        path: ${Global.data_dir}
+        split: test
+        include_rdkit: true
+        pack_by_molecule: true
+    loader:
+      num_workers: 0
+      collate_fn: GeomConformerCollator
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        batch_size: 1
+        shuffle: false
+        drop_last: false
+  model_sample_params:
+    num_confs: 2x
+    n_steps: ${Model.__init_params__.num_diffusion_timesteps}

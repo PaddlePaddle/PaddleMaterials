@@ -13,17 +13,23 @@
 # limitations under the License.
 
 import argparse
+from pathlib import Path
 
+import paddle.distributed as dist
 from omegaconf import OmegaConf
 
+from ppmat.sampler import MolecularSampler
 from ppmat.sampler import StructureSampler
 from ppmat.utils import logger
+from ppmat.utils.molecular_conformers import write_molecular_conformers
 
 __all__ = ["StructureSampler", "build_parser", "main"]
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Crystal structure sampling")
+    parser = argparse.ArgumentParser(
+        description="Crystal or molecular structure sampling"
+    )
     model_source = parser.add_mutually_exclusive_group(required=True)
     model_source.add_argument("--model_name", help="Registered model name.")
     model_source.add_argument("--config_path", help="Path to a local config file.")
@@ -37,7 +43,7 @@ def build_parser():
     )
     parser.add_argument(
         "--input_path",
-        help="Dataset path used by by_dataloader or compute_metric mode.",
+        help="Dataset path for by_dataloader, compute_metric, or by_molecular_graph.",
     )
     parser.add_argument(
         "--output_path",
@@ -60,6 +66,7 @@ def build_parser():
             "by_num_atoms",
             "by_condition",
             "by_dataloader",
+            "by_molecular_graph",
             "compute_metric",
         ],
         default="by_chemical_formula",
@@ -81,19 +88,37 @@ def main():
     ]
     if invalid_overrides:
         parser.error("unrecognized arguments: " + " ".join(invalid_overrides))
+    by_molecular_graph = args.mode == "by_molecular_graph"
+    data_section = "Sampler" if by_molecular_graph else "Sample"
     if args.input_path is not None:
         config_overrides.append(
-            f"Sample.data.dataset.__init_params__.path={args.input_path}"
+            f"{data_section}.data.dataset.__init_params__.path={args.input_path}"
+        )
+    if by_molecular_graph:
+        if dist.get_world_size() != 1:
+            parser.error("by_molecular_graph requires a single process")
+        config_overrides.extend(
+            (
+                "Dataset.train=null",
+                "Metric=null",
+                f"Sampler.output_dir={args.output_path}",
+            )
         )
 
-    sampler = StructureSampler(
+    sampler_class = MolecularSampler if by_molecular_graph else StructureSampler
+    sampler = sampler_class(
         model_name=args.model_name,
         weights_name=args.weights_name,
         config_path=args.config_path,
         checkpoint_path=args.checkpoint_path,
         config_overrides=config_overrides,
     )
-    if args.mode == "compute_metric":
+    if by_molecular_graph:
+        samples = sampler.sample_by_dataloader(save_path=args.output_path)
+        write_molecular_conformers(
+            Path(args.output_path) / "conformers.sdf", samples["pred"]
+        )
+    elif args.mode == "compute_metric":
         metric_result = sampler.compute_metric(save_path=args.output_path)
         for metric_name, metric_value in metric_result.items():
             logger.info(f"{metric_name}: {metric_value}")

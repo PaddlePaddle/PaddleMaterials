@@ -60,7 +60,10 @@ if __name__ == "__main__":
         long_description=get_readme(),
         long_description_content_type="text/markdown",
         packages=setuptools.find_namespace_packages(include=("ppmat", "ppmat.*")),
-        package_data={"": ["*.json"]},
+        package_data={
+            "": ["*.json"],
+            "ppmat.models.geodiff": ["LICENSE", "LICENSE.graph"],
+        },
         license_files=("LICENSE",),
         python_requires=">=3.10",
         project_urls={
