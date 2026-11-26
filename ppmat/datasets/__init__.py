@@ -46,6 +46,7 @@ from ppmat.datasets.mp20_dataset import MP20MatterGenDataset
 from ppmat.datasets.mp2018_dataset import MP2018Dataset
 from ppmat.datasets.mp2024_dataset import MP2024Dataset
 from ppmat.datasets.mptrj_dataset import MPTrjDataset
+from ppmat.datasets.mpts52_dataset import MPTS52Dataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrDataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrinfos
 from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
@@ -66,6 +67,7 @@ __all__ = [
     "NumAtomsCrystalDataset",
     "set_signal_handlers",
     "MPTrjDataset",
+    "MPTS52Dataset",
     "JarvisDataset",
     "HighLevelWaterDataset",
     "MSDnmrDataset",
