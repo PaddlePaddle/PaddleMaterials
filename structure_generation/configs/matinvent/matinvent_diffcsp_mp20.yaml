@@ -107,7 +107,7 @@ Trainer:
   eval_freq: 10
   save_freq_steps: null
   eval_freq_steps: null
-  pretrained_model_path: http://127.0.0.1/models/matinvent_diffcsp_mp20.zip
+  pretrained_model_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/MatInvert/matinvent_diffcsp_mp20.zip
   pretrained_weight_name: null
   resume_from_checkpoint: null
   use_amp: False
