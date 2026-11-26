@@ -234,3 +234,5 @@ class MatInventTraining(StreamingMetricBase):
         self.loop.anchor_batch = to_tensor_batch(state["anchor_batch"])
         self.loop.probe_batch = to_tensor_batch(state["probe_batch"])
         self.stopped = state["stopped"]
+        if self.stopped:
+            self.trainer.max_train_steps = 0

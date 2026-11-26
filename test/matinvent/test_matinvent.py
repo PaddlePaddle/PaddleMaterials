@@ -47,6 +47,8 @@ from ppmat.models.matinvent import MatinventMatterGen
 from ppmat.models.matinvent import benchmark as matinvent_benchmark
 from ppmat.models.matinvent.dataset import RLDataset
 from ppmat.models.matinvent.dataset import to_tensor_batch
+from ppmat.models.matinvent.memory import ReplayBuffer
+from ppmat.models.matinvent.qualification import PopulationQualifier
 from ppmat.models.matinvent.qualification import _MatterSimCalculator
 from ppmat.models.matinvent.rewards.reward import CALCULATOR_REGISTRY
 from ppmat.models.matinvent.rewards.reward import Reward
@@ -919,7 +921,9 @@ class TestTrainer:
     def test_early_stop_runs_after_update_and_saves_native_checkpoint(
         self, monkeypatch, tmp_path
     ):
-        _, trainer, _ = _make_round_env(monkeypatch, tmp_path, "diffcsp", timesteps=4)
+        config, trainer, loader = _make_round_env(
+            monkeypatch, tmp_path, "diffcsp", timesteps=4
+        )
         trainer.model.before_train(trainer)
         context = trainer.model._training_context
         context.loop.early_stop_enabled = True
@@ -942,6 +946,21 @@ class TestTrainer:
         checkpoint = pathlib.Path(trainer.output_dir) / "checkpoints"
         assert (checkpoint / "epoch_1.pdparams").is_file()
         assert not (checkpoint / "epoch_2.pdparams").exists()
+        config["Trainer"]["output_dir"] = str(tmp_path / "resumed")
+        config["Trainer"]["resume_from_checkpoint"] = str(checkpoint / "epoch_1")
+        resumed = _build_trainer(
+            config,
+            build_model(config["Model"]),
+            loader,
+            monkeypatch,
+            tmp_path / "test_diffcsp",
+        )
+        with mock.patch.object(resumed.optimizer, "step") as update:
+            resumed.train()
+        update.assert_not_called()
+        assert resumed.model._training_context.stopped
+        assert resumed.state.global_step == trainer.state.global_step
+        assert resumed.state.epoch == trainer.state.epoch
 
     @pytest.mark.parametrize(
         "mutation,message",
@@ -966,11 +985,21 @@ class TestTrainer:
     def test_empty_population_does_not_update_optimizer(self, monkeypatch, tmp_path):
         _, trainer, _ = _make_round_env(monkeypatch, tmp_path, "diffcsp")
         trainer.model.before_train(trainer)
-        trainer.model._training_context.loop.sampler = _FakeSampler([])
+        loop = trainer.model._training_context.loop
+        loop.sampler = _FakeSampler([])
+        loop.reward.scoring = mock.Mock(side_effect=AssertionError("Empty scoring"))
         with mock.patch.object(trainer.optimizer, "step") as update:
             with pytest.raises(RuntimeError, match="No scored structures"):
                 trainer.train()
         update.assert_not_called()
+        loop.reward.scoring.assert_not_called()
+        loop.replay = ReplayBuffer()
+        loop.replay.extend(_structures(), np.array([0.8, 0.6]))
+        trainer.train()
+        assert trainer.state.global_step == 2
+        assert loop.cost == 0
+        assert len(loop.ltm) == 0
+        loop.reward.scoring.assert_not_called()
 
     def test_evaluation_and_sampling_do_not_initialize_rl(self, tmp_path):
         config = _load_config("diffcsp")["Trainer"]
@@ -1062,6 +1091,29 @@ class TestEdgelessGraph:
 class TestQualification:
     """The stability qualification used by the joint round keeps a periodic graph."""
 
+    def test_selection_rejects_incompatible_energies(self):
+        structures = [
+            _make_structure(["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]]),
+            _make_structure(["Si"], [[0, 0, 0]]),
+        ]
+        qualifier = PopulationQualifier.__new__(PopulationQualifier)
+        qualifier.reference = mock.Mock()
+        qualifier.reference.entries.return_value = []
+        diagram = qualifier.reference.phase_diagram.return_value
+        diagram.get_e_above_hull.return_value = 0.0
+        qualifier.matcher = mock.Mock()
+        qualifier.matcher.fit.return_value = False
+        qualifier.stability_threshold = 0.1
+        qualifier.compatibility = mock.Mock()
+        qualifier.compatibility.process_entry.side_effect = (
+            lambda entry: None if "Na" in entry.composition else entry
+        )
+        training, scoring = qualifier.select(structures, structures, [-2.0, -1.0])
+        assert training == scoring == [structures[1]]
+        assert qualifier.compatibility.process_entry.call_count == 2
+        diagram.get_e_above_hull.assert_called_once()
+        assert diagram.get_e_above_hull.call_args.args[0].structure == structures[1]
+
     def test_qualification_graph_is_periodic(self):
         from ppmat.models.mattersim.m3gnet import M3GNet
         from ppmat.models.mattersim.m3gnet_graph_converter import M3GNetGraphConvertor
@@ -1147,11 +1199,10 @@ def _require_cinn_gpu():
 
 
 class TestCinnDispatch:
-    """CINN boundary dispatch: compiled numbers must match eager exactly."""
+    """CPU orchestration dispatches the same numerical boundary as eager."""
 
-    @pytest.mark.parametrize("model_type", ["mattergen", "diffcsp"])
+    @pytest.mark.parametrize("model_type", list(_TASK_CONFIG))
     def test_boundary_dispatch_matches_eager(self, model_type):
-        _require_cinn_gpu()
         eager = _make_model(model_type)
         cinn = _make_model(model_type, execution_backend="cinn")
         cinn.set_state_dict(_clone_state_dict(eager))
@@ -1159,16 +1210,17 @@ class TestCinnDispatch:
         cinn.eval()
         assert cinn.execution_backend == "cinn"
 
-        inputs = _denoise_inputs(model_type, eager)
+        inputs = list(_denoise_inputs(model_type, eager))
+        if model_type == "diffcsp_joint":
+            inputs[1] = paddle.nn.functional.one_hot(inputs[1], 100).cast("float32")
         boundary = "_denoise" if model_type == "mattergen" else "_decode"
         expected = getattr(eager, boundary)(*inputs)
 
         names = []
-        original = type(cinn)._run_runtime
 
         def record(instance, name, function, *args, **kwargs):
             names.append(name)
-            return original(instance, name, function, *args, **kwargs)
+            return function(*args, **kwargs)
 
         with mock.patch.object(type(cinn), "_run_runtime", record):
             actual = getattr(cinn, boundary)(*inputs)
@@ -1177,12 +1229,9 @@ class TestCinnDispatch:
         actual_values = list(_flatten_result(actual))
         assert len(actual_values) == len(expected_values)
         for actual_value, expected_value in zip(actual_values, expected_values):
-            # CINN may reassociate float32 operations, so only float noise remains.
-            np.testing.assert_allclose(
+            np.testing.assert_array_equal(
                 np.asarray(actual_value),
                 np.asarray(expected_value),
-                atol=1e-6,
-                rtol=1e-6,
             )
         assert cinn.state_dict().keys() == eager.state_dict().keys()
 

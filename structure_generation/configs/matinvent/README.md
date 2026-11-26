@@ -108,10 +108,24 @@ RL checkpoints use the standard `.pdparams`, `.pdopt` and `.pdstates` files. The
 The native packages omit unused DiffCSP property projections and MatterGen energy heads. Rebuild older packages offline by removing those state entries; retained tensors require no numerical conversion. The model has no legacy-key conversion or filtering branch. Older RL runs with separate `.rlstate` files can initialize backbone weights through `Trainer.pretrained_model_path`, which starts a new RL run. Exact RL resume requires a new checkpoint containing `_matinvent_training`; older sidecars must not be silently discarded during resume.
 
 ### Validation
-Set `Global.do_eval` to `True` to evaluate the diffusion loss on the `Dataset.val` split. Each round also reports the reward, the number of scored structures, the density/HHI statistics and the diversity metrics through the framework logger and the enabled visualisation backends.
+
+Evaluate the diffusion loss on the `Dataset.val` split:
+
+```bash
+python structure_generation/train.py -c structure_generation/configs/matinvent/matinvent_mattergen_mp20.yaml Global.do_train=False Global.do_eval=True
+```
+
+During training, each round also reports rewards, scored structure counts, density/HHI statistics and diversity metrics through the framework logger and enabled visualisation backends.
 
 ### Testing
-Set `Global.do_test` to `True` to evaluate the diffusion loss on the `Dataset.test` split. The configurations do not define a task metric, so `sample.py --mode=compute_metric` is not available.
+
+Evaluate the diffusion loss on the `Dataset.test` split:
+
+```bash
+python structure_generation/train.py -c structure_generation/configs/matinvent/matinvent_mattergen_mp20.yaml Global.do_train=False Global.do_test=True
+```
+
+The configurations do not define a task metric, so `sample.py --mode=compute_metric` is not available.
 
 ### Sample
 ```bash

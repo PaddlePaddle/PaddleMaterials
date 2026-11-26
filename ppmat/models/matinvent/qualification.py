@@ -302,8 +302,7 @@ class PopulationQualifier:
                 "aspherical": incar.get("LASPH", False),
             },
         )
-        self.compatibility.process_entry(entry)
-        return entry
+        return self.compatibility.process_entry(entry)
 
     def __call__(self, structures):
         originals = [
@@ -349,6 +348,9 @@ class PopulationQualifier:
                 for entry in self.reference.entries(chemical_system)
             )
             entry = self._corrected_entry(structure, energy)
+            if entry is None:
+                logger.warning(f"Rejected incompatible qualification entry: {formula}")
+                continue
             above_hull = self.reference.phase_diagram(chemical_system).get_e_above_hull(
                 entry, allow_negative=True
             )

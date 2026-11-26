@@ -239,6 +239,8 @@ class MatInventRL:
         return training_structures, scoring_structures
 
     def _score_step(self, training_structures, scoring_structures):
+        if not scoring_structures:
+            return [], [], np.empty(0, dtype=float), {}
         label = f"step_{self.step:0>4d}"
         rewards, prop_dict, failed_mask = self.reward.scoring(scoring_structures, label)
         self.cost += len(scoring_structures)
