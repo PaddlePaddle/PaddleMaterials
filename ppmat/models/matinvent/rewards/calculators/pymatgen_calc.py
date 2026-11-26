@@ -28,7 +28,6 @@ from pymatgen.analysis.interfaces.substrate_analyzer import SubstrateAnalyzer
 from pymatgen.symmetry.analyzer import SpacegroupAnalyzer
 
 from ppmat.datasets.build_structure import BuildStructure
-from ppmat.models.matinvent.rewards.calculators import Calculator
 from ppmat.utils import logger
 
 # Preferred miller indices for common substrates used by lattice matching.
@@ -167,11 +166,13 @@ def compute_property(structures, task, substrate=None):
     return PROPERTY_FUNCS[task](structures)
 
 
-class PyMatGen(Calculator):
+class PyMatGen:
     """Score a pymatgen property and keep the per-batch values on disk."""
 
     def __init__(self, root_dir, task="density", substrate_path=None):
-        super().__init__(root_dir, task)
+        self.root_dir = root_dir
+        self.task = task
+        os.makedirs(root_dir, exist_ok=True)
         self.substrate_path = substrate_path
         self._substrate = None
 

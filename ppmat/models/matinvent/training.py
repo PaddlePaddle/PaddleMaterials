@@ -20,6 +20,7 @@ import os
 import paddle
 import paddle.distributed as dist
 
+from ppmat.datasets import build_dataloader
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.transform import build_transforms
 from ppmat.metrics.streaming_base import StreamingMetricBase
@@ -55,7 +56,9 @@ class MatInventTraining(StreamingMetricBase):
         self.padded_timesteps = loader.dataset.padded_timesteps
         self.num_steps = len(loader.dataset)
         if (
-            loader.dataset.finetune_cfg != finetune
+            loader.dataset.timesteps != finetune["timesteps"]
+            or loader.dataset.epochs != finetune["epochs"]
+            or loader.dataset.accum_steps != finetune["accum_steps"]
             or len(loader) != self.num_steps
             or loader.batch_sampler.batch_size != 1
             or loader.batch_sampler.shuffle
@@ -73,19 +76,25 @@ class MatInventTraining(StreamingMetricBase):
         for parameter in prior.parameters():
             parameter.stop_gradient = True
         prior.eval()
-        anchor_dataset = paddle.io.Subset(
-            loader.dataset, range(loader.dataset.num_samples)
-        )
         anchor_cfg = cfg["anchor_cfg"]
-        anchor_batch = self.build_batch(anchor_dataset, anchor_cfg["num_samples"])
-        probe_dataset = (
-            trainer.val_dataloader.dataset
-            if trainer.val_dataloader is not None
-            else anchor_dataset
-        )
-        probe_batch = self.build_batch(
-            probe_dataset, cfg["early_stop_cfg"]["probe_num_samples"]
-        )
+        use_anchor = anchor_cfg["loss_weight"] > 0
+        use_probe = cfg["early_stop_cfg"]["enabled"]
+        anchor_dataset = None
+        anchor_batch = None
+        probe_batch = None
+        if use_anchor or (use_probe and trainer.val_dataloader is None):
+            anchor_dataset = build_dataloader(anchor_cfg["data_cfg"]).dataset
+        if use_anchor:
+            anchor_batch = self.build_batch(anchor_dataset, anchor_cfg["num_samples"])
+        if use_probe:
+            probe_dataset = (
+                trainer.val_dataloader.dataset
+                if trainer.val_dataloader is not None
+                else anchor_dataset
+            )
+            probe_batch = self.build_batch(
+                probe_dataset, cfg["early_stop_cfg"]["probe_num_samples"]
+            )
         self.loop = MatInventRL(
             agent=agent,
             prior=prior,

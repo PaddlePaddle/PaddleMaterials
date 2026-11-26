@@ -28,6 +28,7 @@ from functools import lru_cache
 
 import lmdb
 import numpy as np
+import smact
 from ase import units
 from ase.calculators.calculator import all_changes
 from ase.filters import ExpCellFilter
@@ -37,17 +38,79 @@ from pymatgen.analysis.phase_diagram import PhaseDiagram
 from pymatgen.analysis.structure_analyzer import oxide_type
 from pymatgen.analysis.structure_matcher import OrderDisorderElementComparator
 from pymatgen.analysis.structure_matcher import StructureMatcher
+from pymatgen.core.structure import Structure
 from pymatgen.entries.compatibility import MaterialsProject2020Compatibility
 from pymatgen.entries.computed_entries import ComputedStructureEntry
 from pymatgen.io.ase import AseAtomsAdaptor
 from pymatgen.io.vasp.sets import MPRelaxSet
+from smact.screening import pauling_test
 
 from ppmat.calculator.ase import ASECalculator
-from ppmat.models.matinvent.dataset import is_valid_structure
 from ppmat.predictor.potential_predictor import PotentialPredictor
 from ppmat.utils import download
 from ppmat.utils import logger
 from ppmat.utils.eager_comp_setting import setting_eager_mode
+
+
+@lru_cache(maxsize=None)
+def _is_valid_composition(composition):
+    symbols, counts = zip(*composition)
+    if len(symbols) == 1 or all(symbol in smact.metals for symbol in symbols):
+        return True
+    elements = smact.element_dictionary(symbols)
+    electronegativities = [elements[symbol].pauling_eneg for symbol in symbols]
+    oxidation_states = [elements[symbol].oxidation_states for symbol in symbols]
+    known_electronegativities = all(value is not None for value in electronegativities)
+    reachable = [set() for _ in range(len(symbols) + 1)]
+    reachable[-1].add(0)
+    for index in range(len(symbols) - 1, -1, -1):
+        reachable[index] = {
+            state * counts[index] + charge
+            for state in oxidation_states[index]
+            for charge in reachable[index + 1]
+        }
+
+    def neutral_states(index, charge, states):
+        if index == len(symbols):
+            yield states
+            return
+        for state in oxidation_states[index]:
+            next_charge = charge + state * counts[index]
+            if -next_charge not in reachable[index + 1]:
+                continue
+            next_states = states + (state,)
+            if known_electronegativities and not pauling_test(
+                next_states, electronegativities[: index + 1]
+            ):
+                continue
+            yield from neutral_states(index + 1, next_charge, next_states)
+
+    for states in neutral_states(0, 0, ()):
+        try:
+            if pauling_test(states, electronegativities):
+                return True
+        except TypeError:
+            return True
+    return False
+
+
+def is_valid_structure(
+    struc: Structure,
+    min_volume: float = 0.1,
+    max_lattice_param: float = 25.0,
+    min_interatomic_dist: float = 0.5,
+) -> bool:
+    """Apply the reference geometric, cell-size and SMACT validity checks."""
+    if struc is None or struc.num_sites == 0 or struc.volume < min_volume:
+        return False
+    if max(struc.lattice.abc) >= max_lattice_param:
+        return False
+    dmat = struc.distance_matrix.copy()
+    np.fill_diagonal(dmat, np.inf)
+    if dmat.min() < min_interatomic_dist:
+        return False
+    composition = tuple(sorted(struc.composition.get_el_amt_dict().items()))
+    return _is_valid_composition(composition)
 
 
 class _DisorderedMatcher(StructureMatcher):

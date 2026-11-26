@@ -12,31 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ppmat.datasets.mp20_dataset import MP20Dataset
+from paddle.io import Dataset
 
 
-class MatInventDataset(MP20Dataset):
-    """MP20 anchors with an ordered diffusion-timestep index for each RL round.
+class MatInventStepDataset(Dataset):
+    """Ordered timestep indices for one RL round, independent of crystal data.
 
     Args:
-        finetune_cfg (dict): Timestep, accumulation and fine-tuning pass counts.
-        **kwargs: Arguments forwarded to MP20Dataset.
+        timesteps (int): Diffusion timesteps in each fine-tuning pass.
+        epochs (int): Fine-tuning passes in each RL round.
+        accum_steps (int): Microbatches in each optimizer update.
     """
 
-    def __init__(self, finetune_cfg, **kwargs):
-        super().__init__(**kwargs)
-        self.finetune_cfg = finetune_cfg
-        timesteps = finetune_cfg["timesteps"]
-        accumulation = finetune_cfg["accum_steps"]
+    def __init__(self, timesteps: int, epochs: int, accum_steps: int):
+        super().__init__()
+        if min(timesteps, epochs, accum_steps) <= 0:
+            raise ValueError("Timestep, pass and accumulation counts must be positive")
+        self.timesteps = timesteps
+        self.epochs = epochs
+        self.accum_steps = accum_steps
         self.padded_timesteps = (
-            (timesteps + accumulation - 1) // accumulation * accumulation
+            (timesteps + accum_steps - 1) // accum_steps * accum_steps
         )
-        self.num_steps = self.padded_timesteps * finetune_cfg["epochs"]
+        self.num_steps = self.padded_timesteps * epochs
 
     def __len__(self):
         return self.num_steps
 
     def __getitem__(self, index):
-        data = super().__getitem__(index % self.num_samples)
-        data["rl_index"] = index
-        return data
+        return {"rl_index": index}

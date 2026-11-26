@@ -30,13 +30,15 @@ The MatterGen and fixed-composition DiffCSP configurations optimize density. The
 | --- | --- |
 | `Model` | `MatinventMatterGen` or `MatinventDiffCSP`, with noise schedulers and the RL recipe in `training_cfg` (referencing `Global.training_cfg`) |
 | `Optimizer` | The reward-weighted fine-tuning optimizer |
-| `Dataset` | MP-20 train (denoising anchors), val (validation and early-stop probe) and test splits |
+| `Dataset` | RL timestep indices for training; MP-20 validation and test splits |
 | `Trainer` | Unmodified `BaseTrainer`, with standard optimization and checkpoint settings |
 | `Sample` | Sampling dataset and diffusion step budget |
 
 One epoch is one RL round. The model's `before_train(trainer)` hook initializes the frozen prior, reward calculators and replay state. Each training `forward` returns one timestep objective; the unmodified `BaseTrainer` owns backward, gradient accumulation, optimizer updates, validation and checkpoints. An RL monitor uses the existing streaming-metric callbacks to report rewards and check early-stop probes after optimizer updates. Evaluation and sampling use the diffusion backbone without initializing RL resources.
 
-`MatInventDataset` inherits MP20Dataset and supplies ordered timestep indices alongside anchor structures. Its round length includes padding to finish each accumulation group before the next fine-tuning pass. Padding contributes no gradient, and incomplete groups use their actual number of timesteps. `Trainer.gradient_accumulation_steps` references `Global.training_cfg.finetune_cfg.accum_steps`.
+`MatInventStepDataset` supplies only ordered timestep indices. Its round length includes padding to finish each accumulation group before the next fine-tuning pass. Padding contributes no gradient, and incomplete groups use their actual number of timesteps. `Trainer.gradient_accumulation_steps` references `Global.training_cfg.finetune_cfg.accum_steps`.
+
+Training anchors use a separate `MP20Dataset`, configured through `training_cfg.anchor_cfg.data_cfg` and loaded only when the anchor loss or a fallback early-stop probe needs it. Disabled anchor and probe paths do not build unused batches. Material structures are never fetched by the timestep loader.
 
 Training is single-process, float32, and uses ordered batches of one dataset item with `num_workers=0`. Step-based evaluation, step-based saving and `Trainer.max_iter` remain unsupported. A round with neither scored structures nor replay samples raises an error before optimization, so it cannot silently update optimizer momentum on an empty objective.
 
@@ -68,7 +70,9 @@ RL training uses generated structures and property rewards. Both DiffCSP configu
 | MP-20 validation structures | Validation loss and early-stop probe | [MP-20](https://paddle-org.bj.bcebos.com/paddlematerial/datasets/mp_20/mp_20.zip) |
 | MP2020-corrected reference database | Joint DiffCSP stability and novelty screening | [reference_MP2020correction.gz](https://huggingface.co/jwchen25/MatInvent/blob/main/reference_MP2020correction.gz) |
 
-The MP-20 splits are declared in the `Dataset` block. For joint DiffCSP training, place the reference archive at `data/matinvent/reference_MP2020correction.gz` or update `qualification_cfg.reference_path` under `Model.__init_params__.training_cfg`. Relaxation uses the registered `mattersim_5M` model.
+The MP-20 anchor split is declared in `training_cfg.anchor_cfg.data_cfg`; validation and test splits are declared in the `Dataset` block. For joint DiffCSP training, place the reference archive at `data/matinvent/reference_MP2020correction.gz` or update `qualification_cfg.reference_path` under `Model.__init_params__.training_cfg`. Relaxation uses the registered `mattersim_5M` model.
+
+Rewards use `PyMatGen` for built-in properties or `ExternalResults` for values computed by an external workflow. `ExternalResults` exports ordered CIF files and reads one value per structure from `results.txt` in a directory identified by the task and structure content. Earlier `DFTCalc` and `FairChem` calculator configurations should use `ExternalResults`; the external computation remains caller-owned.
 
 ---
 

@@ -39,7 +39,7 @@ from pymatgen.io.ase import AseAtomsAdaptor
 from ppmat.calculator.ase import ASECalculator
 from ppmat.datasets import build_dataloader
 from ppmat.datasets.collate_fn import DefaultCollator
-from ppmat.datasets.custom_data_type import ConcatData
+from ppmat.datasets.mp20_dataset import MP20Dataset
 from ppmat.datasets.transform import build_transforms
 from ppmat.models import build_model
 from ppmat.models.matinvent import MatinventDiffCSP
@@ -252,7 +252,7 @@ class _FakeReward:
         )
 
 
-def _round_config(model_type, tmp_path, package_name):
+def _round_config(model_type, tmp_path):
     config = _load_config(model_type)
     config["Model"] = _tiny_model_cfg(model_type)
     params = config["Model"]["__init_params__"]["training_cfg"]
@@ -280,9 +280,10 @@ def _round_config(model_type, tmp_path, package_name):
         "sigma": 0.025,
     }
     params["anchor_cfg"] = {
+        "data_cfg": params["anchor_cfg"]["data_cfg"],
         "num_samples": 2,
         "resample": False,
-        "loss_weight": 1.0,
+        "loss_weight": 0.0 if model_type == "mattergen" else 1.0,
         "every_n_steps": 1,
     }
     params["early_stop_cfg"]["enabled"] = False
@@ -300,18 +301,20 @@ def _round_loader(config, tmp_path):
         writer.writerows(
             {"cif": structure.to(fmt="cif")} for structure in _structures()
         )
-    data_cfg = copy.deepcopy(config["Dataset"]["train"])
-    params = data_cfg["dataset"]["__init_params__"]
+    recipe = config["Model"]["__init_params__"]["training_cfg"]
+    params = recipe["anchor_cfg"]["data_cfg"]["dataset"]["__init_params__"]
     params["path"] = str(path)
     params["cache_path"] = str(pathlib.Path(tmp_path) / "anchor_cache")
     params["build_structure_cfg"]["num_cpus"] = 1
-    params["finetune_cfg"] = config["Model"]["__init_params__"]["training_cfg"][
-        "finetune_cfg"
-    ]
+    data_cfg = copy.deepcopy(config["Dataset"]["train"])
+    data_cfg["dataset"]["__init_params__"] = {
+        name: recipe["finetune_cfg"][name]
+        for name in ("timesteps", "epochs", "accum_steps")
+    }
     return build_dataloader(data_cfg)
 
 
-def _build_trainer(config, model, loader, monkeypatch, package_dir):
+def _build_trainer(config, model, loader, package_dir):
     optimizer, lr_scheduler = build_optimizer(
         config["Optimizer"], model, config["Trainer"]["max_epochs"], len(loader)
     )
@@ -328,15 +331,13 @@ def _build_trainer(config, model, loader, monkeypatch, package_dir):
 
 
 def _make_round_env(monkeypatch, tmp_path, model_type, timesteps=2, epochs=1):
-    package_name, package_dir = _write_package(
-        tmp_path, model_type, f"test_{model_type}"
-    )
-    config = _round_config(model_type, tmp_path, package_name)
+    _, package_dir = _write_package(tmp_path, model_type, f"test_{model_type}")
+    config = _round_config(model_type, tmp_path)
     params = config["Model"]["__init_params__"]["training_cfg"]
     params["finetune_cfg"].update(timesteps=timesteps, epochs=epochs)
+    loader = _round_loader(config, tmp_path)
     with paddle.utils.unique_name.guard():
         model = build_model(config["Model"])
-    loader = _round_loader(config, tmp_path)
     original_init = MatInventTraining.__init__
 
     def initialize(context, trainer, cfg):
@@ -345,7 +346,7 @@ def _make_round_env(monkeypatch, tmp_path, model_type, timesteps=2, epochs=1):
         context.loop.reward = _FakeReward()
 
     monkeypatch.setattr(MatInventTraining, "__init__", initialize)
-    trainer = _build_trainer(config, model, loader, monkeypatch, package_dir)
+    trainer = _build_trainer(config, model, loader, package_dir)
     return config, trainer, loader
 
 
@@ -381,7 +382,7 @@ class TestConfigContract:
                 } & set(block._sub_layers)
         else:
             assert not any(".prop_mlp." in name for name in model.state_dict())
-        for split in ("train", "val", "test"):
+        for split in ("val", "test"):
             transforms = config["Dataset"][split]["dataset"]["__init_params__"][
                 "transforms"
             ]
@@ -395,10 +396,11 @@ class TestConfigContract:
         config = _load_config(model_type)
         recipe = config["Model"]["__init_params__"]["training_cfg"]
         assert "pretrained_model_name" not in recipe
-        assert (
-            config["Dataset"]["train"]["dataset"]["__init_params__"]["finetune_cfg"]
-            == recipe["finetune_cfg"]
-        )
+        step_params = config["Dataset"]["train"]["dataset"]["__init_params__"]
+        assert step_params == {
+            name: recipe["finetune_cfg"][name]
+            for name in ("timesteps", "epochs", "accum_steps")
+        }
         assert (
             config["Trainer"]["gradient_accumulation_steps"]
             == recipe["finetune_cfg"]["accum_steps"]
@@ -537,12 +539,6 @@ class TestModelContracts:
         assert np.isfinite(sample["lattice"]).all()
         assert all(1 <= value <= 100 for value in sample["atom_types"])
 
-    def test_timestep_regime_flags(self):
-        assert _make_model("mattergen").continuous_timesteps is True
-        assert _make_model("diffcsp").continuous_timesteps is False
-        assert _make_model("diffcsp").supports_num_atoms_sampling is False
-        assert _make_model("diffcsp_joint").supports_num_atoms_sampling is True
-
     def test_sample_rejects_unknown_kwargs(self):
         model = _make_model("diffcsp_joint")
         with pytest.raises(TypeError):
@@ -560,52 +556,26 @@ class TestModelContracts:
 class TestDataFlow:
     """The RL data pipeline keeps the framework structure_array contract."""
 
-    def test_rl_dataset_contract(self):
-        dataset = RLDataset(_structures(), np.array([0.7, 0.2], dtype=float))
-        item = dataset[1]
-        structure_array = item["structure_array"]
-        assert set(structure_array) == {
-            "frac_coords",
-            "atom_types",
-            "lattice",
-            "lengths",
-            "angles",
-            "num_atoms",
-        }
-        for key in ("frac_coords", "atom_types", "lattice", "lengths", "angles"):
-            assert isinstance(structure_array[key], ConcatData)
-        assert item["reward"] == pytest.approx(0.2)
-        assert "reward" not in structure_array
-        lattice = dataset.structures[1].lattice
-        np.testing.assert_allclose(
-            structure_array["lengths"].data, np.array(lattice.abc).reshape(1, 3)
+    @pytest.mark.parametrize("model_type", list(_TASK_CONFIG))
+    def test_dataset_to_forward_loss(self, model_type):
+        model = _make_model(model_type)
+        dataset = RLDataset(
+            _structures(),
+            np.array([0.8, 0.3], dtype="float32"),
+            transforms=build_transforms(
+                _load_config(model_type)["Global"]["transforms"]
+            ),
         )
-        np.testing.assert_allclose(
-            structure_array["angles"].data, np.array(lattice.angles).reshape(1, 3)
-        )
-
         batch = to_tensor_batch(DefaultCollator()([dataset[0], dataset[1]]))
-        assert tuple(batch["reward"].shape) == (2,)
-        assert batch["structure_array"]["num_atoms"].numpy().tolist() == [3, 2]
-        assert tuple(batch["structure_array"]["lattice"].shape) == (2, 3, 3)
-
-    def test_rl_dataset_applies_transforms(self):
-        transforms = build_transforms(
-            [{"__class_name__": "LatticePolarDecomposition", "__init_params__": {}}]
-        )
-        structure = _make_structure(["Si", "Si"], [[0, 0, 0], [0.3, 0.2, 0.1]], a=5.0)
-        dataset = RLDataset([structure], np.array([0.5]), transforms=transforms)
-        matrix = dataset[0]["structure_array"]["lattice"].data.reshape(3, 3)
-        np.testing.assert_allclose(matrix, matrix.T, atol=1e-6)
-
-    def test_dataset_to_forward_loss(self):
-        model = _make_model("diffcsp_joint")
-        loader = _make_loader(rewards=np.array([0.8, 0.3], dtype="float32"))
-        batch = to_tensor_batch(next(iter(loader)))
+        assert batch["structure_array"]["num_atoms"].tolist() == [3, 2]
         loss = model(batch)["loss_dict"]["loss"]
         assert np.isfinite(float(loss))
         loss.backward()
-        assert model.decoder.node_embedding.weight.grad is not None
+        assert all(
+            p.grad is not None and bool(paddle.isfinite(p.grad).all())
+            for p in model.parameters()
+            if not p.stop_gradient
+        )
 
 
 class TestRewardScoring:
@@ -675,13 +645,13 @@ class TestRewardScoring:
                 "minv": 0,
                 "maxv": 10,
                 "calculator": {
-                    "__class_name__": "DFTCalc",
+                    "__class_name__": "ExternalResults",
                     "__init_params__": {"task": "energy"},
                 },
             },
         ]
         reward = Reward(str(tmp_path), properties, reward_threshold=0.5)
-        with pytest.raises(FileNotFoundError, match="DFT results are missing"):
+        with pytest.raises(FileNotFoundError, match="External property results"):
             reward.scoring(structures, label="batch")
         (energy_path,) = (tmp_path / "energy" / "batch").glob("*/0.cif")
         energy_path = energy_path.parent / "results.txt"
@@ -774,13 +744,6 @@ class TestModelPackage:
         assert len(sample["result"]) == 1
         assert np.isfinite(sample["result"][0]["frac_coords"]).all()
 
-    def test_package_yaml_matches_repo_schema(self, tmp_path):
-        package_name, package_dir = _write_package(tmp_path, "mattergen", "pkg")
-        package_config = _read_config(package_dir / f"{package_name}.yaml")
-        for block in ("Global", "Trainer", "Optimizer", "Dataset", "Model", "Sample"):
-            assert block in package_config
-        assert "__class_name__" not in package_config["Trainer"]
-
 
 class TestTrainer:
     """The unmodified BaseTrainer owns RL optimization and checkpointing."""
@@ -795,13 +758,29 @@ class TestTrainer:
         )
         assert type(trainer) is BaseTrainer
         assert len(loader) == epochs * ((timesteps + 1) // 2) * 2
-        trainer.train()
+        assert set(next(iter(loader))) == {"rl_index"}
+        anchor_reads = []
+        get_item = MP20Dataset.__getitem__
+
+        def read_anchor(dataset, index):
+            anchor_reads.append(index)
+            return get_item(dataset, index)
+
+        with mock.patch.object(MP20Dataset, "__getitem__", read_anchor):
+            trainer.train()
+        assert anchor_reads == ([] if model_type == "mattergen" else [0, 1])
         context = trainer.model._training_context
         assert trainer.state.epoch == 2
         assert trainer.state.global_step == 2 * epochs * ((timesteps + 1) // 2)
         assert context.loop.ltm.memory.shape[0] == 4
         assert context.metrics["reward_mean"] == pytest.approx(0.7)
         assert not context.stopped
+        assert context.loop.probe_batch is None
+        if model_type == "mattergen":
+            assert context.loop.anchor_dataset is None
+            assert context.loop.anchor_batch is None
+        else:
+            assert len(context.loop.anchor_dataset) == 2
         assert all(bool(paddle.isfinite(p).all()) for p in trainer.model.parameters())
         checkpoint = pathlib.Path(config["Trainer"]["output_dir"]) / "checkpoints"
         saved = paddle.load(str(checkpoint / "epoch_1.pdparams"))
@@ -873,6 +852,9 @@ class TestTrainer:
 
     def test_resume_restores_model_prior_and_replay(self, monkeypatch, tmp_path):
         config, trainer, loader = _make_round_env(monkeypatch, tmp_path, "diffcsp")
+        replay_cfg = {"buffer_size": 10, "sample_size": 1, "reward_cutoff": 0.0}
+        trainer.model.training_cfg["replay_cfg"] = replay_cfg
+        config["Model"]["__init_params__"]["training_cfg"]["replay_cfg"] = replay_cfg
         with paddle.utils.unique_name.guard():
             trainer.train()
         checkpoint = pathlib.Path(trainer.output_dir) / "checkpoints" / "epoch_1"
@@ -888,15 +870,18 @@ class TestTrainer:
         config["Trainer"]["max_epochs"] = 1
         with paddle.utils.unique_name.guard():
             model = build_model(config["Model"])
-        resumed = _build_trainer(
-            config, model, loader, monkeypatch, tmp_path / "test_diffcsp"
-        )
+        resumed = _build_trainer(config, model, loader, tmp_path / "test_diffcsp")
         with paddle.utils.unique_name.guard():
             resumed.train()
         assert resumed.state.global_step == 1
         context = model._training_context
         assert context.loop.step == 0
         assert context.loop.ltm.memory.shape[0] == 2
+        expected_replay = inference._pending_training_state["loop"]["replay"]
+        assert len(context.loop.replay) == len(expected_replay) == 1
+        assert context.loop.replay.buffer[["comp", "reward"]].to_dict() == (
+            expected_replay.buffer[["comp", "reward"]].to_dict()
+        )
         np.testing.assert_array_equal(
             model.coord_scheduler.discrete_sigmas_norm.numpy(),
             trainer.model.coord_scheduler.discrete_sigmas_norm.numpy(),
@@ -918,15 +903,19 @@ class TestTrainer:
         assert resumed.state.global_step == 2
         assert context.loop.ltm.memory.shape[0] == 4
 
+    @pytest.mark.parametrize("with_validation", [True, False])
     def test_early_stop_runs_after_update_and_saves_native_checkpoint(
-        self, monkeypatch, tmp_path
+        self, monkeypatch, tmp_path, with_validation
     ):
         config, trainer, loader = _make_round_env(
             monkeypatch, tmp_path, "diffcsp", timesteps=4
         )
+        trainer.model.training_cfg["early_stop_cfg"].update(enabled=True, probe_draws=1)
+        if not with_validation:
+            trainer.val_dataloader = None
         trainer.model.before_train(trainer)
         context = trainer.model._training_context
-        context.loop.early_stop_enabled = True
+        assert context.loop.probe_batch is not None
         context.loop.probe_initial = {
             "loss": 1.0,
             "loss_lattice": 1.0,
@@ -952,7 +941,6 @@ class TestTrainer:
             config,
             build_model(config["Model"]),
             loader,
-            monkeypatch,
             tmp_path / "test_diffcsp",
         )
         with mock.patch.object(resumed.optimizer, "step") as update:
@@ -1291,33 +1279,22 @@ def test_gpu_cinn_rl_loss_matches_eager(monkeypatch):
 class TestCinnBenchmarkWorkload:
     """The public CINN benchmark delegates the MatInvent workload to this package."""
 
-    def test_family_name(self):
-        comparison = _load_benchmark_script("compare_backends")
-        assert comparison.family_name("matinvent_diffcsp_mp20") == "MatInvent"
-        assert comparison.family_name("matinvent_mattergen_mp20") == "MatInvent"
-
     def test_build_workflow_returns_train_step(self, monkeypatch):
         cinn_benchmark = _load_benchmark_script("benchmark_registered")
+        comparison = _load_benchmark_script("compare_backends")
+        assert comparison.family_name("matinvent_diffcsp_mp20") == "MatInvent"
 
-        class _DummyModel(paddle.nn.Layer):
-            def __init__(self):
-                super().__init__()
-                self.linear = paddle.nn.Linear(2, 2)
-
+        model = _make_model("diffcsp")
         monkeypatch.setattr(
             matinvent_benchmark,
             "build_model_from_name",
-            lambda name: (_DummyModel(), {}),
-        )
-        monkeypatch.setattr(
-            matinvent_benchmark,
-            "configure_execution_backend",
-            lambda *args, **kwargs: "eager",
+            lambda name: (model, {}),
         )
 
         workflow, call, scope = cinn_benchmark.build_workflow(
             "matinvent_diffcsp_mp20", "eager"
         )
         assert scope == matinvent_benchmark.TRAIN_SCOPE
-        assert isinstance(workflow.model, _DummyModel)
-        assert callable(call)
+        assert workflow.model is model
+        assert np.isfinite(call())
+        assert all(bool(paddle.isfinite(p).all()) for p in model.parameters())

@@ -56,6 +56,16 @@ class _MatInventTrainingMixin:
             return self._training_context.forward(batch)
         return self.diffusion_forward(batch)
 
+    def _reduce_denoise_loss(self, loss_dict):
+        losses = {name: value.mean() for name, value in loss_dict.items()}
+        losses["loss"] = (
+            self.coord_loss_weight * losses["loss_coord"]
+            + self.lattice_loss_weight * losses["loss_lattice"]
+        )
+        if "loss_atom_type" in losses:
+            losses["loss"] += self.atom_loss_weight * losses["loss_atom_type"]
+        return losses
+
     def state_dict(self, *args, **kwargs):
         state = super().state_dict(*args, **kwargs)
         training_state = (
@@ -270,28 +280,6 @@ class MatinventDiffCSP(_MatInventTrainingMixin, DiffCSP):
             "noise_state": noise_state,
         }
 
-    def _reduce_denoise_loss(self, loss_dict):
-        loss_coord = loss_dict["loss_coord"].mean()
-        loss_lattice = loss_dict["loss_lattice"].mean()
-        loss = (
-            self.coord_loss_weight * loss_coord
-            + self.lattice_loss_weight * loss_lattice
-        )
-        if "loss_atom_type" not in loss_dict:
-            return {
-                "loss": loss,
-                "loss_coord": loss_coord,
-                "loss_lattice": loss_lattice,
-            }
-
-        loss_atom_type = loss_dict["loss_atom_type"].mean()
-        return {
-            "loss": loss + self.atom_loss_weight * loss_atom_type,
-            "loss_coord": loss_coord,
-            "loss_lattice": loss_lattice,
-            "loss_atom_type": loss_atom_type,
-        }
-
     @paddle.no_grad()
     def sample(self, batch_data, num_inference_steps=1000):
         structure_array = batch_data["structure_array"]
@@ -472,16 +460,7 @@ class MatinventMatterGen(_MatInventTrainingMixin, MatterGen):
         structure_array = batch["structure_array"]
         times = self.timestep_sampler(structure_array["num_atoms"].shape[0])
         denoised = self.denoise_with_time(structure_array, times)
-        loss_dict = {
-            name: value.mean() for name, value in denoised["loss_dict"].items()
-        }
-        loss_dict["loss"] = (
-            self.coord_loss_weight * loss_dict["loss_coord"]
-            + self.lattice_loss_weight * loss_dict["loss_lattice"]
-        )
-        if self.atom_scheduler is not None:
-            loss_dict["loss"] += self.atom_loss_weight * loss_dict["loss_atom_type"]
-        return {"loss_dict": loss_dict}
+        return {"loss_dict": self._reduce_denoise_loss(denoised["loss_dict"])}
 
     def denoise_with_time(self, structure_array, times, noise_state=None):
         """Return per-structure losses and reuse an explicit corruption state."""

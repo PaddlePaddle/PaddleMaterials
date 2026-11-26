@@ -54,6 +54,25 @@ Global:
             __init_params__:
               task: hhi
     anchor_cfg:
+      data_cfg:
+        dataset:
+          __class_name__: MP20Dataset
+          __init_params__:
+            path: ./data/mp_20/train.csv
+            build_structure_cfg:
+              format: cif_str
+              num_cpus: 10
+            cache_path: ./data/mp_20_cache/train
+            transforms: ${Global.transforms}
+        loader:
+          num_workers: 0
+          use_shared_memory: False
+        sampler:
+          __class_name__: BatchSampler
+          __init_params__:
+            batch_size: 1
+            shuffle: False
+            drop_last: False
       num_samples: 32
       resample: True
       loss_weight: 4.0
@@ -124,15 +143,11 @@ Optimizer:
 Dataset:
   train:
     dataset:
-      __class_name__: MatInventDataset
+      __class_name__: MatInventStepDataset
       __init_params__:
-        finetune_cfg: ${Global.training_cfg.finetune_cfg}
-        path: ./data/mp_20/train.csv
-        build_structure_cfg:
-          format: cif_str
-          num_cpus: 10
-        cache_path: ./data/mp_20_cache/train
-        transforms: ${Global.transforms}
+        timesteps: ${Global.training_cfg.finetune_cfg.timesteps}
+        epochs: ${Global.training_cfg.finetune_cfg.epochs}
+        accum_steps: ${Global.training_cfg.finetune_cfg.accum_steps}
     loader:
       num_workers: 0
       use_shared_memory: False

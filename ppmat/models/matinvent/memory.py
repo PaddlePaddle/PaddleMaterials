@@ -40,7 +40,6 @@ class LongTimeMem:
         self.memory = pd.DataFrame(
             columns=["struc", "comp", "ele_comb", "reward", "RL_step"]
         )
-        self.unique_comps = []
 
     def extend(self, strucs: List[Structure], rewards: np.ndarray, step: int):
         df = pd.DataFrame.from_dict(
@@ -53,7 +52,6 @@ class LongTimeMem:
             }
         )
         self.memory = pd.concat([self.memory, df]) if len(self.memory) > 0 else df
-        self.unique_comps = list(self.memory["comp"].unique())
 
     def div_filter(
         self,
@@ -73,9 +71,10 @@ class LongTimeMem:
             raise ValueError(
                 f"method must be 'composition' or 'element_comb', but got {method}"
             )
+        occurrences = self.memory[key].value_counts()
         new_rewards, penalty_idx, tol_n, buff_n = [], [], 0, 0
         for i, value in enumerate(values):
-            occ = self.memory[key].value_counts().get(value, 0)
+            occ = occurrences.get(value, 0)
             if occ <= tol:
                 new_rewards.append(rewards[i])
             elif occ < buff:
@@ -90,19 +89,16 @@ class LongTimeMem:
     def calc_metrics(self, threshold: float) -> Tuple[Optional[float], Optional[float]]:
         if len(self.memory) == 0:
             return None, None
-        candidates = (
-            self.memory.sort_values("reward", ascending=False).drop_duplicates(
-                subset=["comp"]
-            )["reward"]
-            > threshold
-        ).sum()
+        candidates = self.memory.loc[
+            self.memory["reward"] > threshold, "comp"
+        ].nunique()
         burden = (
             len(self.memory) / candidates
             if candidates >= _MIN_HIGH_REWARD_CANDIDATES
             else None
         )
         div_ratio = (
-            len(self.unique_comps) / len(self.memory)
+            self.memory["comp"].nunique() / len(self.memory)
             if len(self.memory) <= _DIVERSITY_BUDGET
             else None
         )

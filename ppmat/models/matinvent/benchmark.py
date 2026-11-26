@@ -29,10 +29,17 @@ from ppmat.utils.execution import configure_execution_backend
 TRAIN_SCOPE = "matinvent_train_step"
 
 
-def build_train_batch():
-    """Return a fixed two-structure batch matching the train contract."""
+def build_train_workload(model_name: str, backend: str):
+    """Return one MatInvent RL fine-tuning step as the timed workload.
 
-    return {
+    MatInvent fine-tunes a diffusion backbone, so the timed workload is one
+    train-mode denoise step (forward + backward + optimizer update) rather than
+    the inference sampling used by the other generators.
+    """
+
+    model, _ = build_model_from_name(model_name)
+    configure_execution_backend(model, backend, owner="Benchmark")
+    batch = {
         "structure_array": {
             "num_atoms": paddle.to_tensor([3, 2], dtype="int64"),
             "atom_types": paddle.to_tensor([6, 8, 8, 14, 14], dtype="int64"),
@@ -50,19 +57,6 @@ def build_train_batch():
             ),
         }
     }
-
-
-def build_train_workload(model_name: str, backend: str):
-    """Return one MatInvent RL fine-tuning step as the timed workload.
-
-    MatInvent fine-tunes a diffusion backbone, so the timed workload is one
-    train-mode denoise step (forward + backward + optimizer update) rather than
-    the inference sampling used by the other generators.
-    """
-
-    model, _ = build_model_from_name(model_name)
-    configure_execution_backend(model, backend, owner="Benchmark")
-    batch = build_train_batch()
     optimizer = paddle.optimizer.Adam(parameters=model.parameters(), learning_rate=0.0)
 
     def train_step():

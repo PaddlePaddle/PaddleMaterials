@@ -22,18 +22,28 @@ import os
 
 import numpy as np
 import paddle
+from ase.io import write
+from pymatgen.io.ase import AseAtomsAdaptor
 
 from ppmat.datasets.collate_fn import DefaultCollator
-from ppmat.models.matinvent.dataset import is_valid_structure
-from ppmat.models.matinvent.dataset import save_structures
 from ppmat.models.matinvent.dataset import to_tensor_batch
 from ppmat.models.matinvent.memory import LongTimeMem
 from ppmat.models.matinvent.memory import ReplayBuffer
+from ppmat.models.matinvent.qualification import is_valid_structure
 from ppmat.utils import logger
 from ppmat.utils.scatter import scatter
 
 # Fixed offset of the reference advantage term: ``1.1 - reward``.
 _ADVANTAGE_REWARD_OFFSET = 1.1
+
+
+def save_structures(structures, save_dir, filename) -> None:
+    os.makedirs(save_dir, exist_ok=True)
+    out_path = os.path.join(save_dir, filename)
+    adaptor = AseAtomsAdaptor()
+    atoms = [adaptor.get_atoms(struc) for struc in structures]
+    write(out_path, atoms, format="extxyz")
+    logger.info(f"Saved {len(structures)} structures to {out_path}")
 
 
 class MatInventRL:
