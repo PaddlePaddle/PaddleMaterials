@@ -14,6 +14,8 @@
 
 """Discrete VE-SDE sampling with caller-supplied projected noise."""
 
+from typing import Optional
+
 import numpy as np
 import paddle
 import paddle.nn as nn
@@ -35,7 +37,7 @@ class ASUVESDEScheduler(nn.Layer):
     """VE-SDE scheduler with a checkpointed, one-based sigma grid.
 
     Unlike ``ScoreSdeVeScheduler``, both steps consume caller-projected noise.
-    The corrector preserves coordinates whose noise is zero.
+    The corrector uses an explicit mask for constrained coordinates.
 
     Args:
         num_timesteps: Number of diffusion timesteps.
@@ -52,12 +54,28 @@ class ASUVESDEScheduler(nn.Layer):
         self.num_timesteps = num_timesteps
         self.sigma_min = sigma_min
         self.sigma_max = sigma_max
+        self.timesteps = None
 
         sigmas = build_ve_sigma_grid(num_timesteps, sigma_min, sigma_max)
 
         self.register_buffer(
             "sigmas",
             paddle.concat([paddle.zeros([1]), sigmas], axis=0),
+        )
+
+    def set_timesteps(self, num_inference_steps: Optional[int] = None):
+        """Select descending training-grid indices, including both endpoints.
+
+        The one-based grid has ``num_inference_steps - 1`` transitions.
+        """
+        if num_inference_steps is None:
+            num_inference_steps = self.num_timesteps
+        if not 2 <= num_inference_steps <= self.num_timesteps:
+            raise ValueError(
+                "num_inference_steps must be between 2 and the training timesteps."
+            )
+        self.timesteps = np.linspace(
+            self.num_timesteps, 1, num_inference_steps, dtype=int
         )
 
     def uniform_sample_timestep(self, batch_size: int) -> paddle.Tensor:
@@ -71,11 +89,16 @@ class ASUVESDEScheduler(nn.Layer):
 
     @paddle.no_grad()
     def step_pred(
-        self, x: paddle.Tensor, score: paddle.Tensor, t: int, noise: paddle.Tensor
+        self,
+        x: paddle.Tensor,
+        score: paddle.Tensor,
+        t: int,
+        noise: paddle.Tensor,
+        previous_t: Optional[int] = None,
     ) -> paddle.Tensor:
-        """Predictor step: x_{t} = x_{t+1} + (sigma_{t+1}^2 - sigma_t^2) * score
-        + sqrt(sigma_{t+1}^2 - sigma_t^2) * noise."""
-        sigma_sq_diff = self.sigmas[t + 1] ** 2 - self.sigmas[t] ** 2
+        """Reverse VE-SDE from the higher ``previous_t`` index to ``t``."""
+        previous_t = t + 1 if previous_t is None else previous_t
+        sigma_sq_diff = self.sigmas[previous_t] ** 2 - self.sigmas[t] ** 2
         return x + sigma_sq_diff * score + paddle.sqrt(sigma_sq_diff) * noise
 
     @paddle.no_grad()
@@ -84,9 +107,10 @@ class ASUVESDEScheduler(nn.Layer):
         x: paddle.Tensor,
         score: paddle.Tensor,
         noise: paddle.Tensor,
+        update_mask: paddle.Tensor,
         snr: float = 0.4,
         max_step_size: float = 1e6,
-    ):
+    ) -> paddle.Tensor:
         """Corrector (Langevin) step: x = x + step_size * score
         + sqrt(2 * step_size) * noise.
         """
@@ -94,7 +118,8 @@ class ASUVESDEScheduler(nn.Layer):
         grad_norm = ((score**2).sum(axis=-1)).sqrt().mean()
         step_size = 2 * (snr * noise_norm / (grad_norm + 1e-12)) ** 2
         step_size = paddle.nan_to_num(
-            step_size, nan=0.0, posinf=max_step_size, neginf=-max_step_size
+            step_size, nan=0.0, posinf=max_step_size, neginf=0.0
         )
-        step_size = paddle.where(noise == 0.0, paddle.zeros_like(noise), step_size)
+        step_size = paddle.clip(step_size, min=0.0, max=max_step_size)
+        step_size = paddle.where(update_mask, step_size, paddle.zeros_like(noise))
         return x + step_size * score + paddle.sqrt(2 * step_size) * noise

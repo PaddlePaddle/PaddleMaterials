@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Build packed ASU samples and vocabulary-derived crystallographic resources."""
+"""Vocabulary-derived crystallographic resources for asymmetric-unit diffusion."""
 
 from __future__ import annotations
 
@@ -23,21 +23,20 @@ import os
 import pickle
 import tempfile
 from fractions import Fraction
-from functools import partial
 from importlib.metadata import version
 from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 import paddle
-from p_tqdm import p_map
-from pymatgen.core import Element
-from pymatgen.symmetry.groups import SpaceGroup as PymatgenSpaceGroup
+import spglib
+from pymatgen.core import Lattice
 from scipy import __version__ as scipy_version
 from scipy.spatial import ConvexHull
 
 from ppmat.utils import download
 from ppmat.utils import logger
+from ppmat.utils.crystal import OFFSET_LIST
 from ppmat.vocab import build_vocab
 
 # Empirical lattice-parameter bounds per dataset, taken from the upstream
@@ -70,6 +69,9 @@ max_atoms_per_dataset = {
 # Number of crystallographic space groups, indexed 1..230.
 NUM_CRYSTALLOGRAPHIC_SPACE_GROUPS: int = 230
 
+# Number of Hall settings in spglib's crystallographic database.
+NUM_HALL_SETTINGS = 530
+
 # Number of lattice parameters per crystal: 3 lengths + 3 angles.
 NUM_LATTICE_PARAMS: int = 6
 
@@ -83,15 +85,179 @@ MAX_WYCKOFF_POSITIONS: int = 27
 # placeholder. Used by the ASU data layout and the model embeddings.
 ELEMENT_ENCODING_SIZE: int = 98
 
-# Symbol table for 0-indexed atomic numbers in [0, ELEMENT_ENCODING_SIZE);
-# built from pymatgen to avoid a hand-written table.
-chemical_symbols = ["X"] + [
-    Element.from_Z(atomic_number).symbol
-    for atomic_number in range(1, ELEMENT_ENCODING_SIZE + 1)
-]
-
-
 VOCAB_NAME = "sgequidiff"
+
+
+def standard_hall_numbers():
+    """Return the reference standard setting for each crystallographic group."""
+    hall_numbers = {}
+    # PyXtal's standard settings use origin choice 2 where available.
+    for hall_number in range(1, NUM_HALL_SETTINGS + 1):
+        group = spglib.get_spacegroup_type(hall_number)
+        if group.number not in hall_numbers or group.choice == "2":
+            hall_numbers[group.number] = hall_number
+    return hall_numbers
+
+
+class AsymmetricUnitConverter:
+    """Convert conventional symmetry orbits to the model's ASU vocabulary."""
+
+    cache_version = 1
+
+    def __init__(self, symprec=0.1, angle_tolerance=5.0, mapping_tolerance=1e-6):
+        self.symprec = symprec
+        self.angle_tolerance = angle_tolerance
+        self.mapping_tolerance = mapping_tolerance
+        self.sites = copy.deepcopy(build_vocab(VOCAB_NAME)["asu_sites"]["data"])
+        identity = {
+            "version": self.cache_version,
+            "symprec": symprec,
+            "angle_tolerance": angle_tolerance,
+            "mapping_tolerance": mapping_tolerance,
+            "sites": self.sites,
+            "numpy": np.__version__,
+            "spglib": spglib.__version__,
+            "pymatgen": version("pymatgen"),
+        }
+        self.cache_key = hashlib.sha256(
+            json.dumps(identity, sort_keys=True, default=_cache_json_value).encode()
+        ).hexdigest()
+        self.hall_numbers = standard_hall_numbers()
+        self.translations = np.asarray(OFFSET_LIST)
+        self.shapes = {}
+        for number, group in self.sites.items():
+            for letter in group["ordered_wyckoff_letters"]:
+                site = group[letter]
+                dim = int(site["dim"])
+                vertices = site["vertices"]
+                if dim == 2:
+                    shapes = []
+                    for polygon in vertices:
+                        polygon = np.vectorize(Fraction)(polygon).astype(float)
+                        center = polygon.mean(axis=0)
+                        _, _, axes = np.linalg.svd(polygon - center)
+                        equations = ConvexHull((polygon - center) @ axes[:2].T)
+                        shapes.append((center, axes, equations.equations))
+                elif dim == 3:
+                    vertices = np.vectorize(Fraction)(vertices).astype(float)
+                    shapes = ConvexHull(vertices).equations
+                else:
+                    shapes = np.vectorize(Fraction)(vertices).astype(float)
+                self.shapes[int(number), letter] = shapes
+
+    def _select_position(self, orbit, number, letter):
+        points = (orbit % 1.0 + self.translations[:, None, :]).reshape(-1, 3)
+        dim = int(self.sites[str(number)][letter]["dim"])
+        shapes = self.shapes[number, letter]
+        tolerance = self.mapping_tolerance
+        if dim == 0:
+            distances = np.linalg.norm(points - shapes.reshape(3), axis=1)
+            index = distances.argmin()
+            shape_index = 0
+            distance = distances[index]
+        elif dim == 1:
+            directions = shapes[:, 1] - shapes[:, 0]
+            offsets = points[:, None] - shapes[:, 0]
+            scalars = (offsets * directions).sum(-1) / (directions**2).sum(-1)
+            distances = np.linalg.norm(
+                offsets - scalars[..., None] * directions, axis=-1
+            )
+            distances[(scalars < -tolerance) | (scalars > 1 + tolerance)] = np.inf
+            index, shape_index = np.unravel_index(distances.argmin(), distances.shape)
+            distance = distances[index, shape_index]
+        elif dim == 2:
+            distances = np.full((len(points), len(shapes)), np.inf)
+            for shape_index, (center, axes, equations) in enumerate(shapes):
+                local = (points - center) @ axes.T
+                inside = np.all(
+                    local[:, :2] @ equations[:, :2].T + equations[:, 2] <= tolerance,
+                    axis=1,
+                )
+                distances[inside, shape_index] = np.abs(local[inside, 2])
+            index, shape_index = np.unravel_index(distances.argmin(), distances.shape)
+            distance = distances[index, shape_index]
+        else:
+            for epsilon in (0.0, tolerance):
+                inside = np.all(
+                    points @ shapes[:, :3].T + shapes[:, 3] < epsilon, axis=1
+                )
+                if inside.any():
+                    return points[np.flatnonzero(inside)[0]], 0
+            raise ValueError(
+                f"No orbit representative inside space group {number} ASU."
+            )
+        if distance > tolerance:
+            raise ValueError(
+                f"Orbit is outside space group {number} Wyckoff {letter}: {distance}."
+            )
+        return points[index], int(shape_index)
+
+    def __call__(self, structure):
+        cell = (
+            structure.lattice.matrix,
+            structure.frac_coords,
+            structure.atomic_numbers,
+        )
+        dataset = spglib.get_symmetry_dataset(
+            cell, symprec=self.symprec, angle_tolerance=self.angle_tolerance
+        )
+        if dataset is None:
+            raise ValueError(
+                "Space-group identification failed for the input structure."
+            )
+        hall_number = self.hall_numbers[dataset.number]
+        # The reference standardizes at CIF ingestion and again before orbit detection.
+        for _ in range(2):
+            dataset = spglib.get_symmetry_dataset(
+                cell,
+                symprec=self.symprec,
+                angle_tolerance=self.angle_tolerance,
+                hall_number=hall_number,
+            )
+            cell = (dataset.std_lattice, dataset.std_positions, dataset.std_types)
+        dataset = spglib.get_symmetry_dataset(
+            cell,
+            symprec=self.symprec,
+            angle_tolerance=self.angle_tolerance,
+            hall_number=hall_number,
+        )
+        number = dataset.number
+        group = self.sites[str(number)]
+        elements, wyckoffs, coordinates, shape_indices = [], [], [], []
+        try:
+            for representative in np.unique(dataset.equivalent_atoms):
+                mask = dataset.equivalent_atoms == representative
+                letter = dataset.wyckoffs[representative]
+                position, shape_index = self._select_position(
+                    cell[1][mask], number, letter
+                )
+                elements.append(cell[2][representative] - 1)
+                wyckoffs.append(group["ordered_wyckoff_letters"].index(letter))
+                coordinates.append(position)
+                shape_indices.append(shape_index)
+        except ValueError as error:
+            logger.warning(
+                f"ASU mapping failed; using the reference P1 fallback: {error}"
+            )
+            number = 1
+            elements = np.asarray(structure.atomic_numbers) - 1
+            wyckoffs = np.zeros(len(structure), dtype=np.int64)
+            coordinates = structure.frac_coords % 1.0
+            shape_indices = np.zeros(len(structure), dtype=np.int64)
+            lattice = structure.lattice
+        else:
+            lattice = Lattice(cell[0])
+        order = np.lexsort((elements, wyckoffs))
+        return {
+            "n_atoms_per_asu": len(elements),
+            "space_group_indices": number - 1,
+            "lattice_lengths": np.asarray(lattice.abc, dtype=np.float32),
+            "lattice_angles": np.asarray(lattice.angles, dtype=np.float32),
+            "element_indices": np.asarray(elements, dtype=np.int64)[order],
+            "wyckoff_indices": np.asarray(wyckoffs, dtype=np.int64)[order],
+            "wyckoff_shape_indices": np.asarray(shape_indices, dtype=np.int64)[order],
+            "frac_coords": np.asarray(coordinates, dtype=np.float32)[order],
+        }
 
 
 class EmbeddingTools:
@@ -269,7 +435,7 @@ class WyckoffGeometry:
     via ``build_wyckoff_geometry`` and pass it to downstream modules.
     """
 
-    cache_version = 1
+    cache_version = 2
 
     def __init__(self, vocab: dict | None = None) -> None:
         if vocab is None:
@@ -328,41 +494,17 @@ class WyckoffGeometry:
             [n_sgs, MAX_GENERAL_WYCKOFF_OPS], dtype=paddle.bool
         )
 
+        hall_numbers = standard_hall_numbers()
         for sg_num in range(1, n_sgs + 1):
-            ops = list(PymatgenSpaceGroup.from_int_number(sg_num).symmetry_ops)
-
-            identity_idx = next(
-                (
-                    i
-                    for i, op in enumerate(ops)
-                    if np.allclose(op.rotation_matrix, np.eye(3), atol=1e-6)
-                    and np.allclose(op.translation_vector, np.zeros(3), atol=1e-6)
-                ),
-                0,
+            ops = spglib.get_symmetry_from_database(hall_numbers[sg_num])
+            matrices = ops["rotations"].astype(np.float32)
+            rotations = paddle.to_tensor(matrices.transpose(0, 2, 1))
+            inverse_rotations = paddle.to_tensor(
+                np.linalg.inv(matrices).transpose(0, 2, 1)
             )
-            if identity_idx != 0:
-                ops = [ops[identity_idx]] + [
-                    ops[j] for j in range(len(ops)) if j != identity_idx
-                ]
-
-            rotations = []
-            inverse_rotations = []
-            translations = []
-            for symmetry_rep in ops:
-                rotation = paddle.to_tensor(
-                    symmetry_rep.rotation_matrix, dtype=paddle.float32
-                )
-                rotations.append(rotation.T)
-                inverse_rotations.append(paddle.linalg.inv(rotation).T)
-                translations.append(
-                    paddle.to_tensor(
-                        symmetry_rep.translation_vector, dtype=paddle.float32
-                    ).unsqueeze(0)
-                )
-
-            rotations = paddle.stack(rotations, axis=0)
-            inverse_rotations = paddle.stack(inverse_rotations, axis=0)
-            translations = paddle.stack(translations, axis=0)
+            translations = paddle.to_tensor(
+                ops["translations"].astype(np.float32)[:, None, :]
+            )
 
             n_ops = rotations.shape[0]
             padded_matrices[sg_num - 1, :n_ops] = rotations
@@ -656,11 +798,6 @@ def load_wyckoff_shapes(geometry):
     return build_shape_decomp_dict(str(path), geometry.asu_wyckoff_dict)
 
 
-def _to_array(region) -> np.ndarray:
-    """Convert Wyckoff vertices to a float64 array."""
-    return np.asarray(region, dtype=np.float64)
-
-
 def _fan_triangulate_convex_polygon_3d(vertices_3d: np.ndarray):
     """Fan triangulation of convex polygon in 3D (from centroid)."""
     n = len(vertices_3d)
@@ -677,11 +814,6 @@ def _fan_triangulate_convex_polygon_3d(vertices_3d: np.ndarray):
         triangles.append(tri)
         areas.append(area)
     return np.array(triangles, dtype=np.float64), np.array(areas, dtype=np.float64)
-
-
-def _compute_3d_convex_hull_volume(vertices: np.ndarray) -> float:
-    """Compute volume of a 3D convex polytope."""
-    return float(ConvexHull(vertices).volume)
 
 
 def build_shape_decomp_dict(
@@ -708,7 +840,7 @@ def build_shape_decomp_dict(
             elif site_dim == 1:
                 wyckoff_shapes_info = {"dim": 1, "volumes": []}
                 for interval in geometry["vertices"]:
-                    arr = _to_array(interval)  # (2, 3)
+                    arr = np.asarray(interval, dtype=np.float64)
                     diff = arr[1] - arr[0]  # (3,)
                     length = float(np.linalg.norm(diff))
                     wyckoff_shapes_info["volumes"].append(length)
@@ -723,7 +855,7 @@ def build_shape_decomp_dict(
                 }
                 max_tri = 0
                 for facet in geometry["vertices"]:
-                    arr = _to_array(facet)  # (n_v, 3)
+                    arr = np.asarray(facet, dtype=np.float64)
                     triangles, areas = _fan_triangulate_convex_polygon_3d(arr)
                     wyckoff_shapes_info["volumes"].append(float(areas.sum()))
                     wyckoff_shapes_info["facet_triangles"].append(triangles)
@@ -733,8 +865,8 @@ def build_shape_decomp_dict(
 
             elif site_dim == 3:
                 wyckoff_shapes_info = {"dim": 3, "volumes": []}
-                arr = _to_array(geometry["vertices"])  # (n_v, 3)
-                vol = _compute_3d_convex_hull_volume(arr)
+                arr = np.asarray(geometry["vertices"], dtype=np.float64)
+                vol = float(ConvexHull(arr).volume)
                 wyckoff_shapes_info["volumes"].append(vol)
 
             else:
@@ -750,79 +882,3 @@ def build_shape_decomp_dict(
     save_asu_cache(output, shape_decomposition_dict)
     logger.info(f"[wyckoff_shape_decomp] done -> {output}")
     return shape_decomposition_dict
-
-
-class BuildAsuCrystal:
-    """Build one ASU crystal field dict from a packed flat array.
-
-    The packed layout (NE = element encoding size, n = num atoms) is defined
-    in the ``AsymmetricUnitDataset`` docstring. Archives without the optional
-    trailing wyckoff-shape segment are normalized with zero shape indices
-    (no shape decomposition). Fields whose order depends on the atom order
-    are stably sorted by (wyckoff index, element index), so the built dict is
-    the final per-sample representation.
-
-    Args:
-        element_encoding_size (int): Size of the element encoding NE.
-        num_cpus (int, optional): Number of CPUs used when building a list
-            of arrays. Defaults to 1.
-    """
-
-    cache_version = 1
-
-    def __init__(self, element_encoding_size: int, num_cpus: int = 1):
-        self.num_cpus = num_cpus
-
-        # Packed-layout offsets that depend on the element encoding size.
-        self._idx_lengths = 2 + element_encoding_size
-        self._idx_angles = 5 + element_encoding_size
-        self._idx_atoms = 8 + element_encoding_size
-
-    @staticmethod
-    def build_one(
-        flat: np.ndarray,
-        idx_lengths: int,
-        idx_angles: int,
-        idx_atoms: int,
-    ) -> dict:
-        """Build one ASU crystal field dict from one packed flat array.
-
-        ``np.lexsort`` takes the keys in reverse order, so the last key of
-        the tuple is the primary one.
-        """
-        n = int(flat[0])
-        if len(flat) > idx_atoms + 5 * n:
-            shape_indices = flat[idx_atoms + 5 * n : idx_atoms + 6 * n].astype(np.int64)
-        else:
-            shape_indices = np.zeros(n, dtype=np.int64)
-        element_indices = flat[idx_atoms : idx_atoms + n].astype(np.int64)
-        wyckoff_indices = flat[idx_atoms + n : idx_atoms + 2 * n].astype(np.int64)
-        frac_coords = (
-            flat[idx_atoms + 2 * n : idx_atoms + 5 * n].reshape(n, 3).astype(np.float32)
-        )
-        order = np.lexsort((element_indices, wyckoff_indices))
-        return {
-            "n_atoms_per_asu": n,
-            "space_group_indices": int(flat[1]) - 1,
-            "batch_chemistries": flat[2:idx_lengths].astype(np.float32),
-            "lattice_lengths": flat[idx_lengths:idx_angles].astype(np.float32),
-            "lattice_angles": flat[idx_angles:idx_atoms].astype(np.float32),
-            "element_indices": element_indices[order],
-            "wyckoff_indices": wyckoff_indices[order],
-            "wyckoff_shape_indices": shape_indices[order],
-            "frac_coords": frac_coords[order],
-        }
-
-    def __call__(self, flat_crystals):
-        """Build ASU crystal field dicts from packed flat array(s)."""
-        build_one = partial(
-            self.build_one,
-            idx_lengths=self._idx_lengths,
-            idx_angles=self._idx_angles,
-            idx_atoms=self._idx_atoms,
-        )
-        if isinstance(flat_crystals, list):
-            if self.num_cpus == 1:
-                return list(map(build_one, flat_crystals))
-            return p_map(build_one, flat_crystals, num_cpus=self.num_cpus)
-        return build_one(flat_crystals)

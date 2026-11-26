@@ -30,9 +30,6 @@ from paddle.io import DataLoader
 from paddle.io import DistributedBatchSampler  # noqa
 
 from ppmat.datasets import collate_fn
-from ppmat.datasets.asu_dataset import AsymmetricUnitDataset  # noqa
-from ppmat.datasets.asu_dataset import MP20ASUDataset  # noqa
-from ppmat.datasets.asu_dataset import MPTS52ASUDataset  # noqa
 from ppmat.datasets.density_dataset import DensityDataset
 from ppmat.datasets.density_dataset import MD17DensityDataset
 from ppmat.datasets.density_dataset import MPCubicDensityDataset
@@ -49,6 +46,7 @@ from ppmat.datasets.mp20_dataset import MP20MatterGenDataset
 from ppmat.datasets.mp2018_dataset import MP2018Dataset
 from ppmat.datasets.mp2024_dataset import MP2024Dataset
 from ppmat.datasets.mptrj_dataset import MPTrjDataset
+from ppmat.datasets.mpts52_dataset import MPTS52Dataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrDataset
 from ppmat.datasets.msd_nmr_dataset import MSDnmrinfos
 from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
@@ -69,6 +67,7 @@ __all__ = [
     "NumAtomsCrystalDataset",
     "set_signal_handlers",
     "MPTrjDataset",
+    "MPTS52Dataset",
     "JarvisDataset",
     "HighLevelWaterDataset",
     "MSDnmrDataset",
@@ -81,9 +80,6 @@ __all__ = [
     "MD17DensityDataset",
     "SFINDataset",
     "OMol25Dataset",
-    "AsymmetricUnitDataset",
-    "MP20ASUDataset",
-    "MPTS52ASUDataset",
     "MD17Dataset",
 ]
 

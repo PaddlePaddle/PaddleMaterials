@@ -19,6 +19,7 @@ from typing import Tuple
 
 from paddle import vision
 
+from ppmat.datasets.transform.asu import AsymmetricUnitTransform
 from ppmat.datasets.transform.dataset import custom_scaling
 from ppmat.datasets.transform.dataset import mean_std_scaling
 from ppmat.datasets.transform.dataset import no_scaling
@@ -34,6 +35,7 @@ from ppmat.datasets.transform.preprocess import Scale
 from ppmat.utils import logger
 
 __all__ = [
+    "AsymmetricUnitTransform",
     "Normalize",
     "Log10",
     "UnNormalize",

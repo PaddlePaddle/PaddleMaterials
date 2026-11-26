@@ -22,9 +22,9 @@ import numpy as np
 import paddle
 import pytest
 
-from ppmat.datasets.build_asu import build_embedding_tools
-from ppmat.datasets.build_asu import build_wyckoff_geometry
 from ppmat.metrics.streaming_base import StreamingMetricBase
+from ppmat.models.sgequidiff.asu import build_embedding_tools
+from ppmat.models.sgequidiff.asu import build_wyckoff_geometry
 from ppmat.models.sgequidiff.sgequidiff import EquivariantDiffusionModel
 from ppmat.models.sgequidiff.sgequidiff import SGEQuiDiff
 from ppmat.utils.execution import configure_execution_backend
@@ -69,11 +69,11 @@ def _make_mixed_space_group_batch(batch_size=3):
     }
 
 
-def _make_sgequidiff():
+def _make_sgequidiff(num_timesteps=2):
     """Build a lightweight SGEQuiDiff for fast integration tests."""
     return SGEQuiDiff(
         dataset_name="mp_20",
-        num_timesteps=2,
+        num_timesteps=num_timesteps,
         noise_scheduler_num_monte_carlo_samples=2,
         num_lattice_translations=1,
     )
@@ -128,9 +128,14 @@ class TestSGEQuiDiffEndToEnd:
     """
 
     @pytest.fixture(scope="class")
-    def sampler(self):
+    def sampler(self, tmp_path_factory):
+        from ppmat.models.sgequidiff import sgequidiff
+
         paddle.seed(0)
-        return _make_sgequidiff()
+        cache = tmp_path_factory.mktemp("sgequidiff_sampling")
+        with pytest.MonkeyPatch.context() as context:
+            context.setattr(sgequidiff, "get_data_directory", lambda: cache)
+            return _make_sgequidiff(num_timesteps=4)
 
     def test_sample_returns_valid_result_format(self, sampler, monkeypatch, tmp_path):
         """Unconditional sampling yields crystals with self-consistent fields.
@@ -143,9 +148,28 @@ class TestSGEQuiDiffEndToEnd:
                 "num_atoms": paddle.to_tensor([2], dtype=paddle.int64),
             }
         }
-        out = sampler.sample(batch_data)
+        time_steps = []
+        time_embedder = sampler.atom_coord_diffusion_model.time_embedder
+        hook = time_embedder.register_forward_pre_hook(
+            lambda layer, args: time_steps.append(float(args[0].item()))
+        )
+        out = sampler.sample(batch_data, num_inference_steps=2)
+        hook.remove()
+        assert time_steps == [3.0, 1.0]
+        scheduler = sampler.atom_coord_diffusion_model.noise_scheduler
+        np.testing.assert_array_equal(scheduler.timesteps, [4, 1])
+        with pytest.raises(ValueError, match="num_inference_steps"):
+            sampler.sample(batch_data, num_inference_steps=1)
+        assert len(out["result"]) == 1
         assert "result" in out
         for crystal in out["result"]:
+            from ppmat.datasets.build_structure import BuildStructure
+
+            structure = BuildStructure.build_one(
+                crystal, "array", niggli=False, canocial=False
+            )
+            assert len(structure) == crystal["num_atoms"]
+            assert np.asarray(crystal["lattice"]).shape == (3, 3)
             assert crystal["num_atoms"] > 0
             assert len(crystal["atom_types"]) == crystal["num_atoms"]
             assert len(crystal["frac_coords"]) == crystal["num_atoms"]
@@ -198,7 +222,7 @@ class TestSGEQuiDiffEndToEnd:
         atom_types = out["result"][0]["atom_types"]
         assert 1 in atom_types, f"H (Z=1) was filtered out: {atom_types}"
         assert set(atom_types) == {1, 2, 3}
-        from ppmat.datasets import build_asu
+        from ppmat.models.sgequidiff import asu as build_asu
 
         monkeypatch.setattr(build_asu.download, "DATASETS_HOME", str(tmp_path))
         cold_shapes = build_asu.load_wyckoff_shapes(sampler.wyckoff_geometry)
@@ -316,241 +340,175 @@ class TestFullTrainingObjective:
             )
 
 
-def _write_synthetic_mp20_npz(root_dir, split="train", num_crystals=8, name="mp_20"):
-    """Write a small mp_20-style npz (packed + indices) for the dataset chain test.
+def _write_crystal_csv(root_dir, name):
+    """Write CIFs spanning general and special Wyckoff positions."""
+    import pandas as pd
+    from pymatgen.core import Lattice
+    from pymatgen.core import Structure
 
-    Field layout follows AsymmetricUnitDataset.read_data with NE=98:
-    [n, sg, comp(98), lengths(3), angles(3), elems(n), wyckoffs(n),
-     frac_coords(3n), wyckoff_shape(n)].
-    """
-    from ppmat.datasets.build_asu import ELEMENT_ENCODING_SIZE as NE
-
-    rng = np.random.default_rng(0)
-    packed_arrays = []
-    indices = []
-    offset = 0
-    for i in range(num_crystals):
-        n = int(rng.integers(1, 5))
-        comp = np.zeros(NE, dtype=np.float32)
-        comp[0] = 1.0
-        lengths = np.array([5.0, 5.0, 5.0], dtype=np.float32)
-        angles = np.array([90.0, 90.0, 90.0], dtype=np.float32)
-        elems = np.full(n, 1 + int(rng.integers(0, 2)), dtype=np.float32)
-        wycks = np.zeros(n, dtype=np.float32)  # P1 has a single wyckoff site
-        fracs = rng.random([n, 3]).astype(np.float32)
-        wsi = np.zeros(n, dtype=np.float32)
-        flat = np.concatenate(
-            [
-                np.array([n], dtype=np.float32),
-                np.array([1.0], dtype=np.float32),  # space group 1 (P1)
-                comp,
-                lengths,
-                angles,
-                elems,
-                wycks,
-                fracs.reshape(-1),
-                wsi,
-            ]
-        ).astype(np.float32)
-        packed_arrays.append(flat)
-        offset += flat.shape[0]
-        # indices holds the split points for the first num_crystals - 1
-        # crystals only (matching the real mp_20 npz layout, where
-        # np.split(packed, indices) yields exactly num_crystals segments).
-        if i < num_crystals - 1:
-            indices.append(offset)
+    structures = [
+        Structure(
+            Lattice.from_parameters(4.1, 5.2, 6.3, 77, 83, 101),
+            ["Na", "Cl", "K"],
+            [[0.13, 0.27, 0.38], [0.41, 0.53, 0.62], [0.73, 0.19, 0.84]],
+        ),
+        Structure.from_spacegroup(
+            225, Lattice.cubic(5.64), ["Na", "Cl"], [[0, 0, 0], [0.5, 0.5, 0.5]]
+        ),
+        Structure.from_spacegroup(227, Lattice.cubic(5.43), ["Si"], [[0, 0, 0]]),
+        Structure.from_spacegroup(
+            152,
+            Lattice.hexagonal(4.91, 5.4),
+            ["Si", "O"],
+            [[0.4697, 0, 0], [0.4133, 0.2672, 0.1188]],
+        ),
+        Structure.from_spacegroup(
+            6,
+            Lattice.monoclinic(4, 5, 6, 101),
+            ["Na", "Cl"],
+            [[0.1, 0, 0.2], [0.37, 0, 0.63]],
+        ),
+    ]
     root = Path(root_dir) / name
-    root.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        root / f"{split}.npz",
-        packed=np.concatenate(packed_arrays),
-        indices=np.array(indices, dtype=np.int64),
-    )
+    root.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "material_id": [f"crystal-{i}" for i in range(len(structures))],
+            "formation_energy_per_atom": np.arange(len(structures), dtype=float),
+            "cif": [structure.to(fmt="cif") for structure in structures],
+        }
+    ).to_csv(root / "train.csv", index=False)
     return root
 
 
-def test_dataset_collate_to_model_forward(tmp_path, monkeypatch):
-    """Data pipeline: npz -> build_dataloader -> collate -> model forward.
+@pytest.mark.parametrize("dataset_class", ["MP20Dataset", "MPTS52Dataset"])
+def test_dataset_collate_to_model_forward(tmp_path, monkeypatch, dataset_class):
+    """CSV -> base dataset -> ASU transform -> default collator -> model loss."""
+    import copy
 
-    Overall question: does a realistic dataset batch flow from disk through
-    MP20ASUDataset / DefaultCollator into SGEQuiDiff.forward without
-    key/shape mismatches?
-    """
+    from omegaconf import OmegaConf
+
+    import ppmat.datasets as datasets
     from ppmat.datasets import build_dataloader
-    from ppmat.datasets.asu_dataset import MP20ASUDataset
+    from ppmat.datasets.build_structure import BuildStructure
+    from ppmat.models.sgequidiff import asu
+    from ppmat.models.sgequidiff.sgequidiff import expand_asu
     from ppmat.utils import download
 
-    monkeypatch.setattr(download, "DATASETS_HOME", str(tmp_path / "unified_cache"))
+    cls = getattr(datasets, dataset_class)
+    model_name = "mp20" if dataset_class == "MP20Dataset" else "mpts_52"
+    extract_root = tmp_path / "download"
+    root = _write_crystal_csv(extract_root, cls.name)
+    calls = []
 
-    _write_synthetic_mp20_npz(tmp_path, num_crystals=8)
-    loader = build_dataloader(
-        {
-            "dataset": {
-                "__class_name__": "MP20ASUDataset",
-                "__init_params__": {
-                    "path": str(tmp_path / "mp_20" / "train.npz"),
-                },
-            },
-            "loader": {"num_workers": 0, "use_shared_memory": False},
-            "sampler": {
-                "__class_name__": "BatchSampler",
-                "__init_params__": {
-                    "batch_size": 4,
-                    "shuffle": False,
-                    "drop_last": False,
-                },
-            },
-        }
+    def fake_download(url, md5sum=None):
+        calls.append((url, md5sum))
+        return str(extract_root)
+
+    monkeypatch.setattr(download, "get_datasets_path_from_url", fake_download)
+    config = OmegaConf.to_container(
+        OmegaConf.load(
+            f"structure_generation/configs/sgequidiff/sgequidiff_{model_name}.yaml"
+        ),
+        resolve=True,
+    )["Dataset"]["train"]
+    params = config["dataset"]["__init_params__"]
+    params.update(
+        path=str(tmp_path / "missing" / "train.csv"),
+        cache_path=str(tmp_path / "structures"),
+        property_names=["cif", "formation_energy_per_atom"],
     )
+    params["transforms"][0]["__init_params__"]["cache_dir"] = str(tmp_path / "asu")
+    config["sampler"]["__init_params__"].update(
+        batch_size=5, shuffle=False, drop_last=False
+    )
+    loader = build_dataloader(copy.deepcopy(config))
+    assert isinstance(loader.dataset, datasets.MP20Dataset)
+    assert calls == [(cls.url, cls.md5)]
+    assert loader.dataset.path == str(root / "train.csv")
     batch = next(iter(loader))
-    assert "n_atoms_per_asu" in batch
-    dataset = loader.dataset
-    assert Path(dataset.cache_path).is_relative_to(tmp_path / "unified_cache")
-    warm = MP20ASUDataset(path=dataset.path)
-    assert warm.cache_path == dataset.cache_path
+    assert "structure_array" in batch
+    np.testing.assert_array_equal(batch["space_group_indices"], [0, 224, 226, 151, 5])
     np.testing.assert_array_equal(
-        warm[0]["lattice_lengths"], dataset[0]["lattice_lengths"]
+        batch["formation_energy_per_atom"].flatten(), range(5)
     )
-    with np.load(dataset.path) as archive:
-        packed, indices = archive["packed"].copy(), archive["indices"].copy()
-    from ppmat.datasets.build_asu import ELEMENT_ENCODING_SIZE
-
-    packed[2 + ELEMENT_ENCODING_SIZE] += 1.0
-    np.savez(dataset.path, packed=packed, indices=indices)
-    updated = MP20ASUDataset(path=dataset.path)
-    assert updated.cache_path != dataset.cache_path
-    assert updated[0]["lattice_lengths"][0] == dataset[0]["lattice_lengths"][0] + 1.0
-    cache_bytes = Path(updated.cache_path).read_bytes()
-    import ppmat.datasets.asu_dataset as asu_dataset
-
+    assert len(set(batch["n_atoms_per_asu"].numpy().tolist())) > 1
+    transform = loader.dataset.transforms.transforms[0]
+    cache_files = list(transform.cache_dir.glob("*.pkl"))
+    assert len(cache_files) == 5
     with monkeypatch.context() as context:
 
-        def fail_write(*args, **kwargs):
-            raise OSError("Injected cache write failure")
+        def fail_convert(*args, **kwargs):
+            raise AssertionError("A warm cache must not recompute symmetry")
 
-        context.setattr(asu_dataset.pickle, "dump", fail_write)
-        with pytest.raises(OSError, match="Injected cache write failure"):
-            MP20ASUDataset(path=dataset.path, overwrite=True)
-    assert Path(updated.cache_path).read_bytes() == cache_bytes
-    Path(updated.cache_path).write_bytes(b"invalid cache")
-    rebuilt = MP20ASUDataset(path=dataset.path)
-    np.testing.assert_array_equal(
-        rebuilt[0]["lattice_lengths"], updated[0]["lattice_lengths"]
-    )
-    broadcasts = []
-    with monkeypatch.context() as context:
-        context.setattr(asu_dataset.dist, "is_initialized", lambda: True)
-        context.setattr(asu_dataset.dist, "get_rank", lambda: 0)
-        context.setattr(
-            asu_dataset.dist,
-            "broadcast_object_list",
-            lambda status, src: broadcasts.append(status[0]),
+        context.setattr(asu.AsymmetricUnitConverter, "__call__", fail_convert)
+        warm = next(iter(loader))
+    np.testing.assert_array_equal(warm["frac_coords"], batch["frac_coords"])
+    cache_files[0].write_bytes(b"invalid cache")
+    rebuilt = next(iter(loader))
+    np.testing.assert_array_equal(rebuilt["frac_coords"], batch["frac_coords"])
+    from pymatgen.analysis.structure_matcher import StructureMatcher
+
+    geometry = build_wyckoff_geometry()
+    for index in range(len(loader.dataset)):
+        sample = loader.dataset[index]
+        expanded = expand_asu(
+            {
+                "space_group_number": sample["space_group_indices"] + 1,
+                "element_indices": paddle.to_tensor(sample["element_indices"].data),
+                "conventional_frac_coords": paddle.to_tensor(
+                    sample["frac_coords"].data
+                ),
+                "conventional_lattice_lengths": paddle.to_tensor(
+                    sample["lattice_lengths"]
+                ),
+                "conventional_lattice_angles": paddle.to_tensor(
+                    sample["lattice_angles"]
+                ),
+            },
+            geometry,
         )
-        MP20ASUDataset(path=dataset.path)
-        assert broadcasts == [None]
-        context.setattr(asu_dataset.pickle, "dump", fail_write)
-        with pytest.raises(RuntimeError, match="rank zero.*Injected cache write"):
-            MP20ASUDataset(path=dataset.path, overwrite=True)
-        assert "Injected cache write failure" in broadcasts[-1]
-
+        parsed = BuildStructure.build_one(
+            expanded, "array", niggli=False, canocial=False
+        )
+        array = sample["structure_array"]
+        original = BuildStructure.build_one(
+            {
+                "atom_types": array["atom_types"].data,
+                "frac_coords": array["frac_coords"].data,
+                "lengths": array["lengths"].data.reshape(3),
+                "angles": array["angles"].data.reshape(3),
+            },
+            "array",
+            niggli=False,
+            canocial=False,
+        )
+        assert StructureMatcher().fit(original, parsed)
     sampler = _make_sgequidiff()
     sampler.train()
     out = sampler(batch)
     loss = out["loss_dict"]["loss"]
-    assert loss.ndim == 0
-    assert not paddle.isnan(loss).item()
-    assert float(loss) > 0.0
-
-    # Contract-8: label_dict must expose label keys identical to batch_data.
-    label_keys = (
-        "space_group_indices",
-        "lattice_lengths",
-        "lattice_angles",
-        "n_atoms_per_asu",
-        "element_indices",
-        "wyckoff_indices",
-        "wyckoff_shape_indices",
-        "frac_coords",
-    )
-    assert "label_dict" in out
-    for key in label_keys:
-        assert key in out["label_dict"], f"missing label key: {key}"
-        assert bool(
-            paddle.equal(out["label_dict"][key], batch[key]).all().item()
-        ), f"label_dict[{key}] mismatch with batch label"
+    assert loss.ndim == 0 and bool(paddle.isfinite(loss))
+    loss.backward()
+    assert any(parameter.grad is not None for parameter in sampler.parameters())
+    for key, value in out["label_dict"].items():
+        np.testing.assert_array_equal(value, batch[key])
 
 
-def test_dataset_downloads_via_unified_pipeline(tmp_path, monkeypatch):
-    """Download path: a missing explicit path falls back to the unified
-    download pipeline (url + md5 + cache under ~/.paddlemat/datasets).
-
-    Overall question: when ``path`` does not exist, does each concrete
-    dataset subclass (``MP20ASUDataset`` / ``MPTS52ASUDataset``) resolve
-    the npz as ``<extract_root>/<name>/<split>.npz`` using its own
-    class-level ``name`` / ``url`` / ``md5``, while the abstract base
-    class holds no download source?
-    """
-    import ppmat.utils.download as download
-    from ppmat.datasets.asu_dataset import AsymmetricUnitDataset
-    from ppmat.datasets.asu_dataset import MP20ASUDataset
-    from ppmat.datasets.asu_dataset import MPTS52ASUDataset
-
-    monkeypatch.setattr(download, "DATASETS_HOME", str(tmp_path / "unified_cache"))
-
-    extract_root = tmp_path / "cache" / "mp_20_asu"
-    _write_synthetic_mp20_npz(extract_root, num_crystals=4)
-
-    calls = {}
-
-    def fake_get_datasets_path_from_url(url, md5sum=None):
-        calls["url"] = url
-        calls["md5"] = md5sum
-        return str(extract_root)
-
-    monkeypatch.setattr(
-        download, "get_datasets_path_from_url", fake_get_datasets_path_from_url
-    )
-
-    dataset = MP20ASUDataset(path=str(tmp_path / "custom" / "train.npz"))
-    assert calls == {"url": MP20ASUDataset.url, "md5": MP20ASUDataset.md5}
-    assert dataset.path == str(extract_root / "mp_20" / "train.npz")
-    assert len(dataset) == 4
-
-    # The base class holds no download source; subclasses declare their own.
-    assert AsymmetricUnitDataset.url is None
-    assert MP20ASUDataset.name == "mp_20"
-    assert MPTS52ASUDataset.name == "mpts_52"
-    assert MPTS52ASUDataset.url != MP20ASUDataset.url
-
-    # Each subclass owns its own default path: building MPTS52 without an
-    # explicit path must not fall back to the MP-20 default.
-    _write_synthetic_mp20_npz(extract_root, num_crystals=4, name="mpts_52")
-    calls.clear()
-    mpts_dataset = MPTS52ASUDataset()
-    assert calls == {"url": MPTS52ASUDataset.url, "md5": MPTS52ASUDataset.md5}
-    assert mpts_dataset.path == str(extract_root / "mpts_52" / "train.npz")
-
-    # Instantiating the base class without an existing path must fail fast.
-    with pytest.raises(ValueError):
-        AsymmetricUnitDataset(path=str(tmp_path / "missing" / "train.npz"))
-    with pytest.raises(ValueError):
-        AsymmetricUnitDataset(path=None)
-
-
-def test_sgequidiff_metric(tmp_path):
+def test_sgequidiff_metric(tmp_path, monkeypatch):
     """Evaluation pipeline: generation-quality metric over synthetic structures.
 
-    Overall question: does SGEQuiDiffMetric return the complete expected
+    Overall question: does CrystalGenerationMetric return the complete expected
     metric set (validity / uniqueness / novelty / coverage / distances)
     with values in valid ranges? Uses self-contained synthetic CIFs written
     to ``tmp_path``, so the test runs without external data files.
     """
     import pandas as pd
+    from omegaconf import OmegaConf
     from pymatgen.core import Lattice
     from pymatgen.core import Structure
 
-    from ppmat.metrics.sgequidiff_metric import SGEQuiDiffMetric
-    from ppmat.metrics.utils import get_crys_from_cif
+    from ppmat.metrics import build_metric
 
     structures = [
         Structure(
@@ -578,13 +536,27 @@ def test_sgequidiff_metric(tmp_path):
     gt_csv = tmp_path / "gt.csv"
     pd.DataFrame({"cif": cifs}).to_csv(gt_csv, index=False)
 
-    pred_dicts = [get_crys_from_cif(cif).dict for cif in cifs]
+    pred_dicts = [
+        {
+            "num_atoms": len(structure),
+            "atom_types": list(structure.atomic_numbers),
+            "frac_coords": structure.frac_coords.tolist(),
+            "lattice": structure.lattice.matrix,
+        }
+        for structure in structures
+    ]
     # The first structure is repeated across "batches": it must be counted
     # once for uniqueness, so the streaming accumulation (which spreads the
     # duplicate over two steps) matches the batch interface.
     invalid = {**pred_dicts[0], "frac_coords": [[0, 0, 0], [0, 0, 0]]}
     duplicated = pred_dicts + [pred_dicts[0], invalid]
-    metric = SGEQuiDiffMetric(gt_file_path=str(gt_csv))
+    cfg = OmegaConf.to_container(
+        OmegaConf.load("structure_generation/configs/sgequidiff/sgequidiff_mp20.yaml"),
+        resolve=True,
+    )["Sample"]["metrics"]
+    cfg["__init_params__"]["gt_file_path"] = str(gt_csv)
+    cfg["__init_params__"]["coverage_cfg"]["distance_batch_size"] = 2
+    metric = build_metric(cfg)
     result = metric(duplicated)
 
     for key in (
@@ -602,11 +574,55 @@ def test_sgequidiff_metric(tmp_path):
     assert result["validity"] == pytest.approx(5 / 6)
     assert result["uniqueness"] == pytest.approx(4 / 5)
     assert result["novelty"] == 0.0
+    assert result["cov_recall"] == 1.0
+    assert result["cov_precision"] == 1.0
+
+    basic = build_metric(
+        {
+            "__class_name__": "CrystalGenerationMetric",
+            "__init_params__": {},
+        }
+    )
+    assert basic(duplicated) == {
+        "validity": pytest.approx(5 / 6),
+        "uniqueness": pytest.approx(4 / 5),
+    }
+    offline = build_metric(
+        {
+            "__class_name__": "CrystalGenerationMetric",
+            "__init_params__": {"input_format": "cif_str"},
+        }
+    )
+    assert offline(cifs) == {"validity": 1.0, "uniqueness": 1.0}
+    invalid_result = metric([invalid])
+    assert invalid_result["validity"] == 0.0
+    assert invalid_result["cov_recall"] == 0.0
+    assert np.isfinite(invalid_result["amsd_recall"])
+
+    novelty_csv = tmp_path / "novelty.csv"
+    pd.DataFrame({"cif": cifs[:2]}).to_csv(novelty_csv, index=False)
+    cfg["__init_params__"]["novelty_gt_file_path"] = str(novelty_csv)
+    separate = build_metric(cfg)(duplicated)
+    assert separate["novelty"] == pytest.approx(2 / 5)
+    assert separate["cov_recall"] == 1.0
+    del cfg["__init_params__"]["novelty_gt_file_path"]
+
+    from ppmat.metrics.utils import CrystalNNFP
+
+    def fail_fingerprint(*args, **kwargs):
+        raise ValueError("Unavailable structural fingerprint")
+
+    with monkeypatch.context() as context:
+        context.setattr(CrystalNNFP, "featurize", fail_fingerprint)
+        unavailable = metric(pred_dicts)
+    assert unavailable["validity"] == 1.0
+    assert unavailable["cov_recall"] == 0.0
+    assert np.isnan(unavailable["amsd_recall"])
 
     # Streaming contract: per-step accumulation must match the batch interface.
     assert isinstance(metric, StreamingMetricBase)
 
-    stream_metric = SGEQuiDiffMetric(gt_file_path=str(gt_csv))
+    stream_metric = build_metric(cfg)
     assert stream_metric.compute_epoch(stage="sample") == {}
     assert stream_metric.compute_epoch(stage="eval") == {}
     stream_metric.update_step(
@@ -648,6 +664,7 @@ def test_trainer_checkpoint_resume(tmp_path):
             max_epochs=epochs,
             output_dir=str(tmp_path / name),
             save_freq=1,
+            pretrained_model_path=None,
             use_tensorboard=False,
             zero_nan_grad=False,
         )
@@ -774,18 +791,37 @@ def _make_small_gnn_sgequidiff(num_timesteps=2):
     ),
     reason="requires PPMAT_RUN_CINN_WORKFLOW_TESTS=1, CUDA and CINN",
 )
-def test_cinn_sampling_parity():
+def test_cinn_sampling_parity(tmp_path, monkeypatch):
     """CINN workflow: compiled denoise_step matches eager sampling.
 
     Overall question: does sampling with ``execution_backend="cinn"`` reuse a
-    single cached compiled runtime and reproduce the eager trajectory within
-    GPU float32 tolerance?
+    single cached compiled runtime and match fixed-input eager denoising and
+    the sampled coordinates within GPU float32 tolerances?
     """
+    from ppmat.models.sgequidiff import sgequidiff
+
+    monkeypatch.setattr(sgequidiff, "get_data_directory", lambda: tmp_path)
     paddle.set_device("gpu")
     try:
+        paddle.seed(42)
+        np.random.seed(42)
         model = _make_small_gnn_sgequidiff(num_timesteps=3)
         model.eval()
         batch = {"structure_array": {"num_atoms": paddle.to_tensor([1])}}
+        diffusion = model.atom_coord_diffusion_model
+        predict = diffusion.predict_equivariant_vectors
+        eager_steps = []
+
+        def record_eager_step(*args, **kwargs):
+            result = predict(*args, **kwargs)
+            eager_steps.append(
+                (
+                    tuple(value.clone() for value in args),
+                    {key: value.clone() for key, value in kwargs.items()},
+                    result.clone(),
+                )
+            )
+            return result
 
         def sample_frac_coords():
             paddle.seed(42)
@@ -794,21 +830,26 @@ def test_cinn_sampling_parity():
             return [crystal["frac_coords"] for crystal in result]
 
         model.set_execution_backend("eager")
+        monkeypatch.setattr(diffusion, "predict_equivariant_vectors", record_eager_step)
         coords_eager = sample_frac_coords()
+        monkeypatch.setattr(diffusion, "predict_equivariant_vectors", predict)
 
         model.set_execution_backend("cinn")
         model.set_runtime_options({"cinn": {"full_graph": False}})
+        assert len(eager_steps) == 4
+        for args, kwargs, expected in eager_steps:
+            actual = predict(*args, **kwargs)
+            np.testing.assert_allclose(
+                actual.numpy(), expected.numpy(), rtol=2e-5, atol=2e-6
+            )
         coords_cinn = sample_frac_coords()
 
         cache = model.atom_coord_diffusion_model._runtime_cache
         assert list(cache.keys()) == [("cinn", "eval", "denoise_step")]
 
-        max_diff = max(
-            abs(a - b)
-            for eager_cell, cinn_cell in zip(coords_eager, coords_cinn)
-            for eager_row, cinn_row in zip(eager_cell, cinn_cell)
-            for a, b in zip(eager_row, cinn_row)
-        )
-        assert max_diff < 2e-5, f"eager/CINN sampling mismatch: {max_diff}"
+        assert len(coords_cinn) == len(coords_eager)
+        # The adaptive corrector amplifies rounding along a sampled trajectory.
+        for actual, expected in zip(coords_cinn, coords_eager):
+            np.testing.assert_allclose(actual, expected, rtol=0, atol=3e-5)
     finally:
         paddle.set_device("cpu")

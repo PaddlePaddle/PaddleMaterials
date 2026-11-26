@@ -3,6 +3,7 @@ Global:
   do_eval: False
   do_test: False
   num_train_timesteps: 1000
+  num_inference_steps: ${Global.num_train_timesteps}
 
 Trainer:
   max_epochs: 2000
@@ -12,7 +13,7 @@ Trainer:
   log_freq: 10
   start_eval_epoch: 1
   eval_freq: 10
-  pretrained_model_path: null
+  pretrained_model_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/SGEquiDiff/sgequidiff_mp20.zip
   resume_from_checkpoint: null
   use_amp: False
   amp_level: 'O1'
@@ -110,9 +111,24 @@ Optimizer:
 Dataset:
   train:
     dataset:
-      __class_name__: MP20ASUDataset
+      __class_name__: MP20Dataset
       __init_params__:
-        path: data/data/mp_20/train.npz
+        path: ./data/mp_20/train.csv
+        cache_path: ./data/sgequidiff_mp20_cache/train
+        property_names: [cif]
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 1
+        transforms:
+          - __class_name__: AsymmetricUnitTransform
+            __init_params__:
+              cif_key: cif
+              symprec: 0.1
+              angle_tolerance: 5.0
+              mapping_tolerance: 1.0e-6
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -124,9 +140,24 @@ Dataset:
         batch_size: 32
   val:
     dataset:
-      __class_name__: MP20ASUDataset
+      __class_name__: MP20Dataset
       __init_params__:
-        path: data/data/mp_20/val.npz
+        path: ./data/mp_20/val.csv
+        cache_path: ./data/sgequidiff_mp20_cache/val
+        property_names: [cif]
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 1
+        transforms:
+          - __class_name__: AsymmetricUnitTransform
+            __init_params__:
+              cif_key: cif
+              symprec: 0.1
+              angle_tolerance: 5.0
+              mapping_tolerance: 1.0e-6
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -138,9 +169,24 @@ Dataset:
         batch_size: 64
   test:
     dataset:
-      __class_name__: MP20ASUDataset
+      __class_name__: MP20Dataset
       __init_params__:
-        path: data/data/mp_20/test.npz
+        path: ./data/mp_20/test.csv
+        cache_path: ./data/sgequidiff_mp20_cache/test
+        property_names: [cif]
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 1
+        transforms:
+          - __class_name__: AsymmetricUnitTransform
+            __init_params__:
+              cif_key: cif
+              symprec: 0.1
+              angle_tolerance: 5.0
+              mapping_tolerance: 1.0e-6
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -154,23 +200,40 @@ Dataset:
 Sample:
   data:
     dataset:
-      __class_name__: MP20ASUDataset
+      __class_name__: NumAtomsCrystalDataset
       __init_params__:
-        path: data/data/mp_20/test.npz
+        total_num: 100
+        prop_names: null
+        prop_values: null
     sampler:
       __class_name__: BatchSampler
       __init_params__:
         shuffle: False
         drop_last: False
-        batch_size: 64
+        batch_size: 20
+  model_sample_params:
+    num_inference_steps: ${Global.num_inference_steps}
   build_structure_cfg:
     format: array
     primitive: False
     niggli: False
     canocial: True
   metrics:
-    __class_name__: SGEQuiDiffMetric
+    __class_name__: CrystalGenerationMetric
     __init_params__:
-      # Reference CIF pool for novelty / coverage; switch to the train split
-      # csv to measure novelty against the training distribution.
-      gt_file_path: data/data/mp_20/test.csv
+      gt_file_path: ./data/mp_20/test.csv
+      metrics: [validity, uniqueness, novelty, coverage]
+      structure_validity_cfg:
+        cutoff: 0.5
+      composition_validity_cfg:
+        use_pauling_test: True
+        include_alloys: True
+      matcher_cfg:
+        stol: 0.5
+        angle_tol: 10
+        ltol: 0.3
+      coverage_cfg:
+        struc_cutoff: 0.4
+        comp_cutoff: 10.0
+        distance_batch_size: 256
+        statistics_resource: magpie_legacy_statistics.json

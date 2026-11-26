@@ -36,25 +36,24 @@ import pgl
 from paddle.distribution import Categorical
 from tqdm import tqdm
 
-from ppmat.datasets.build_asu import ELEMENT_ENCODING_SIZE
-from ppmat.datasets.build_asu import MAX_WYCKOFF_POSITIONS
-from ppmat.datasets.build_asu import NUM_CRYSTALLOGRAPHIC_SPACE_GROUPS
-from ppmat.datasets.build_asu import NUM_LATTICE_PARAMS
-from ppmat.datasets.build_asu import EmbeddingTools
-from ppmat.datasets.build_asu import WyckoffGeometry
-from ppmat.datasets.build_asu import build_embedding_tools
-from ppmat.datasets.build_asu import build_wyckoff_geometry
-from ppmat.datasets.build_asu import chemical_symbols
-from ppmat.datasets.build_asu import get_data_directory
-from ppmat.datasets.build_asu import lattice_parameter_ranges
-from ppmat.datasets.build_asu import load_wyckoff_shapes
-from ppmat.datasets.build_asu import max_atoms_per_dataset
-from ppmat.datasets.build_asu import save_asu_cache
 from ppmat.models.common.activation import ScaledSiLU as Swish
 from ppmat.models.common.radial_basis import GaussianSmearing
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
 from ppmat.models.common.time_embedding import SinusoidalTimeEmbeddings
+from ppmat.models.sgequidiff.asu import ELEMENT_ENCODING_SIZE
+from ppmat.models.sgequidiff.asu import MAX_WYCKOFF_POSITIONS
+from ppmat.models.sgequidiff.asu import NUM_CRYSTALLOGRAPHIC_SPACE_GROUPS
+from ppmat.models.sgequidiff.asu import NUM_LATTICE_PARAMS
+from ppmat.models.sgequidiff.asu import EmbeddingTools
+from ppmat.models.sgequidiff.asu import WyckoffGeometry
+from ppmat.models.sgequidiff.asu import build_embedding_tools
+from ppmat.models.sgequidiff.asu import build_wyckoff_geometry
+from ppmat.models.sgequidiff.asu import get_data_directory
+from ppmat.models.sgequidiff.asu import lattice_parameter_ranges
+from ppmat.models.sgequidiff.asu import load_wyckoff_shapes
+from ppmat.models.sgequidiff.asu import max_atoms_per_dataset
+from ppmat.models.sgequidiff.asu import save_asu_cache
 from ppmat.schedulers import build_scheduler
 from ppmat.schedulers.scheduling_asu_ve_sde import build_ve_sigma_grid
 from ppmat.utils import logger
@@ -63,6 +62,7 @@ from ppmat.utils.crystal import frac_to_cart_coords
 from ppmat.utils.crystal import get_pbc_distances
 from ppmat.utils.crystal import lattice_params_to_matrix_paddle
 from ppmat.utils.scatter import scatter
+from ppmat.utils.scatter import scatter_argmin
 from ppmat.utils.scatter import scatter_min
 
 
@@ -236,79 +236,6 @@ def uniformly_sample_point_in_convex_shape(
     raise ValueError(f"Invalid dimensionality: {wyckoff_site_dimensionality}")
 
 
-def _segment_arg_extremum(
-    src: paddle.Tensor,
-    index: paddle.Tensor,
-    segment_op,
-    sentinel: float,
-):
-    """Per-group extreme value and its source position over 1-D segment ids.
-
-    Float weights encode source positions; taking the extremum over the kept
-    positions resolves ties deterministically (max -> last occurrence,
-    min -> first occurrence). float32 represents integers exactly up to 2**24;
-    larger inputs would lose arg-position precision.
-
-    Returns (seg_size, empty_group_mask, per-group extreme, arg positions).
-    """
-    order = paddle.argsort(index, stable=True)
-    sorted_index = index[order]
-    sorted_src = src[order]
-    seg_size = int(sorted_index.max().item()) + 1
-    empty_mask = ~paddle.bincount(sorted_index, minlength=seg_size).cast(paddle.bool)
-
-    extreme = segment_op(sorted_src, sorted_index)
-    weights = paddle.arange(sorted_src.shape[0], dtype=paddle.float32)
-    is_extreme = sorted_src == extreme[sorted_index]
-    extreme_weights = paddle.where(is_extreme, weights, paddle.to_tensor(sentinel))
-    arg_sorted = segment_op(extreme_weights, sorted_index)
-    arg = order[arg_sorted.cast(paddle.int64)]
-    return seg_size, empty_mask, extreme, arg
-
-
-def _scatter_argmax(
-    src: paddle.Tensor,
-    index: paddle.Tensor,
-    dim_size: int,
-) -> paddle.Tensor:
-    """Return the source index of the maximum value in each group.
-
-    ``src`` and ``index`` must be one-dimensional with equal length. Empty
-    groups are assigned ``0``. Ties resolve to the last occurrence in ``src``.
-    """
-    seg_size, empty_mask, _, argmax = _segment_arg_extremum(
-        src, index, paddle.geometric.segment_max, -float("inf")
-    )
-    argmax = paddle.where(empty_mask, paddle.zeros_like(argmax), argmax)
-    out = paddle.zeros([dim_size], dtype="int64")
-    out[:seg_size] = argmax
-    return out
-
-
-def _scatter_min_indices(
-    ov_row: paddle.Tensor,
-    ov_col: paddle.Tensor,
-    n_total: int,
-) -> paddle.Tensor:
-    """Map each row to its minimum overlapping column; rows without overlaps
-    keep their own index."""
-    if ov_row.shape[0] == 0:
-        return paddle.arange(n_total, dtype=paddle.int64)
-    # paddle.geometric.segment_min requires sorted segment ids; sort first.
-    order = paddle.argsort(ov_row, stable=True)
-    sorted_row = ov_row[order]
-    sorted_col = ov_col[order]
-    min_per_row = paddle.geometric.segment_min(
-        sorted_col.cast(paddle.float32), sorted_row
-    )
-    unique_rows = paddle.unique(ov_row)
-    result = paddle.arange(n_total, dtype=paddle.float32)
-    result = paddle.scatter(
-        result, unique_rows, min_per_row[unique_rows].cast(paddle.float32)
-    )
-    return result.cast(paddle.int64)
-
-
 def _deduplicate_orbit_coords(
     coords: paddle.Tensor,
     orbit_sizes: paddle.Tensor,
@@ -322,7 +249,6 @@ def _deduplicate_orbit_coords(
     offset = paddle.repeat_interleave(
         paddle.cumsum(orbit_sizes_sqr, axis=0) - orbit_sizes_sqr, orbit_sizes_sqr
     )
-    # ``arange`` accepts a tensor ``end`` directly: no GPU sync is needed.
     pair_ids = paddle.arange(end=orbit_sizes_sqr.sum(), dtype=paddle.int64) - offset
     row_ids = paddle.floor_divide(pair_ids, orbit_expand) + first_expand
     col_ids = pair_ids % orbit_expand + first_expand
@@ -335,7 +261,8 @@ def _deduplicate_orbit_coords(
     ov_col = col_ids[overlapping]
     ov_row = row_ids[overlapping]
 
-    min_col_per_row = _scatter_min_indices(ov_row, ov_col, coords.shape[0])
+    min_indices = scatter_argmin(ov_col, ov_row, dim_size=coords.shape[0])
+    min_col_per_row = ov_col[min_indices]
     if return_inverse:
         return paddle.unique(min_col_per_row, return_inverse=True)
     return paddle.unique(min_col_per_row), None
@@ -493,10 +420,14 @@ def wrap_frac_coords_into_asu(
     supercell_in_any_wyckoff = supercell_in_wyckoff.any(axis=-1)
     conv_atom_has_image_in_asu = supercell_in_any_wyckoff.any(axis=-1)
 
-    indices_of_conv_atoms_in_asu = _scatter_argmax(
-        src=conv_atom_has_image_in_asu.cast(paddle.float32),
-        index=map_conventional_to_asu_coord,
+    # Reversing preserves the last-occurrence tie rule of ASU selection.
+    reversed_indices = scatter_argmin(
+        -conv_atom_has_image_in_asu.cast(paddle.float32).flip([0]),
+        map_conventional_to_asu_coord.flip([0]),
         dim_size=n_asu_atoms,
+    )
+    indices_of_conv_atoms_in_asu = (
+        conventional_cell_frac_coords.shape[0] - 1 - reversed_indices
     )
 
     supercell_frac_coords_in_asu = supercell_frac_coords[indices_of_conv_atoms_in_asu]
@@ -780,6 +711,10 @@ def expand_asu(asu: Dict, wyckoff_geometry: WyckoffGeometry) -> Dict:
         "num_atoms": len(atom_types),
         "atom_types": atom_types,
         "frac_coords": np.concatenate(coords, axis=0).tolist(),
+        "lattice": lattice_params_to_matrix_paddle(
+            asu["conventional_lattice_lengths"].reshape([1, 3]),
+            asu["conventional_lattice_angles"].reshape([1, 3]),
+        )[0].tolist(),
         "lengths": asu["conventional_lattice_lengths"].reshape([-1]).tolist(),
         "angles": asu["conventional_lattice_angles"].reshape([-1]).tolist(),
     }
@@ -1699,16 +1634,6 @@ class GNN(nn.Layer):
         lattice_matrices: paddle.Tensor,
     ) -> tuple:
         """Construct PBC graph structure."""
-        n_crystals = lattice_matrices.shape[0]
-        n_nodes = frac_coords.shape[0]
-        atom_counts = n_atoms_per_xtal.cast("int64").reshape([-1])
-        cumulative = paddle.cumsum(atom_counts, axis=0)
-        node_ids = paddle.arange(n_nodes, dtype=cumulative.dtype).reshape([-1, 1])
-        map_atom_to_xtal = (
-            (node_ids >= cumulative.reshape([1, -1])).cast("int64").sum(axis=1)
-        )
-        map_atom_to_xtal = paddle.clip(map_atom_to_xtal, min=0, max=n_crystals - 1)
-
         cart_coords = frac_to_cart_coords(
             frac_coords, n_atoms_per_xtal, lattices=lattice_matrices
         )
@@ -1717,6 +1642,7 @@ class GNN(nn.Layer):
             lattice=lattice_matrices,
             num_atoms=n_atoms_per_xtal,
         )
+        map_atom_to_xtal = graph.graph_node_id
         edge_index = graph.edges.transpose([1, 0])
         source_ids, destination_ids = edge_index[0], edge_index[1]
         source_node_image_offsets = graph.edge_feat["pbc_offset"]
@@ -1764,8 +1690,8 @@ class GNN(nn.Layer):
 class CSPNet(nn.Layer):
     """CSPNet from DiffCSP architecture.
 
-    Uses the shared ``CSPLayer`` with the 6-dim lattice representation
-    (lengths + angles) specific to SGEquiDiff.
+    Uses six lattice parameters (lengths and angles) rather than DiffCSP's
+    nine lattice inner-product features.
     """
 
     def __init__(
@@ -2586,10 +2512,8 @@ class MultiheadAttention(nn.MultiHeadAttention):
         super().__init__(embed_dim=embed_dim, num_heads=num_heads)
         self.weights_only = weights_only
         if weights_only:
-            # Released checkpoints retain these unused projection parameters.
-            for layer in (self.v_proj, self.out_proj):
-                for parameter in layer.parameters():
-                    parameter.stop_gradient = True
+            del self.v_proj
+            del self.out_proj
 
     def forward(
         self,
@@ -2738,7 +2662,7 @@ class PreLNDecoderLayer(nn.Layer):
         self.linear2 = nn.Linear(hidden_dim, hidden_dim)
         self.activation = nn.GELU()
 
-    def forward(self, x, attn_mask=None, key_padding_mask=None, **kwargs):
+    def forward(self, x, attn_mask=None, key_padding_mask=None):
         x_norm = self.layernorm(x)
         attn_out = self.mha(
             query=x_norm,
@@ -3760,10 +3684,12 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
         lattice_angles: paddle.Tensor,
         snr: float = 0.4,
         max_step_size: float = 1e6,
+        num_inference_steps: Optional[int] = None,
     ) -> paddle.Tensor:
         """Variance-exploding Predictor-Corrector SDE sampling."""
         num_asu_atoms: int = wyckoff_indices.shape[0]
-        time_start: int = self.noise_scheduler.num_timesteps
+        self.noise_scheduler.set_timesteps(num_inference_steps)
+        timesteps = self.noise_scheduler.timesteps
 
         space_group_indices_per_atom = space_group_indices.repeat_interleave(
             n_atoms_per_xtal, axis=0
@@ -3796,6 +3722,7 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
         proj_matrices = self.wyckoff_geometry.noise_projection_matrices[
             space_group_indices_per_atom, wyckoff_indices, wyckoff_shape_indices
         ]
+        update_mask = paddle.any(proj_matrices != 0.0, axis=1)
 
         def _predict_and_project(x, sigma_norm, t):
             te = self.time_embedder(paddle.to_tensor([t], dtype=paddle.float32)).expand(
@@ -3825,24 +3752,30 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
             )
 
         x_t_plus_1 = x_T
-        for t in tqdm(
-            range(time_start - 1, 0, -1),
+        for previous_t, t in tqdm(
+            zip(timesteps[:-1], timesteps[1:]),
+            total=len(timesteps) - 1,
             desc="reverse diffusion",
-            disable=time_start <= 2,
+            disable=len(timesteps) <= 2,
         ):
             sn_t1 = self.sigma_norms[
-                space_group_indices_per_atom, wyckoff_indices, t + 1
+                space_group_indices_per_atom, wyckoff_indices, previous_t
             ]
             sn_t = self.sigma_norms[space_group_indices_per_atom, wyckoff_indices, t]
 
-            score_pred = _predict_and_project(x_t_plus_1, sn_t1, t)
+            score_pred = _predict_and_project(x_t_plus_1, sn_t1, previous_t - 1)
             x_t = self.noise_scheduler.step_pred(
-                x_t_plus_1, score_pred, t, _wyckoff_noise()
+                x_t_plus_1, score_pred, t, _wyckoff_noise(), previous_t=previous_t
             )
 
             score_corr = _predict_and_project(x_t, sn_t, t)
             x_t = self.noise_scheduler.step_correct(
-                x_t, score_corr, _wyckoff_noise(), snr, max_step_size
+                x_t,
+                score_corr,
+                _wyckoff_noise(),
+                update_mask=update_mask,
+                snr=snr,
+                max_step_size=max_step_size,
             )
 
             x_t = self.project_point_onto_wyckoff_shape(
@@ -4060,13 +3993,6 @@ class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
         return points
 
 
-def _as_tensor(x, dtype=None):
-    """Convert numpy inputs to tensors; pass tensors through without copying."""
-    if isinstance(x, paddle.Tensor):
-        return x.cast(dtype) if dtype is not None else x
-    return paddle.to_tensor(x, dtype=dtype)
-
-
 class SpaceGroupSampler(nn.Layer):
     def __init__(self):
         super().__init__()
@@ -4279,7 +4205,7 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
                 aligned with batch labels, so **non-streaming
                 ``compute_metric_func_dict`` metrics are not applicable** here.
                 Generations are scored with the streaming
-                ``SGEQuiDiffMetric`` (``stage == "sample"``).
+                ``CrystalGenerationMetric`` (``stage == "sample"``).
             label_dict : supervision fields passed through with keys identical
                 to the corresponding ``batch`` labels, so per-key
                 pred/label lookups stay aligned when a streaming metric needs
@@ -4310,21 +4236,20 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
             loss: scalar tensor.
             artifacts: dict of detached log-probs / losses for logging.
         """
-        space_group_indices = _as_tensor(batch["space_group_indices"])
-        lattice_lengths = _as_tensor(batch["lattice_lengths"], paddle.float32)
-        lattice_angles = _as_tensor(batch["lattice_angles"], paddle.float32)
+        space_group_indices = batch["space_group_indices"]
+        lattice_lengths = batch["lattice_lengths"]
+        lattice_angles = batch["lattice_angles"]
         if "lattice_matrices" in batch:
             lattice_matrices = batch["lattice_matrices"]
         else:
             lattice_matrices = lattice_params_to_matrix_paddle(
                 lattice_lengths, lattice_angles
             )
-        lattice_matrices = _as_tensor(lattice_matrices, paddle.float32)
-        element_indices = _as_tensor(batch["element_indices"], paddle.int64)
-        wyckoff_indices = _as_tensor(batch["wyckoff_indices"], paddle.int64)
-        n_asu_atoms_per_xtal = _as_tensor(batch["n_atoms_per_asu"], paddle.int64)
-        wyckoff_shape_indices = _as_tensor(batch["wyckoff_shape_indices"], paddle.int64)
-        asu_frac_coords = _as_tensor(batch["frac_coords"], paddle.float32)
+        element_indices = batch["element_indices"]
+        wyckoff_indices = batch["wyckoff_indices"]
+        n_asu_atoms_per_xtal = batch["n_atoms_per_asu"]
+        wyckoff_shape_indices = batch["wyckoff_shape_indices"]
+        asu_frac_coords = batch["frac_coords"]
 
         if self.training and (
             self.lattice_length_noise > 0 or self.lattice_angle_noise > 0
@@ -4655,6 +4580,7 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
         batch_size: int,
         diffusion_snr: float = 0.4,
         temperature: float = 1.0,
+        num_inference_steps: Optional[int] = None,
     ) -> List[Dict]:
         """Full crystal sampling pipeline."""
         space_group_indices = self.space_group_sampler.sample(batch_size, temperature)
@@ -4681,6 +4607,7 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
             lattice_angles,
             snr=diffusion_snr,
             max_step_size=1e6,
+            num_inference_steps=num_inference_steps,
         )[0]
 
         asu_crystals = []
@@ -4711,7 +4638,9 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
         return asu_crystals
 
     @paddle.no_grad()
-    def sample(self, batch_data: Dict) -> Dict:
+    def sample(
+        self, batch_data: Dict, num_inference_steps: Optional[int] = None
+    ) -> Dict:
         """Sample crystals compatible with ``structure_generation/sample.py``.
 
         Args:
@@ -4731,53 +4660,23 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
             - ``"lengths"``: list[float]  (a, b, c in Angstrom)
             - ``"angles"``: list[float]   (alpha, beta, gamma in degrees)
         """
-        structure_array = batch_data.get("structure_array")
-        if structure_array is not None:
-            if "atom_types" in structure_array:
-                raise NotImplementedError(
-                    "SGEQuiDiff does not support atom-type or chemical formula "
-                    "conditioning. Use sample_by_dataloader instead."
-                )
-            num_atoms_tensor = structure_array["num_atoms"]
-        else:
-            # sample_by_dataloader passes an ASU dataset batch without
-            # structure_array; SGEQuiDiff is unconditional so the number of
-            # generated crystals is simply the batch size.
-            num_atoms_tensor = paddle.ones(
-                [batch_data["n_atoms_per_asu"].shape[0]], dtype=paddle.int64
+        structure_array = batch_data["structure_array"]
+        if "atom_types" in structure_array:
+            raise NotImplementedError(
+                "SGEQuiDiff does not support atom-type or chemical formula "
+                "conditioning. Use sample_by_dataloader instead."
             )
-        batch_size = num_atoms_tensor.shape[0]
+        batch_size = structure_array["num_atoms"].shape[0]
 
         crystals = self.sample_crystal(
             batch_size=batch_size,
             diffusion_snr=self.diffusion_snr,
             temperature=self.temperature,
+            num_inference_steps=num_inference_steps,
         )
 
-        # Expand each ASU crystal into a full conventional cell, so the result
-        # is a physically complete structure (not just the asymmetric unit).
-        result = []
-        for crystal in crystals:
-            valid_mask = []
-            for i, idx in enumerate(crystal["element_indices"].tolist()):
-                if 0 <= idx < ELEMENT_ENCODING_SIZE:
-                    elem = chemical_symbols[idx + 1]
-                    if elem != "X":
-                        valid_mask.append(i)
-
-            if len(valid_mask) == 0:
-                logger.warning("Generated crystal has no valid elements, skipping.")
-                continue
-
-            mask = paddle.to_tensor(valid_mask, dtype=paddle.int64)
-            filtered_crystal = {
-                "space_group_number": crystal["space_group_number"],
-                "conventional_lattice_lengths": crystal["conventional_lattice_lengths"],
-                "conventional_lattice_angles": crystal["conventional_lattice_angles"],
-                "element_indices": crystal["element_indices"][mask],
-                "wyckoff_indices": crystal["wyckoff_indices"][mask],
-                "conventional_frac_coords": crystal["conventional_frac_coords"][mask],
-            }
-            result.append(expand_asu(filtered_crystal, self.wyckoff_geometry))
-
-        return {"result": result}
+        return {
+            "result": [
+                expand_asu(crystal, self.wyckoff_geometry) for crystal in crystals
+            ]
+        }
