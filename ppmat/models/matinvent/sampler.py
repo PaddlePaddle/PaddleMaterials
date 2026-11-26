@@ -1,0 +1,70 @@
+# Copyright (c) 2026 PaddlePaddle Authors. All Rights Reserved.
+
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+
+#     http://www.apache.org/licenses/LICENSE-2.0
+
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from typing import List
+
+import paddle
+from pymatgen.core.structure import Structure
+
+from ppmat.datasets import build_dataloader
+from ppmat.datasets.build_structure import BuildStructure
+from ppmat.utils import logger
+
+# Reference propensity to sample atom types over atomic numbers 1..100.
+_MAX_ATOMIC_NUM = 100
+
+
+class MatInventSampler:
+    """Draw structures from a MatInvent backbone during an RL round."""
+
+    def __init__(
+        self,
+        data_cfg: dict,
+        num_inference_steps: int,
+        build_structure_cfg: dict,
+    ):
+        self.data_cfg = data_cfg
+        self.num_inference_steps = num_inference_steps
+        self.structure_options = dict(build_structure_cfg)
+        self.structure_format = self.structure_options.pop("format")
+
+    @paddle.no_grad()
+    def generate(self, model) -> List[Structure]:
+        structures = []
+        for batch in build_dataloader(self.data_cfg):
+            inputs = batch["structure_array"]
+            num_atoms = inputs["num_atoms"]
+            if not model.supports_num_atoms_sampling:
+                # Fixed-composition generation needs atom types alongside the counts.
+                inputs["atom_types"] = paddle.randint(
+                    low=1,
+                    high=_MAX_ATOMIC_NUM + 1,
+                    shape=[int(num_atoms.sum().item())],
+                    dtype="int64",
+                )
+            sampled = model.sample(
+                batch,
+                num_inference_steps=self.num_inference_steps,
+            )
+            for result in sampled["result"]:
+                try:
+                    structure = BuildStructure.build_one(
+                        result, self.structure_format, **self.structure_options
+                    )
+                except ValueError as error:
+                    logger.warning(f"Failed to parse a sampled structure: {error}")
+                    continue
+                if structure is not None:
+                    structures.append(structure)
+        return structures

@@ -140,6 +140,11 @@ def build_workflow(model_name: str, backend: str):
         batch = next(iter(sampler._sample_loader))
         return sampler, lambda: sampler.sample(batch), "full_reverse_diffusion"
 
+    if model_name.startswith("matinvent_"):
+        from ppmat.models.matinvent.benchmark import build_train_workload
+
+        return build_train_workload(model_name, backend)
+
     if model_name.startswith(("diffcsp_", "mattergen_")):
         sampler = StructureSampler(
             model_name=model_name,
