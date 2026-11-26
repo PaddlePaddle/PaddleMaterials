@@ -114,6 +114,3 @@ class MatinventMatterGen(MatterGen):
             )
         finally:
             gemnet.otf_graph = otf_graph
-
-
-__all__ = ["MatinventMatterGen"]

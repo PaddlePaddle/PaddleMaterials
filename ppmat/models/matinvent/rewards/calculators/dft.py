@@ -14,7 +14,6 @@
 
 import os
 
-import numpy as np
 from pymatgen.io.cif import CifWriter
 
 from ppmat.models.matinvent.rewards.calculators import Calculator
@@ -26,27 +25,14 @@ class DFTCalc(Calculator):
     Results belong in the exported batch directory, one float per structure.
     """
 
-    def calc(self, samples, label="tmp"):
-        struc_list = samples[0]
-        cif_dir = self.external_result_dir(struc_list, label)
-        for i, struc in enumerate(struc_list):
-            cif_path = os.path.abspath(os.path.join(cif_dir, f"{i}.cif"))
-            CifWriter(struc).write_file(cif_path)
-
-        out_path = os.path.abspath(os.path.join(cif_dir, "results.txt"))
+    def calc(self, structures, label="tmp"):
+        cif_dir, out_path = self.results_path(structures, label)
+        for i, struc in enumerate(structures):
+            CifWriter(struc).write_file(os.path.join(cif_dir, f"{i}.cif"))
         if not os.path.isfile(out_path):
             raise FileNotFoundError(
                 f"DFT results are missing: {out_path}. CIF files for the external DFT "
                 f"run were written to {cif_dir}; write one value per structure to "
                 f"{out_path} and rerun."
             )
-        results = np.loadtxt(out_path, dtype=float, ndmin=1)
-        if results.shape != (len(struc_list),):
-            raise ValueError(
-                f"{out_path} holds {results.shape[0]} values, "
-                f"expected {len(struc_list)}"
-            )
-        return results
-
-
-__all__ = ["DFTCalc"]
+        return self.read_results(structures, out_path)

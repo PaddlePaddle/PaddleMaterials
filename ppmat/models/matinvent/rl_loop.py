@@ -52,7 +52,6 @@ class MatInvent:
     anchor_loss_weight = 0.0
     anchor_every_n_steps = 1
     probe_initial = None
-    stop_requested = False
 
     def __init__(
         self,
@@ -126,14 +125,6 @@ class MatInvent:
             for key in ("probe_every", "probe_every_updates", "probe_draws"):
                 if int(early_stop_cfg.get(key, 1)) <= 0:
                     raise ValueError(f"early_stop_cfg.{key} must be positive")
-        self.anchor_batch = None
-        self.anchor_dataset = None
-        self.anchor_resample = False
-        self.probe_batch = None
-        self.anchor_loss_weight = 0.0
-        self.anchor_every_n_steps = 1
-        self.probe_initial = None
-        self.stop_requested = False
         self.hhi_best = float("inf")
         self.hhi_bad_rounds = 0
         self.last_hhi = None
@@ -174,7 +165,7 @@ class MatInvent:
         )
         num_samples = min(int(cfg.get("num_samples", 4)), len(dataset))
         if num_samples <= 0:
-            raise ValueError("anchor_cfg.num_samples must select at least one sample")
+            raise ValueError(f"{label}: num_samples must select at least one sample")
         logger.info(f"{label}: {num_samples} MP20 samples")
         return dataset, self._collate_mp20_batch(dataset, range(num_samples))
 
@@ -293,19 +284,15 @@ class MatInvent:
                 reason = f"div ratio {self.last_div_ratio:.3f} < {float(minimum):.3f}"
         if reason is not None:
             logger.warning(f"EARLY STOP at loop {self.step}: {reason}")
-            self.stop_requested = True
-        return self.stop_requested
+        return reason is not None
 
     def reward_step(
         self,
         training_structures: List[Structure],
         sample_struc: List[Structure],
-        xyz_path: str,
         label: str = "tmp",
     ):
-        rewards, prop_dict, failed_mask = self.reward.scoring(
-            (sample_struc, xyz_path), label
-        )
+        rewards, prop_dict, failed_mask = self.reward.scoring(sample_struc, label)
         self.cost += len(sample_struc)
         success = ~failed_mask
         scaled_rewards = rewards[success].astype(float)
@@ -342,7 +329,7 @@ class MatInvent:
         )
         if len(valid_struc) == 0:
             logger.warning("No valid structures generated!")
-            return [], [], ""
+            return [], []
         save_structures(
             structures=valid_struc,
             save_dir=self.sample_dir,
@@ -355,17 +342,17 @@ class MatInvent:
         )
         if not scoring_structures:
             logger.warning("No structures passed population qualification")
-            return [], [], ""
+            return [], []
         max_num = self.sample_cfg.get("max_num")
         if max_num is not None and len(scoring_structures) > int(max_num):
             training_structures = training_structures[: int(max_num)]
             scoring_structures = scoring_structures[: int(max_num)]
-        eval_xyz_path = save_structures(
+        save_structures(
             structures=scoring_structures,
             save_dir=self.sample_dir,
             filename=f"step_{self.step:0>4d}_eval.extxyz",
         )
-        return training_structures, scoring_structures, eval_xyz_path
+        return training_structures, scoring_structures
 
     def ft_step(self, structures: List[Structure], rewards: np.ndarray):
         cfg = self.finetune_cfg
@@ -468,10 +455,10 @@ class MatInvent:
         logger.info(f"*****   LOOP {self.step} START   *****")
         start_time = time.time()
         logger.info("SAMPLE:")
-        training_structures, sample_struc, xyz_path = self.sample_step()
+        training_structures, sample_struc = self.sample_step()
         logger.info("SCORE:")
         training_structures, sample_struc, rewards, prop_dict = self.reward_step(
-            training_structures, sample_struc, xyz_path, f"step_{self.step:0>4d}"
+            training_structures, sample_struc, f"step_{self.step:0>4d}"
         )
         has_rewards = len(rewards) > 0
         if "hhi" in prop_dict and len(prop_dict["hhi"]) > 0:
@@ -492,19 +479,19 @@ class MatInvent:
             logger.warning(
                 "No successful rewards, skip memory/replay/finetune updates."
             )
-        metrics = self.ltm.calc_metrics(self.reward.threshold)
-        self.last_div_ratio = metrics[1]
+        burden, div_ratio = self.ltm.calc_metrics(self.reward.threshold)
+        self.last_div_ratio = div_ratio
         self.ltm.save(os.path.join(self.sample_dir, "long_term_memory.csv"))
         logger.info(
             f"{len(self.ltm)} crystals, {len(self.ltm.unique_comps)} unique. "
-            f"Burden: {metrics[0]}, Div.Ratio: {metrics[1]}."
+            f"Burden: {burden}, Div.Ratio: {div_ratio}."
         )
         log_dict.update(
             {
                 "crystal_num": len(self.ltm),
                 "unique_comps": len(self.ltm.unique_comps),
-                "burden": metrics[0],
-                "div_ratio": metrics[1],
+                "burden": burden,
+                "div_ratio": div_ratio,
                 "cost": self.cost,
             }
         )

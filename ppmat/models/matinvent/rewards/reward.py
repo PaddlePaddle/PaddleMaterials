@@ -14,7 +14,6 @@
 
 import os
 from typing import List
-from typing import Tuple
 
 import numpy as np
 from pymatgen.core.structure import Structure
@@ -64,7 +63,7 @@ class Reward:
             raise ValueError("Reward property names must be directory basenames")
         os.makedirs(root_dir, exist_ok=True)
 
-    def calc_props(self, samples: Tuple[List[Structure], str], label: str = "tmp"):
+    def calc_props(self, structures: List[Structure], label: str = "tmp"):
         values = {}
         failed = None
         for idx, cfg in enumerate(self.prop_cfg):
@@ -86,14 +85,14 @@ class Reward:
                     root_dir=os.path.join(self.root_dir, cfg["name"]), **calculator_cfg
                 )
                 self._cache[idx] = calc
-            raw = np.asarray(calc.calc(samples, label), dtype=float)
+            raw = np.asarray(calc.calc(structures, label), dtype=float)
             values[cfg["name"]] = np.nan_to_num(raw, nan=0.0).astype(float)
             failed_current = ~np.isfinite(raw)
             failed = failed_current if failed is None else (failed | failed_current)
         return values, failed
 
-    def scoring(self, samples: Tuple[List[Structure], str], label: str = "tmp"):
-        prop_dict, failed_mask = self.calc_props(samples, label)
+    def scoring(self, structures: List[Structure], label: str = "tmp"):
+        prop_dict, failed_mask = self.calc_props(structures, label)
         scaled = {}
         for cfg in self.prop_cfg:
             v = prop_dict[cfg["name"]]

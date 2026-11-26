@@ -30,39 +30,7 @@ from smact.screening import pauling_test
 
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
-from ppmat.utils import logger as ppmat_logger
-
-_MP20_ATOM_COUNT_PROBABILITIES = (
-    0.0,
-    0.0021742334905660377,
-    0.021079009433962265,
-    0.019826061320754717,
-    0.15271226415094338,
-    0.047132959905660375,
-    0.08464770047169812,
-    0.021079009433962265,
-    0.07808814858490566,
-    0.03434551886792453,
-    0.0972877358490566,
-    0.013303360849056603,
-    0.09669811320754718,
-    0.02155807783018868,
-    0.06522700471698113,
-    0.014372051886792452,
-    0.06703272405660378,
-    0.00972877358490566,
-    0.053176591981132074,
-    0.010576356132075472,
-    0.08995430424528301,
-)
-
-
-def _sample_mp20_num_atoms(total_num):
-    return np.random.choice(
-        len(_MP20_ATOM_COUNT_PROBABILITIES),
-        size=total_num,
-        p=_MP20_ATOM_COUNT_PROBABILITIES,
-    )
+from ppmat.utils import logger
 
 
 @lru_cache(maxsize=None)
@@ -126,7 +94,7 @@ def is_valid_structure(
     return _is_valid_composition(composition)
 
 
-def save_structures(structures: List[Structure], save_dir: str, filename: str) -> str:
+def save_structures(structures: List[Structure], save_dir: str, filename: str) -> None:
     os.makedirs(save_dir, exist_ok=True)
     out_path = os.path.join(save_dir, filename)
     from ase.io import write
@@ -135,8 +103,7 @@ def save_structures(structures: List[Structure], save_dir: str, filename: str) -
     adaptor = AseAtomsAdaptor()
     atoms = [adaptor.get_atoms(struc) for struc in structures]
     write(out_path, atoms, format="extxyz")
-    ppmat_logger.info(f"Saved {len(structures)} structures to {out_path}")
-    return out_path
+    logger.info(f"Saved {len(structures)} structures to {out_path}")
 
 
 class RLDataset(io.Dataset):
@@ -148,7 +115,7 @@ class RLDataset(io.Dataset):
             )
         self.structures = structures
         self.rewards = rewards
-        ppmat_logger.info(f"Created RLDataset with {len(structures)} samples")
+        logger.info(f"Created RLDataset with {len(structures)} samples")
 
     def __len__(self):
         return len(self.structures)
@@ -183,5 +150,5 @@ def create_rl_dataloader(
         num_workers=num_workers,
         collate_fn=DefaultCollator(),
     )
-    ppmat_logger.info(f"DataLoader: {len(dl.dataset)} samples, batch_size={batch_size}")
+    logger.info(f"DataLoader: {len(dl.dataset)} samples, batch_size={batch_size}")
     return dl

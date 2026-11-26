@@ -861,11 +861,11 @@ class TestRewardScoring:
         ]
         reward = Reward(str(tmp_path), properties, reward_threshold=0.5)
         with pytest.raises(FileNotFoundError, match="DFT results are missing"):
-            reward.scoring((structures, "valid"), label="batch")
+            reward.scoring(structures, label="batch")
         (energy_path,) = (tmp_path / "energy" / "batch").glob("*/0.cif")
         energy_path = energy_path.parent / "results.txt"
         np.savetxt(energy_path, [1.23])
-        _, values, failed = reward.scoring((structures, "valid"), label="batch")
+        _, values, failed = reward.scoring(structures, label="batch")
         assert not failed.any()
         assert np.isfinite(values["mcia"]).all() and values["mcia"][0] > 0
         np.testing.assert_allclose(values["energy"], [1.23])
@@ -874,7 +874,7 @@ class TestRewardScoring:
         assert (tmp_path / "density" / "batch.txt").is_file()
         changed = [_make_structure(["Si"], [[0, 0, 0]], a=6.0)]
         with pytest.raises(FileNotFoundError, match="DFT results are missing"):
-            reward.scoring((changed, "valid"), label="batch")
+            reward.scoring(changed, label="batch")
 
     def test_density_reward_and_failed_property(self, monkeypatch):
         structures = [
@@ -885,8 +885,8 @@ class TestRewardScoring:
             def __init__(self, root_dir, task=None):
                 self.root_dir = root_dir
 
-            def calc(self, samples, label="tmp"):
-                return np.full(len(samples[0]), np.nan)
+            def calc(self, structures, label="tmp"):
+                return np.full(len(structures), np.nan)
 
         with tempfile.TemporaryDirectory() as tmp:
             prop_cfg = [
@@ -904,7 +904,7 @@ class TestRewardScoring:
             reward = Reward(
                 root_dir=tmp, prop_cfg=prop_cfg, reward_threshold=0.5, reduce="mean"
             )
-            rewards, prop_dict, failed = reward.scoring((structures, "valid"))
+            rewards, prop_dict, failed = reward.scoring(structures)
 
             assert not failed.any()
             assert 0.0 <= float(rewards[0]) <= 1.0
@@ -915,7 +915,7 @@ class TestRewardScoring:
             failing_reward = Reward(
                 root_dir=tmp, prop_cfg=prop_cfg, reward_threshold=0.5, reduce="mean"
             )
-            rewards, _, failed = failing_reward.scoring((structures, "failed"))
+            rewards, _, failed = failing_reward.scoring(structures)
 
             assert failed.tolist() == [True]
             assert float(rewards[0]) == 0.0

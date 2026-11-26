@@ -39,7 +39,7 @@ from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
 from ppmat.models.infgcn.infgcn import InfGCN
 from ppmat.models.matinvent import MatinventRL
 from ppmat.models.matinvent.diffcsp import MatinventDiffCSP
-from ppmat.models.matinvent.mattergen import MatinventMatterGen  # noqa: F401
+from ppmat.models.matinvent.mattergen import MatinventMatterGen
 from ppmat.models.mattergen.mattergen import MatterGen
 from ppmat.models.mattergen.mattergen import MatterGenWithCondition
 from ppmat.models.mattersim.m3gnet import M3GNet
@@ -65,6 +65,7 @@ __all__ = [
     "MatterGenWithCondition",
     "MatinventRL",
     "MatinventDiffCSP",
+    "MatinventMatterGen",
     "DimeNetPlusPlus",
     "CrystalNN",
     "CHGNetGraphConverter",

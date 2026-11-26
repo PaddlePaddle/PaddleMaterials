@@ -14,8 +14,6 @@
 
 import os
 
-import numpy as np
-
 from ppmat.models.matinvent.rewards.calculators import Calculator
 
 _TASKS = ("bulk_modulus", "heat_capacity")
@@ -27,28 +25,17 @@ class FairChem(Calculator):
     Results belong in the content-addressed batch directory.
     """
 
-    def calc(self, samples, label="tmp"):
+    def calc(self, structures, label="tmp"):
         if self.task not in _TASKS:
             raise ValueError(
                 f"{self.task} is unknown task for FairChem calculator, "
                 f"expected one of {_TASKS}"
             )
-
-        directory = self.external_result_dir(samples[0], label)
-        out_path = os.path.abspath(os.path.join(directory, "results.txt"))
+        _, out_path = self.results_path(structures, label)
         if not os.path.isfile(out_path):
             raise FileNotFoundError(
                 f"FairChem results are missing: {out_path}. Run the external ML "
                 f"potential computation and write one value per structure to "
                 f"{out_path} before rerunning."
             )
-        results = np.loadtxt(out_path, dtype=float, ndmin=1)
-        if results.shape != (len(samples[0]),):
-            raise ValueError(
-                f"{out_path} holds {results.shape[0]} values, "
-                f"expected {len(samples[0])}"
-            )
-        return results
-
-
-__all__ = ["FairChem"]
+        return self.read_results(structures, out_path)

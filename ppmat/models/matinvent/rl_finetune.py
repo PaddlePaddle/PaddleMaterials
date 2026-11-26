@@ -18,9 +18,9 @@ import paddle
 import paddle.nn as nn
 from omegaconf import OmegaConf
 
+from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import check_backend
-from ppmat.models.matinvent.dataset import _sample_mp20_num_atoms
 from ppmat.models.matinvent.rewards.reward import Reward
 from ppmat.models.matinvent.rl_loop import MatInvent
 from ppmat.models.matinvent.sampler import MatInventSampler
@@ -102,7 +102,9 @@ class MatinventRL(RuntimeMixin, nn.Layer):
             raise ValueError("MatInvent atom_count_distribution must be 'MP_20'")
         if atom_count_distribution == "MP_20" and "id" in data:
             structure_array = data["structure_array"]
-            counts = _sample_mp20_num_atoms(len(structure_array["num_atoms"]))
+            counts = NumAtomsCrystalDataset(
+                total_num=len(structure_array["num_atoms"]), dist_name="MP_20"
+            ).num_atoms
             data = {
                 **data,
                 "structure_array": {
@@ -118,18 +120,6 @@ class MatinventRL(RuntimeMixin, nn.Layer):
 
     def state_dict(self, *args, **kwargs):
         return self.backbone().state_dict(*args, **kwargs)
-
-    def eval(self):
-        super().eval()
-        if self._backbone is not None:
-            self._backbone.eval()
-        return self
-
-    def train(self, mode=True):
-        super().train(mode)
-        if self._backbone is not None:
-            self._backbone.train(mode)
-        return self
 
     def before_train(self, trainer):
         """Run the MatInvent RL loop from the unified training entry."""

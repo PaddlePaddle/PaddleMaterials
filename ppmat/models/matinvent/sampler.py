@@ -19,7 +19,6 @@ from pymatgen.core.structure import Structure
 
 from ppmat.datasets.build_structure import BuildStructure
 from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
-from ppmat.models.matinvent.dataset import _sample_mp20_num_atoms
 from ppmat.utils import logger
 
 # Reference DiffCSP samples atom types over atomic numbers 1..100.
@@ -52,13 +51,9 @@ class MatInventSampler:
     def generate(self, model) -> List[Structure]:
         structures = []
         for _ in range(self.num_batches):
-            counts = (
-                _sample_mp20_num_atoms(self.batch_size)
-                if self.atom_count_distribution == "MP_20"
-                else NumAtomsCrystalDataset(
-                    total_num=self.batch_size, dist_name=self.atom_count_distribution
-                ).num_atoms
-            )
+            counts = NumAtomsCrystalDataset(
+                total_num=self.batch_size, dist_name=self.atom_count_distribution
+            ).num_atoms
             num_atoms = paddle.to_tensor(counts, dtype="int64")
             inputs = {"num_atoms": num_atoms}
             if self.model_type == "diffcsp":

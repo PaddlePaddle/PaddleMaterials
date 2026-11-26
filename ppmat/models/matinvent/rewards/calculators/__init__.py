@@ -16,11 +16,18 @@ import hashlib
 import json
 import os
 
+import numpy as np
+
+_RESULTS_FILENAME = "results.txt"
+
 
 class Calculator:
     """Base class of the property calculators consumed by ``Reward``.
 
     Subclasses return one float per structure and use NaN to mark failures.
+    External-result calculators exchange those floats through ``results.txt`` in
+    a content-addressed batch directory, so reruns of the same batch reuse the
+    results an external workflow already wrote.
     """
 
     def __init__(self, root_dir: str, task: str):
@@ -28,10 +35,10 @@ class Calculator:
         self.task = task
         os.makedirs(root_dir, exist_ok=True)
 
-    def calc(self, samples, label="tmp"):
+    def calc(self, structures, label="tmp"):
         raise NotImplementedError
 
-    def external_result_dir(self, structures, label):
+    def results_path(self, structures, label):
         payload = json.dumps(
             [structure.as_dict() for structure in structures],
             sort_keys=True,
@@ -40,4 +47,13 @@ class Calculator:
         fingerprint = hashlib.sha256(payload).hexdigest()
         directory = os.path.join(self.root_dir, label, fingerprint)
         os.makedirs(directory, exist_ok=True)
-        return directory
+        return directory, os.path.abspath(os.path.join(directory, _RESULTS_FILENAME))
+
+    def read_results(self, structures, out_path):
+        results = np.loadtxt(out_path, dtype=float, ndmin=1)
+        if results.shape != (len(structures),):
+            raise ValueError(
+                f"{out_path} holds {results.shape[0]} values, "
+                f"expected {len(structures)}"
+            )
+        return results
