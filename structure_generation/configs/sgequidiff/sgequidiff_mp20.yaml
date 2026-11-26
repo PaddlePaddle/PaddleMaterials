@@ -219,7 +219,7 @@ Sample:
     niggli: False
     canocial: True
   metrics:
-    __class_name__: CrystalGenerationMetric
+    __class_name__: ValidityDiversityCoverageMetric
     __init_params__:
       gt_file_path: ./data/mp_20/test.csv
       metrics: [validity, uniqueness, novelty, coverage]

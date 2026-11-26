@@ -14,7 +14,7 @@
 
 """SGEquiDiff model entry points."""
 
-from ppmat.models.sgequidiff.sgequidiff import EquivariantDiffusionModel
 from ppmat.models.sgequidiff.sgequidiff import SGEQuiDiff
+from ppmat.models.sgequidiff.sgequidiff import WyckoffASUCoordinateDiffusion
 
-__all__ = ["SGEQuiDiff", "EquivariantDiffusionModel"]
+__all__ = ["SGEQuiDiff", "WyckoffASUCoordinateDiffusion"]

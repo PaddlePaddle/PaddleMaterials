@@ -25,8 +25,8 @@ import pytest
 from ppmat.metrics.streaming_base import StreamingMetricBase
 from ppmat.models.sgequidiff.asu import build_embedding_tools
 from ppmat.models.sgequidiff.asu import build_wyckoff_geometry
-from ppmat.models.sgequidiff.sgequidiff import EquivariantDiffusionModel
 from ppmat.models.sgequidiff.sgequidiff import SGEQuiDiff
+from ppmat.models.sgequidiff.sgequidiff import WyckoffASUCoordinateDiffusion
 from ppmat.utils.execution import configure_execution_backend
 
 
@@ -81,14 +81,14 @@ def _make_sgequidiff(num_timesteps=2):
 
 @pytest.fixture(scope="module")
 def model():
-    """Lightweight MLP EquivariantDiffusionModel, shared across the class.
+    """Lightweight MLP WyckoffASUCoordinateDiffusion, shared across the class.
 
     Kept small (10 timesteps, tiny embeddings) so the forward/loss checks
     run quickly while still exercising the real score-matching path.
     """
     wyckoff_geometry = build_wyckoff_geometry()
     embedding_tools = build_embedding_tools()
-    return EquivariantDiffusionModel(
+    return WyckoffASUCoordinateDiffusion(
         model_type="mlp",
         num_timesteps=10,
         num_lattice_translations=1,
@@ -498,8 +498,8 @@ def test_dataset_collate_to_model_forward(tmp_path, monkeypatch, dataset_class):
 def test_sgequidiff_metric(tmp_path, monkeypatch):
     """Evaluation pipeline: generation-quality metric over synthetic structures.
 
-    Overall question: does CrystalGenerationMetric return the complete expected
-    metric set (validity / uniqueness / novelty / coverage / distances)
+    Overall question: does ValidityDiversityCoverageMetric return the expected
+    validity / uniqueness / novelty / coverage / distance metrics
     with values in valid ranges? Uses self-contained synthetic CIFs written
     to ``tmp_path``, so the test runs without external data files.
     """
@@ -580,7 +580,7 @@ def test_sgequidiff_metric(tmp_path, monkeypatch):
 
     basic = build_metric(
         {
-            "__class_name__": "CrystalGenerationMetric",
+            "__class_name__": "ValidityDiversityCoverageMetric",
             "__init_params__": {},
         }
     )
@@ -590,7 +590,7 @@ def test_sgequidiff_metric(tmp_path, monkeypatch):
     }
     offline = build_metric(
         {
-            "__class_name__": "CrystalGenerationMetric",
+            "__class_name__": "ValidityDiversityCoverageMetric",
             "__init_params__": {"input_format": "cif_str"},
         }
     )
@@ -735,7 +735,7 @@ def test_trainer_checkpoint_resume(tmp_path):
 def test_execution_backend_protocol():
     """Runtime protocol: backend selection is owned by the diffusion model.
 
-    Overall question: does the SGEQuiDiff <-> EquivariantDiffusionModel
+    Overall question: does the SGEQuiDiff <-> WyckoffASUCoordinateDiffusion
     delegation honor the framework execution-backend contract (backend
     propagation, eager fallback, invalid input rejection, AMP/world-size
     constraints) without changing any state_dict key?

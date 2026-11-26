@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Model-independent validity, diversity and coverage of generated crystals."""
+"""Crystal validity, structural uniqueness/novelty, and fingerprint coverage."""
 
 import json
 from importlib import resources
@@ -26,8 +26,8 @@ from scipy.spatial.distance import cdist
 from ppmat.metrics.streaming_base import StreamingMetricBase
 
 
-class CrystalGenerationMetric(StreamingMetricBase):
-    """Evaluate crystal arrays with a shared batch and streaming implementation.
+class ValidityDiversityCoverageMetric(StreamingMetricBase):
+    """Measure crystal validity, uniqueness, novelty, and fingerprint coverage.
 
     ``input_format`` accepts array, cif_str or cif_file via BuildStructure.
     ``metrics`` selects validity, uniqueness, novelty and/or coverage. Validity
@@ -69,7 +69,9 @@ class CrystalGenerationMetric(StreamingMetricBase):
         self.metrics = tuple(metrics)
         unknown = set(self.metrics) - {"validity", "uniqueness", "novelty", "coverage"}
         if not self.metrics or unknown:
-            raise ValueError(f"Unsupported crystal generation metrics: {self.metrics}")
+            raise ValueError(
+                f"Unsupported validity/diversity/coverage metrics: {self.metrics}"
+            )
         if input_format not in ("array", "cif_str", "cif_file"):
             raise ValueError(f"Unsupported evaluation input format: {input_format}")
         self.input_format = input_format

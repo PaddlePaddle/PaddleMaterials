@@ -3477,8 +3477,8 @@ def compute_sigma_norms(
     return sigma_norms
 
 
-class EquivariantDiffusionModel(RuntimeMixin, nn.Layer):
-    """Space-group equivariant diffusion model modeling crystal coords in ASU."""
+class WyckoffASUCoordinateDiffusion(RuntimeMixin, nn.Layer):
+    """Space-group-equivariant coordinate diffusion within Wyckoff ASU shapes."""
 
     def __init__(
         self,
@@ -4135,7 +4135,7 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
         self.wyckoff_geometry = build_wyckoff_geometry(vocab)
         self.embedding_tools = build_embedding_tools(vocab)
 
-        self.atom_coord_diffusion_model = EquivariantDiffusionModel(
+        self.atom_coord_diffusion_model = WyckoffASUCoordinateDiffusion(
             model_type=model_type,
             num_timesteps=num_timesteps,
             noise_scheduler_num_monte_carlo_samples=noise_scheduler_num_monte_carlo_samples,
@@ -4205,7 +4205,7 @@ class SGEQuiDiff(RuntimeMixin, nn.Layer):
                 aligned with batch labels, so **non-streaming
                 ``compute_metric_func_dict`` metrics are not applicable** here.
                 Generations are scored with the streaming
-                ``CrystalGenerationMetric`` (``stage == "sample"``).
+                ``ValidityDiversityCoverageMetric`` (``stage == "sample"``).
             label_dict : supervision fields passed through with keys identical
                 to the corresponding ``batch`` labels, so per-key
                 pred/label lookups stay aligned when a streaming metric needs

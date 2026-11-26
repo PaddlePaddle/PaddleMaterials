@@ -45,7 +45,8 @@ atom-count, chemical-formula, and property conditioning are unsupported.
 both endpoints. The default uses all 1000 points (999 predictor-corrector
 updates); fewer points are useful for debugging and change generation quality.
 
-`CrystalGenerationMetric` evaluates arrays or CIFs independently of the model.
+`ValidityDiversityCoverageMetric` measures validity, uniqueness, novelty, and
+fingerprint coverage of crystal arrays or CIFs independently of the model.
 Use `input_format: array`, `cif_str`, or `cif_file`; select validity, uniqueness,
 novelty, and coverage through `metrics`.
 Structure/SMACT checks, matcher tolerances, coverage cutoffs, and distance batch
@@ -82,7 +83,7 @@ Both read CSV files containing CIF strings and apply `AsymmetricUnitTransform`.
 | Dataset | Train | Val | Test |
 | --- | --- | --- | --- |
 | [MP-20](https://paddle-org.bj.bcebos.com/paddlematerial/datasets/mp_20/mp_20.zip) | 27136 | 9047 | 9046 |
-| MPTS-52 | 27380 | 5000 | 8096 |
+| [MPTS-52](https://paddle-org.bj.bcebos.com/paddlematerials/datasets/mpts_52/mpts_52.zip) | 27380 | 5000 | 8096 |
 
 Missing CSV splits use the dataset's configured download source. MPTS-52 needs
 the companion CSV archive (`mpts_52/{train,val,test}.csv`); the former ASU-only

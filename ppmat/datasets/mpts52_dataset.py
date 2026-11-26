@@ -19,8 +19,7 @@ class MPTS52Dataset(MP20Dataset):
     """MPTS-52 crystals in the MP20 CSV schema."""
 
     name = "mpts_52"
-    # url = "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/mpts_52/mpts_52.zip"  # noqa
-    url = "http://127.0.0.1/models/mpts_52.zip"
+    url = "https://paddle-org.bj.bcebos.com/paddlematerials/datasets/mpts_52/mpts_52.zip"  # noqa
     md5 = "d9cf6b0fa281c3eb06b1aa2edb53cb76"
 
     def __init__(self, path: str = "./data/mpts_52/train.csv", **kwargs):
