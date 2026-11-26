@@ -60,12 +60,11 @@ class HigherOrderGraphConv(paddle.nn.Layer):
 
 
 class NNConv(paddle.nn.Layer):
-    def __init__(self, in_size, out_size, edge_network, aggregator="sum"):
+    def __init__(self, in_size, out_size, edge_network):
         super().__init__()
         self.in_size = in_size
         self.out_size = out_size
         self.edge_network = edge_network
-        self.aggregator = aggregator
         # DGL ``NNConv`` enables a learnable, zero-initialized output bias by
         # default. Keep it explicit so parameters and numerics match upstream.
         self.bias = self.create_parameter(
@@ -89,12 +88,7 @@ class NNConv(paddle.nn.Layer):
         h_src = paddle.matmul(source_assignment, node_feats).unsqueeze(1)
         msg = paddle.matmul(h_src, edge_weight).squeeze(1)
 
-        if self.aggregator == "sum":
-            aggregated = scatter_sum(msg, dst, dim=0, dim_size=graph.num_nodes)
-        elif self.aggregator == "mean":
-            aggregated = scatter_mean(msg, dst, dim=0, dim_size=graph.num_nodes)
-        else:
-            raise ValueError(f"Unsupported aggregator: {self.aggregator}")
+        aggregated = scatter_sum(msg, dst, dim=0, dim_size=graph.num_nodes)
         return aggregated + self.bias
 
 
@@ -103,7 +97,6 @@ class HigherOrderGRUCell(paddle.nn.Layer):
 
     def __init__(self, input_size, hidden_size):
         super().__init__()
-        self.hidden_size = hidden_size
         self.input_linear = paddle.nn.Linear(input_size, 3 * hidden_size)
         self.hidden_linear = paddle.nn.Linear(hidden_size, 3 * hidden_size)
 
@@ -129,14 +122,12 @@ class MPNNconv(paddle.nn.Layer):
         edge_in_feats,
         node_out_feats=128,
         edge_hidden_feats=32,
-        num_step_message_passing=6,
     ):
         super().__init__()
         self.project_node_feats = paddle.nn.Sequential(
             paddle.nn.Linear(node_in_feats, node_out_feats),
             paddle.nn.ReLU(),
         )
-        self.num_step_message_passing = num_step_message_passing
         edge_network = paddle.nn.Sequential(
             paddle.nn.Linear(edge_in_feats, edge_hidden_feats),
             paddle.nn.ReLU(),
@@ -146,20 +137,13 @@ class MPNNconv(paddle.nn.Layer):
             in_size=node_out_feats,
             out_size=node_out_feats,
             edge_network=edge_network,
-            aggregator="sum",
         )
         self.gru = HigherOrderGRUCell(node_out_feats, node_out_feats)
 
     def forward(self, g, node_feats, edge_feats):
         node_feats = self.project_node_feats(node_feats)
-        hidden_feats = node_feats
-        for _ in range(self.num_step_message_passing):
-            messages = paddle.nn.functional.relu(
-                self.gnn_layer(g, node_feats, edge_feats)
-            )
-            hidden_feats = self.gru(messages, hidden_feats)
-            node_feats = hidden_feats
-        return node_feats
+        messages = paddle.nn.functional.relu(self.gnn_layer(g, node_feats, edge_feats))
+        return self.gru(messages, node_feats)
 
 
 class GEGNNBinary(paddle.nn.Layer):
@@ -198,7 +182,6 @@ class GEGNNBinary(paddle.nn.Layer):
             edge_in_feats=edge_in_feats,
             node_out_feats=hidden_dim,
             edge_hidden_feats=32,
-            num_step_message_passing=1,
         )
         self.mlp_activation = getattr(paddle.nn.functional, mlp_activation)
         self.mfp_trans = paddle.nn.Linear(hidden_dim + 1, hidden_dim + 1)
@@ -215,8 +198,7 @@ class GEGNNBinary(paddle.nn.Layer):
             raise ValueError(
                 f"Checkpoint edge feature dimension is {state_dict[key].shape[0]}, "
                 f"but the model expects {self.edge_in_feats}. Set edge_in_feats="
-                f"{state_dict[key].shape[0]} for these weights. Legacy checkpoints "
-                "require three features; reference-model weights require one."
+                f"{state_dict[key].shape[0]} for these weights."
             )
         return super().set_state_dict(state_dict, *args, **kwargs)
 

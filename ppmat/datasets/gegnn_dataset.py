@@ -135,7 +135,6 @@ class BinaryActivityDataset(Dataset):
         logger.info(f"Cache path: {self.cache_path}")
 
         self.cache_exists = osp.exists(self.cache_path)
-        self.overwrite = overwrite
 
         self.dataset = self.read_data(path)
         self.num_samples = len(self.dataset)
@@ -149,6 +148,10 @@ class BinaryActivityDataset(Dataset):
         self.num_solvents = len(self.solvent_ids)
 
         graph_cache_path = osp.join(self.cache_path, "graphs")
+        self.graphs = [
+            osp.join(graph_cache_path, f"{index:010d}.pkl")
+            for index in range(self.num_solvents)
+        ]
         config_cache_path = osp.join(self.cache_path, "build_graph_cfg.pkl")
 
         cache_config = {
@@ -163,11 +166,7 @@ class BinaryActivityDataset(Dataset):
         need_rebuild = overwrite or not self.cache_exists
         if self.cache_exists and not overwrite:
             try:
-                graph_paths = [
-                    osp.join(graph_cache_path, f"{index:010d}.pkl")
-                    for index in range(self.num_solvents)
-                ]
-                if not all(osp.exists(p) for p in graph_paths):
+                if not all(osp.exists(path) for path in self.graphs):
                     raise FileNotFoundError("The cached graph files are incomplete.")
                 cached_config = self.load_from_cache(config_cache_path)
                 if is_equal(cached_config, cache_config):
@@ -195,20 +194,14 @@ class BinaryActivityDataset(Dataset):
                     build_graph_converter(self.build_graph_cfg),
                     self.build_molecule_cfg,
                 )
-                for index, solvent_id in enumerate(self.solvent_ids):
+                for graph_path, solvent_id in zip(self.graphs, self.solvent_ids):
                     self.save_to_cache(
-                        osp.join(graph_cache_path, f"{index:010d}.pkl"),
-                        build_solvent(self.solvent_smiles[solvent_id]),
+                        graph_path, build_solvent(self.solvent_smiles[solvent_id])
                     )
                 self.save_to_cache(config_cache_path, cache_config)
                 logger.info(f"Save {self.num_solvents} graphs to {graph_cache_path}")
             if dist.is_initialized():
                 dist.barrier()
-
-        self.graphs = [
-            osp.join(graph_cache_path, f"{index:010d}.pkl")
-            for index in range(self.num_solvents)
-        ]
 
     def read_data(self, path):
         """Read the binary-mixture records."""
