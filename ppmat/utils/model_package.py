@@ -16,10 +16,18 @@ from pathlib import Path
 
 
 def resolve_model_package_dir(model_name: str, extracted_path: str) -> str:
-    """Resolve either a flat or one-directory-deep model package."""
+    """Resolve either a flat or one-directory-deep model package.
+
+    Archives without explicit directory entries make ``get_path_from_url``
+    return a path below the extraction directory (derived from the first
+    archive entry), so the archive's ``<model_name>/`` package directory is
+    also looked up beside the returned path.
+    """
 
     root = Path(extracted_path)
-    candidates = (root, root / model_name)
+    candidates = tuple(
+        dict.fromkeys((root, root / model_name, root.parent / model_name))
+    )
     valid = [
         candidate
         for candidate in candidates

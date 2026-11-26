@@ -29,6 +29,7 @@ from ppmat.trainer.base_trainer import BaseTrainer
 from ppmat.utils import logger
 from ppmat.utils import misc
 from ppmat.utils.io import append_timestamp_to_output_dir
+from ppmat.vocab import build_vocab
 
 if dist.get_world_size() > 1:
     fleet.init(is_collective=True)
@@ -72,7 +73,8 @@ if __name__ == "__main__":
 
     # build model from config
     model_cfg = config["Model"]
-    model = build_model(model_cfg)
+    vocab = build_vocab(config.get("Vocabulary"))
+    model = build_model(model_cfg, vocab=vocab)
 
     # build dataloader from config
     set_signal_handlers()

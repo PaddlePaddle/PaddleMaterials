@@ -21,6 +21,7 @@ from typing import Optional
 
 from omegaconf import OmegaConf
 
+from ppmat.models.chemeleon.chemeleon import Chemeleon
 from ppmat.models.chgnet.chgnet import CHGNet
 from ppmat.models.chgnet.chgnet_graph_converter import CHGNetGraphConverter
 from ppmat.models.comformer.comformer import iComformer
@@ -75,6 +76,7 @@ __all__ = [
     "InfGCN",
     "SFIN",
     "SphereNet",
+    "Chemeleon",
 ]
 
 # Warning:
@@ -105,6 +107,7 @@ MODEL_REGISTRY = {
     "megnet_jarvis_dft_2d_e_form": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/megnet/megnet_jarvis_dft_2d_e_form.zip",
     "megnet_jarvis_dft_3d_e_form": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/megnet/megnet_jarvis_dft_3d_e_form.zip",
     "megnet_jarvis_alex_pbe_2d_all_e_form": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/property_prediction/megnet/megnet_jarvis_alex_pbe_2d_all_e_form.zip",
+    "chemeleon_mp40": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/Chemeleon/chemeleon_mp40.zip",
     "diffcsp_mp20": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/diffcsp/diffcsp_mp20.zip",
     "diffcsp_mp20_ab_initio": "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/diffcsp/diffcsp_mp20_ab_initio.zip",
     "mattergen_mp20": "https://paddle-org.bj.bcebos.com/paddlematerial/checkpoints/structure_generation/mattergen/mattergen_mp20.zip",
