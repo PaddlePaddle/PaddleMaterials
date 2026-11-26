@@ -71,18 +71,23 @@ class Reward:
             if calc is None:
                 calculator_cfg = dict(cfg["calculator"])
                 cls_name = calculator_cfg.pop("__class_name__")
+                init_params = dict(calculator_cfg.pop("__init_params__"))
+                if calculator_cfg:
+                    raise ValueError(
+                        f"Unexpected calculator keys: {sorted(calculator_cfg)}"
+                    )
                 if cls_name not in CALCULATOR_REGISTRY:
                     raise ValueError(
                         f"Unknown calculator: {cls_name}, available: "
                         f"{sorted(CALCULATOR_REGISTRY)}"
                     )
-                if "root_dir" in calculator_cfg:
+                if "root_dir" in init_params:
                     raise ValueError(
                         "calculator root_dir is owned by Reward and must not be set "
                         "in the config"
                     )
                 calc = CALCULATOR_REGISTRY[cls_name](
-                    root_dir=os.path.join(self.root_dir, cfg["name"]), **calculator_cfg
+                    root_dir=os.path.join(self.root_dir, cfg["name"]), **init_params
                 )
                 self._cache[idx] = calc
             raw = np.asarray(calc.calc(structures, label), dtype=float)

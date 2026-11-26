@@ -31,19 +31,51 @@ from ppmat.utils.paddle_utils import randn_tensor
 class MatinventDDPMScheduler(DDPMScheduler):
     """MatInvent beta bounds and reference reverse-diffusion arithmetic."""
 
-    def __init__(self, beta_clip_min=0.0, beta_clip_max=0.999, **kwargs):
+    def __init__(
+        self,
+        num_train_timesteps: int = 1000,
+        beta_start: float = 0.0001,
+        beta_end: float = 0.02,
+        beta_schedule: str = "linear",
+        trained_betas=None,
+        variance_type: str = "fixed_small",
+        clip_sample: bool = True,
+        prediction_type: str = "epsilon",
+        thresholding: bool = False,
+        dynamic_thresholding_ratio: float = 0.995,
+        clip_sample_range: float = 1.0,
+        sample_max_value: float = 1.0,
+        timestep_spacing: str = "leading",
+        steps_offset: int = 0,
+        rescale_betas_zero_snr: bool = False,
+        beta_clip_min: float = 0.0,
+        beta_clip_max: float = 0.999,
+    ):
         if not 0.0 <= beta_clip_min <= beta_clip_max < 1.0:
             raise ValueError("Require 0 <= beta_clip_min <= beta_clip_max < 1")
         self.beta_clip_min = beta_clip_min
         self.beta_clip_max = beta_clip_max
-        if (
-            kwargs.get("trained_betas") is None
-            and kwargs.get("beta_schedule", "linear") == "squaredcos_cap_v2"
-        ):
-            kwargs["trained_betas"] = betas_for_alpha_bar(
-                kwargs.get("num_train_timesteps", 1000), max_beta=beta_clip_max
+        if trained_betas is None and beta_schedule == "squaredcos_cap_v2":
+            trained_betas = betas_for_alpha_bar(
+                num_train_timesteps, max_beta=beta_clip_max
             ).clip(min=beta_clip_min, max=beta_clip_max)
-        super().__init__(**kwargs)
+        super().__init__(
+            num_train_timesteps=num_train_timesteps,
+            beta_start=beta_start,
+            beta_end=beta_end,
+            beta_schedule=beta_schedule,
+            trained_betas=trained_betas,
+            variance_type=variance_type,
+            clip_sample=clip_sample,
+            prediction_type=prediction_type,
+            thresholding=thresholding,
+            dynamic_thresholding_ratio=dynamic_thresholding_ratio,
+            clip_sample_range=clip_sample_range,
+            sample_max_value=sample_max_value,
+            timestep_spacing=timestep_spacing,
+            steps_offset=steps_offset,
+            rescale_betas_zero_snr=rescale_betas_zero_snr,
+        )
         alphas_cumprod_prev = paddle.concat(
             [
                 paddle.ones([1], dtype=self.alphas_cumprod.dtype),

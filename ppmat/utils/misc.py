@@ -615,6 +615,8 @@ def repeat_blocks(
     """
     assert sizes.dim() == 1
     assert all(sizes >= 0)
+    if sizes.shape[0] == 0:
+        return paddle.zeros([0], dtype="int64")
     sizes_nonzero = sizes > 0
     if not paddle.all(x=sizes_nonzero):
         assert block_inc == 0

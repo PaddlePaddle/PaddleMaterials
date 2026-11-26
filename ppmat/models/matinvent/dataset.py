@@ -14,15 +14,18 @@
 
 """RL-side data pipeline for MatInvent.
 
-Samples carry the RL ``reward`` and feed the backbones' ``num_atoms`` /
-``atom_types`` conventions, so they stay under the model directory.
+Generated structures carry the reward of the round that produced them, so the
+samples follow the ``structure_array`` contract of the framework datasets and
+keep ``reward`` at the top level of the batch.
 """
 
 import os
 from functools import lru_cache
+from typing import Callable
 from typing import List
 
 import numpy as np
+import paddle
 import paddle.io as io
 import smact
 from pymatgen.core.structure import Structure
@@ -106,8 +109,25 @@ def save_structures(structures: List[Structure], save_dir: str, filename: str) -
     logger.info(f"Saved {len(structures)} structures to {out_path}")
 
 
+def to_tensor_batch(batch):
+    """Move the numpy leaves produced by ``DefaultCollator`` onto the device."""
+    return paddle.utils.map_structure(
+        lambda value: paddle.to_tensor(value)
+        if isinstance(value, np.ndarray)
+        else value,
+        batch,
+    )
+
+
 class RLDataset(io.Dataset):
-    def __init__(self, structures: List[Structure], rewards: np.ndarray):
+    """Generated structures labelled with the reward of their round."""
+
+    def __init__(
+        self,
+        structures: List[Structure],
+        rewards: np.ndarray,
+        transforms: Callable = None,
+    ):
         if len(structures) != len(rewards):
             raise ValueError(
                 f"structures and rewards must have the same length, but got "
@@ -115,25 +135,43 @@ class RLDataset(io.Dataset):
             )
         self.structures = structures
         self.rewards = rewards
+        self.transforms = transforms
         logger.info(f"Created RLDataset with {len(structures)} samples")
 
     def __len__(self):
         return len(self.structures)
 
     def __getitem__(self, idx):
-        s = self.structures[idx]
-        frac = np.array([site.frac_coords for site in s.sites], dtype=np.float32)
-        return {
+        structure = self.structures[idx]
+        lattice_parameters = structure.lattice.parameters
+        data = {
             "structure_array": {
-                "frac_coords": ConcatData(frac),
-                "atom_types": ConcatData(
-                    np.array([site.specie.Z for site in s.sites], dtype=np.int64)
+                "frac_coords": ConcatData(
+                    np.array(
+                        [site.frac_coords for site in structure.sites], dtype=np.float32
+                    )
                 ),
-                "lattice": s.lattice.matrix.astype(np.float32),
-                "num_atoms": len(s),
-                "reward": np.float32(self.rewards[idx]),
-            }
+                "atom_types": ConcatData(
+                    np.array(
+                        [site.specie.Z for site in structure.sites], dtype=np.int64
+                    )
+                ),
+                "lattice": ConcatData(
+                    structure.lattice.matrix.astype(np.float32).reshape(1, 3, 3)
+                ),
+                "lengths": ConcatData(
+                    np.array(lattice_parameters[:3], dtype=np.float32).reshape(1, 3)
+                ),
+                "angles": ConcatData(
+                    np.array(lattice_parameters[3:], dtype=np.float32).reshape(1, 3)
+                ),
+                "num_atoms": len(structure),
+            },
+            "reward": np.float32(self.rewards[idx]),
         }
+        if self.transforms is not None:
+            data = self.transforms(data)
+        return data
 
 
 def create_rl_dataloader(
@@ -142,9 +180,10 @@ def create_rl_dataloader(
     batch_size: int = 8,
     shuffle: bool = True,
     num_workers: int = 0,
+    transforms: Callable = None,
 ) -> io.DataLoader:
     dl = io.DataLoader(
-        dataset=RLDataset(structures, rewards),
+        dataset=RLDataset(structures, rewards, transforms=transforms),
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=num_workers,

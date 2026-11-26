@@ -1418,6 +1418,10 @@ class GemNetT(paddle.nn.Layer):
         id3_ragged_idx: paddle.Tensor, shape (num_triplets,)
             Indices enumerating the copies of id3_ca for creating a padded matrix
         """
+        if edge_index.shape[1] == 0:
+            empty = paddle.zeros([0], dtype="int64")
+            return empty, empty.clone(), empty.clone()
+
         idx_s, idx_t = edge_index
         value = paddle.arange(start=1, end=idx_s.shape[0] + 1, dtype=idx_s.dtype)
 
@@ -1483,6 +1487,13 @@ class GemNetT(paddle.nn.Layer):
         including the cell_offsets, and then running paddle.unique.
         But this does not seem worth it.
         """
+        if edge_index.shape[1] == 0:
+            empty_index = paddle.zeros([2, 0], dtype="int64")
+            empty_offsets = paddle.zeros([0, 3], dtype="int64")
+            empty_values = paddle.zeros([0], dtype=edge_dist.dtype)
+            empty_vectors = paddle.zeros([0, 3], dtype=edge_vector.dtype)
+            return empty_index, empty_offsets, neighbors, empty_values, empty_vectors
+
         mask_sep_atoms = edge_index[0] < edge_index[1]
         cell_earlier = (
             (cell_offsets[:, 0] < 0)
@@ -1569,15 +1580,17 @@ class GemNetT(paddle.nn.Layer):
         )
         block_sizes = neighbors // 2
         block_sizes = paddle.masked_select(x=block_sizes, mask=block_sizes > 0)
-
-        id_swap = repeat_blocks(
-            block_sizes,
-            repeats=2,
-            continuous_indexing=False,
-            start_idx=block_sizes[0],
-            block_inc=block_sizes[:-1] + block_sizes[1:],
-            repeat_inc=-block_sizes,
-        )
+        if block_sizes.shape[0] == 0:
+            id_swap = paddle.zeros([0], dtype="int64")
+        else:
+            id_swap = repeat_blocks(
+                block_sizes,
+                repeats=2,
+                continuous_indexing=False,
+                start_idx=block_sizes[0],
+                block_inc=block_sizes[:-1] + block_sizes[1:],
+                repeat_inc=-block_sizes,
+            )
 
         id3_ba, id3_ca, id3_ragged_idx = self.get_triplets(
             edge_index, num_atoms=num_atoms.sum()
@@ -2293,12 +2306,21 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
 
     def forward(self, batch) -> Any:
         structure_array = batch["structure_array"]
+        times = self.timestep_sampler(structure_array["num_atoms"].shape[0])
+        denoised = self.denoise_with_time(structure_array, times)
+        return {"loss_dict": self._reduce_denoise_loss(denoised["loss_dict"])}
+
+    def denoise_with_time(self, structure_array, times):
+        """Corrupt ``structure_array`` at ``times`` and denoise it.
+
+        Per-graph losses and raw predictions are returned so that callers needing
+        per-structure weighting share the exact arithmetic of ``forward``.
+        """
         num_atoms = structure_array["num_atoms"]
         batch_size = structure_array["num_atoms"].shape[0]
         batch_idx = paddle.repeat_interleave(
             paddle.arange(batch_size), repeats=structure_array["num_atoms"]
         )
-        times = self.timestep_sampler(batch_size)
 
         # coord noise
         frac_coords = structure_array["frac_coords"] % 1.0
@@ -2373,19 +2395,16 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
         loss_lattice = loss_lattice.mean(axis=[1, 2])
 
         if self.atom_scheduler is None:
-            # CSP mode: atom types are not part of the loss
-            loss_coord = loss_coord.mean()
-            loss_lattice = loss_lattice.mean()
-            loss = (
-                self.coord_loss_weight * loss_coord
-                + self.lattice_loss_weight * loss_lattice
-            )
+            # CSP mode: atom types are never corrupted or scored
             return {
                 "loss_dict": {
-                    "loss": loss,
                     "loss_coord": loss_coord,
                     "loss_lattice": loss_lattice,
-                }
+                },
+                "pred_dict": {
+                    "frac_coords": score_model_output["frac_coords"],
+                    "lattice": score_model_output["lattice"],
+                },
             }
 
         # atom type loss
@@ -2403,27 +2422,43 @@ class MatterGen(RuntimeMixin, paddle.nn.Layer):
             reduce="sum",
             d3pm_hybrid_lambda=self.d3pm_hybrid_lambda,
         )
-
-        loss_coord = loss_coord.mean()
-        loss_lattice = loss_lattice.mean()
-        loss_atom_type = loss_atom_type.mean()
-        base_loss_atom_type = base_loss_atom_type.mean()
-        cross_entropy_atom_type = cross_entropy_atom_type.mean()
-
-        loss = (
-            self.coord_loss_weight * loss_coord
-            + self.lattice_loss_weight * loss_lattice
-            + self.atom_loss_weight * loss_atom_type
-        )
         return {
             "loss_dict": {
-                "loss": loss,
                 "loss_coord": loss_coord,
                 "loss_lattice": loss_lattice,
                 "loss_atom_type": loss_atom_type,
                 "base_loss_atom_type": base_loss_atom_type,
                 "cross_entropy_atom_type": cross_entropy_atom_type,
+            },
+            "pred_dict": {
+                "frac_coords": score_model_output["frac_coords"],
+                "lattice": score_model_output["lattice"],
+                "atom_types": score_model_output["atom_types"],
+            },
+        }
+
+    def _reduce_denoise_loss(self, loss_dict):
+        loss_coord = loss_dict["loss_coord"].mean()
+        loss_lattice = loss_dict["loss_lattice"].mean()
+        loss = (
+            self.coord_loss_weight * loss_coord
+            + self.lattice_loss_weight * loss_lattice
+        )
+        if "loss_atom_type" not in loss_dict:
+            return {
+                "loss": loss,
+                "loss_coord": loss_coord,
+                "loss_lattice": loss_lattice,
             }
+
+        loss_atom_type = loss_dict["loss_atom_type"].mean()
+        return {
+            "loss": loss + self.atom_loss_weight * loss_atom_type,
+            "loss_coord": loss_coord,
+            "loss_lattice": loss_lattice,
+            "loss_atom_type": loss_atom_type,
+            "base_loss_atom_type": loss_dict["base_loss_atom_type"].mean(),
+            "cross_entropy_atom_type": loss_dict["cross_entropy_atom_type"].mean(),
         }
 
     @paddle.no_grad()

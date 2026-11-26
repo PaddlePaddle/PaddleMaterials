@@ -50,6 +50,8 @@ def _radius_graph_pbc(
 class MatinventMatterGen(MatterGen):
     """MatterGen whose interaction graph uses the Paddle-safe PBC build."""
 
+    continuous_timesteps = True
+
     def __init__(
         self,
         decoder_cfg: dict,

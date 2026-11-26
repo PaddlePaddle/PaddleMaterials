@@ -21,25 +21,21 @@ from ppmat.datasets.build_structure import BuildStructure
 from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
 from ppmat.utils import logger
 
-# Reference DiffCSP samples atom types over atomic numbers 1..100.
+# Reference propensity to sample atom types over atomic numbers 1..100.
 _MAX_ATOMIC_NUM = 100
 
 
 class MatInventSampler:
-    """Prepare RL inputs and parse samples from the current in-memory agent."""
+    """Draw structures from a MatInvent backbone during an RL round."""
 
     def __init__(
         self,
-        model_type: str,
         batch_size: int,
         num_batches: int,
         num_inference_steps: int,
         build_structure_cfg: dict,
         atom_count_distribution: str = "ALEX_MP_20",
     ):
-        if model_type not in ("diffcsp", "mattergen"):
-            raise ValueError(f"Unsupported MatInvent model type: {model_type}")
-        self.model_type = model_type
         self.batch_size = batch_size
         self.num_batches = num_batches
         self.num_inference_steps = num_inference_steps
@@ -56,7 +52,8 @@ class MatInventSampler:
             ).num_atoms
             num_atoms = paddle.to_tensor(counts, dtype="int64")
             inputs = {"num_atoms": num_atoms}
-            if self.model_type == "diffcsp":
+            if not model.supports_num_atoms_sampling:
+                # Fixed-composition generation needs atom types alongside the counts.
                 inputs["atom_types"] = paddle.randint(
                     low=1,
                     high=_MAX_ATOMIC_NUM + 1,
