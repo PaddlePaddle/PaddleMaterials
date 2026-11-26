@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ppmat.models.matinvent.diffcsp import MatinventDiffCSP
-from ppmat.models.matinvent.mattergen import MatinventMatterGen
+from ppmat.models.matinvent.matinvent import MatinventDiffCSP
+from ppmat.models.matinvent.matinvent import MatinventMatterGen
 
 __all__ = ["MatinventDiffCSP", "MatinventMatterGen"]

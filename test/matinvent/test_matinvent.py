@@ -19,6 +19,7 @@ registered weight packages, the round-based trainer and the CINN boundary.
 """
 
 import copy
+import csv
 import importlib.util
 import os
 import pathlib
@@ -36,6 +37,7 @@ from pymatgen.core.structure import Structure
 from pymatgen.io.ase import AseAtomsAdaptor
 
 from ppmat.calculator.ase import ASECalculator
+from ppmat.datasets import build_dataloader
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.datasets.transform import build_transforms
@@ -44,17 +46,15 @@ from ppmat.models.matinvent import MatinventDiffCSP
 from ppmat.models.matinvent import MatinventMatterGen
 from ppmat.models.matinvent import benchmark as matinvent_benchmark
 from ppmat.models.matinvent.dataset import RLDataset
-from ppmat.models.matinvent.dataset import create_rl_dataloader
 from ppmat.models.matinvent.dataset import to_tensor_batch
 from ppmat.models.matinvent.qualification import _MatterSimCalculator
 from ppmat.models.matinvent.rewards.reward import CALCULATOR_REGISTRY
 from ppmat.models.matinvent.rewards.reward import Reward
 from ppmat.models.matinvent.sampler import MatInventSampler
-from ppmat.models.matinvent.trainer import MatInventTrainer
+from ppmat.models.matinvent.training import MatInventTraining
 from ppmat.optimizer import build_optimizer
 from ppmat.predictor.potential_predictor import PotentialPredictor
-from ppmat.trainer import build_trainer
-from ppmat.trainer.trainer_state import TrainerState
+from ppmat.trainer.base_trainer import BaseTrainer
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 _CONFIG_ROOT = _REPO_ROOT / "structure_generation" / "configs" / "matinvent"
@@ -92,6 +92,18 @@ def _tiny_model_cfg(model_type):
     config = _load_config(model_type)
     model_cfg = copy.deepcopy(config["Model"])
     params = model_cfg["__init_params__"]
+    if model_type != "mattergen":
+        params["num_train_timesteps"] = 16
+        for name in (
+            "lattice_noise_scheduler_cfg",
+            "coord_noise_scheduler_cfg",
+            "atom_noise_scheduler_cfg",
+        ):
+            scheduler = params.get(name)
+            if scheduler is not None:
+                scheduler["__init_params__"]["num_train_timesteps"] = params[
+                    "num_train_timesteps"
+                ]
     if model_type == "mattergen":
         # Hidden and latent widths must stay coupled for the denoiser concat.
         params["decoder_cfg"]["hidden_dim"] = 32
@@ -154,8 +166,8 @@ def _write_package(directory, model_type, package_name, model_cfg=None):
     config["Model"] = (
         model_cfg if model_cfg is not None else _tiny_model_cfg(model_type)
     )
-    config["Trainer"]["__init_params__"]["qualification_cfg"] = None
-    config["Trainer"]["__init_params__"]["pretrained_model_name"] = None
+    config["Model"]["__init_params__"]["training_cfg"]["qualification_cfg"] = None
+    config["Trainer"]["pretrained_model_path"] = None
     with paddle.utils.unique_name.guard():
         paddle.seed(_DISPATCH_SEED)
         model = build_model(config["Model"])
@@ -181,7 +193,9 @@ def _denoise_inputs(model_type, model):
             "batch": batch_idx,
         }
         return (noise_batch, paddle.full([1], 0.5, dtype="float32"))
-    time_emb = model.time_embedding(paddle.full([1], 500, dtype="int64"))
+    time_emb = model.time_embedding(
+        paddle.full([1], model.num_train_timesteps // 2, dtype="int64")
+    )
     return (time_emb, atom_types - 1, frac_coords, lattice, num_atoms, batch_idx)
 
 
@@ -239,16 +253,22 @@ class _FakeReward:
 def _round_config(model_type, tmp_path, package_name):
     config = _load_config(model_type)
     config["Model"] = _tiny_model_cfg(model_type)
-    params = config["Trainer"]["__init_params__"]
-    params["pretrained_model_name"] = package_name
+    params = config["Model"]["__init_params__"]["training_cfg"]
     params["qualification_cfg"] = None
     params["topk_ratio"] = 0.5
     params["replay_cfg"] = None
     params["sample_cfg"] = {
-        "batch_size": 2,
-        "num_batches": 1,
+        "data_cfg": {
+            "dataset": {
+                "__class_name__": "NumAtomsCrystalDataset",
+                "__init_params__": {"total_num": 2, "dist_name": "MP_20"},
+            },
+            "sampler": {
+                "__class_name__": "BatchSampler",
+                "__init_params__": {"batch_size": 2, "shuffle": False},
+            },
+        },
         "num_inference_steps": 2,
-        "atom_count_distribution": "MP_20",
     }
     params["finetune_cfg"] = {
         "batch_size": 2,
@@ -266,46 +286,64 @@ def _round_config(model_type, tmp_path, package_name):
     params["early_stop_cfg"]["enabled"] = False
     config["Trainer"]["output_dir"] = str(pathlib.Path(tmp_path) / "output")
     config["Trainer"]["max_epochs"] = 2
+    config["Trainer"]["gradient_accumulation_steps"] = 2
     return config
 
 
+def _round_loader(config, tmp_path):
+    path = pathlib.Path(tmp_path) / "anchors.csv"
+    with path.open("w") as file:
+        writer = csv.DictWriter(file, fieldnames=["cif"])
+        writer.writeheader()
+        writer.writerows(
+            {"cif": structure.to(fmt="cif")} for structure in _structures()
+        )
+    data_cfg = copy.deepcopy(config["Dataset"]["train"])
+    params = data_cfg["dataset"]["__init_params__"]
+    params["path"] = str(path)
+    params["cache_path"] = str(pathlib.Path(tmp_path) / "anchor_cache")
+    params["build_structure_cfg"]["num_cpus"] = 1
+    params["finetune_cfg"] = config["Model"]["__init_params__"]["training_cfg"][
+        "finetune_cfg"
+    ]
+    return build_dataloader(data_cfg)
+
+
 def _build_trainer(config, model, loader, monkeypatch, package_dir):
-    optimizer, lr_scheduler = build_optimizer(config["Optimizer"], (model,), 2, 1)
-    monkeypatch.setattr(
-        MatInventTrainer,
-        "_resolve_package",
-        staticmethod(lambda name: str(package_dir)),
+    optimizer, lr_scheduler = build_optimizer(
+        config["Optimizer"], model, config["Trainer"]["max_epochs"], len(loader)
     )
-    return build_trainer(
+    config["Trainer"]["pretrained_model_path"] = str(package_dir)
+    config["Trainer"]["pretrained_weight_name"] = _WEIGHTS_NAME
+    return BaseTrainer(
         config["Trainer"],
-        model=model,
+        model,
         train_dataloader=loader,
-        val_dataloader=loader,
+        val_dataloader=_make_loader(),
         optimizer=optimizer,
         lr_scheduler=lr_scheduler,
-        compute_metric_func_dict=None,
-        execution_config=None,
     )
 
 
-def _attach_fake_loop(trainer):
-    trainer.rl_loop.sampler = _FakeSampler(_structures())
-    trainer.rl_loop.reward = _FakeReward()
-    return trainer
-
-
-def _make_round_env(monkeypatch, tmp_path, model_type):
+def _make_round_env(monkeypatch, tmp_path, model_type, timesteps=2, epochs=1):
     package_name, package_dir = _write_package(
         tmp_path, model_type, f"test_{model_type}"
     )
     config = _round_config(model_type, tmp_path, package_name)
-    model = _make_model(model_type)
-    loader = _make_loader()
-    trainer = _attach_fake_loop(
-        _build_trainer(config, model, loader, monkeypatch, package_dir)
-    )
-    trainer.state = TrainerState()
-    trainer.state.epoch = 1
+    params = config["Model"]["__init_params__"]["training_cfg"]
+    params["finetune_cfg"].update(timesteps=timesteps, epochs=epochs)
+    with paddle.utils.unique_name.guard():
+        model = build_model(config["Model"])
+    loader = _round_loader(config, tmp_path)
+    original_init = MatInventTraining.__init__
+
+    def initialize(context, trainer, cfg):
+        original_init(context, trainer, cfg)
+        context.loop.sampler = _FakeSampler(_structures())
+        context.loop.reward = _FakeReward()
+
+    monkeypatch.setattr(MatInventTraining, "__init__", initialize)
+    trainer = _build_trainer(config, model, loader, monkeypatch, package_dir)
     return config, trainer, loader
 
 
@@ -325,11 +363,22 @@ class TestConfigContract:
         ]
         assert set(config["Dataset"]) == {"train", "val", "test"}
         assert "lr" in config["Optimizer"]["__init_params__"]
-        assert config["Trainer"]["__class_name__"].startswith("ppmat.models.")
+        assert "__class_name__" not in config["Trainer"]
         assert config["Sample"]["model_sample_params"]["num_inference_steps"] > 0
         assert config["Sample"]["build_structure_cfg"]["format"] == "array"
         model = build_model(config["Model"])
         assert isinstance(model, _MODEL_CLASS[model_type])
+        if model_type == "mattergen":
+            for block in model.model.gemnet.out_blocks:
+                assert not {
+                    "dense_rbf",
+                    "scale_sum",
+                    "layers",
+                    "seq_energy",
+                    "out_energy",
+                } & set(block._sub_layers)
+        else:
+            assert not any(".prop_mlp." in name for name in model.state_dict())
         for split in ("train", "val", "test"):
             transforms = config["Dataset"][split]["dataset"]["__init_params__"][
                 "transforms"
@@ -340,33 +389,64 @@ class TestConfigContract:
                 assert transforms == []
 
     @pytest.mark.parametrize("model_type", list(_TASK_CONFIG))
-    def test_trainer_params_are_consumed(self, model_type):
-        import inspect
-
+    def test_training_recipe_matches_dataset_and_accumulation(self, model_type):
         config = _load_config(model_type)
-        signature = set(inspect.signature(MatInventTrainer.__init__).parameters)
-        params = set(config["Trainer"]["__init_params__"])
-        assert params <= signature
-        sample = config["Trainer"]["__init_params__"]["sample_cfg"]
-        assert set(sample) <= {
-            "batch_size",
-            "num_batches",
-            "num_inference_steps",
-            "max_num",
-            "atom_count_distribution",
-        }
-        finetune = config["Trainer"]["__init_params__"]["finetune_cfg"]
-        assert set(finetune) == {
-            "batch_size",
-            "epochs",
-            "timesteps",
-            "accum_steps",
-            "sigma",
-        }
+        recipe = config["Model"]["__init_params__"]["training_cfg"]
+        assert "pretrained_model_name" not in recipe
+        assert (
+            config["Dataset"]["train"]["dataset"]["__init_params__"]["finetune_cfg"]
+            == recipe["finetune_cfg"]
+        )
+        assert (
+            config["Trainer"]["gradient_accumulation_steps"]
+            == recipe["finetune_cfg"]["accum_steps"]
+        )
 
 
 class TestModelContracts:
     """Backbones share the forward/sample/denoise contract of the framework."""
+
+    @pytest.mark.parametrize("model_type", list(_TASK_CONFIG))
+    def test_prior_regularization_reuses_corruption(self, model_type):
+        agent = _make_model(model_type)
+        prior = copy.deepcopy(agent)
+        prior.eval()
+        for parameter in prior.parameters():
+            parameter.stop_gradient = True
+        agent.train()
+        batch = _batch()["structure_array"]
+        times = paddle.full(
+            [2],
+            0.5 if agent.continuous_timesteps else agent.num_train_timesteps // 2,
+            dtype="float32" if agent.continuous_timesteps else "int64",
+        )
+        denoised = agent.denoise_with_time(batch, times)
+        with paddle.no_grad():
+            reference = prior.denoise_with_time(
+                batch, times, noise_state=denoised["noise_state"]
+            )
+        assert reference["noise_state"] is denoised["noise_state"]
+        for name, value in denoised["pred_dict"].items():
+            np.testing.assert_array_equal(
+                value.numpy(), reference["pred_dict"][name].numpy()
+            )
+        for name, value in denoised["loss_dict"].items():
+            np.testing.assert_array_equal(
+                value.numpy(), reference["loss_dict"][name].numpy()
+            )
+        loss = (
+            agent.lattice_loss_weight * denoised["loss_dict"]["loss_lattice"].mean()
+            + agent.coord_loss_weight * denoised["loss_dict"]["loss_coord"].mean()
+        )
+        if "loss_atom_type" in denoised["loss_dict"]:
+            loss += (
+                agent.atom_loss_weight * denoised["loss_dict"]["loss_atom_type"].mean()
+            )
+        loss.backward()
+        active = [p for p in agent.parameters() if not p.stop_gradient]
+        assert all(p.grad is not None for p in active)
+        assert all(bool(paddle.isfinite(p.grad).all()) for p in active)
+        assert all(p.grad is None for p in prior.parameters())
 
     @pytest.mark.parametrize("model_type", ["mattergen", "diffcsp", "diffcsp_joint"])
     def test_forward_composes_denoise_with_time(self, model_type):
@@ -374,7 +454,7 @@ class TestModelContracts:
         batch = _batch()
         times = paddle.full(
             [2],
-            0.5 if model.continuous_timesteps else 500,
+            0.5 if model.continuous_timesteps else model.num_train_timesteps // 2,
             dtype="float32" if model.continuous_timesteps else "int64",
         )
         paddle.seed(_DISPATCH_SEED)
@@ -394,7 +474,7 @@ class TestModelContracts:
                 forward = model(batch)["loss_dict"]
         else:
             with mock.patch(
-                "ppmat.models.matinvent.diffcsp.uniform_sample_t",
+                "ppmat.models.matinvent.matinvent.uniform_sample_t",
                 return_value=times,
             ):
                 forward = model(batch)["loss_dict"]
@@ -433,6 +513,10 @@ class TestModelContracts:
                 num_inference_steps=2,
             )
         assert atom_step.call_count == 2
+        np.testing.assert_array_equal(
+            model.atom_scheduler.timesteps.numpy(),
+            model.lattice_scheduler.timesteps.numpy(),
+        )
         assert len(result["result"]) == 1
         assert len(result["result"][0]["atom_types"]) == 2
 
@@ -514,9 +598,7 @@ class TestDataFlow:
 
     def test_dataset_to_forward_loss(self):
         model = _make_model("diffcsp_joint")
-        loader = create_rl_dataloader(
-            _structures(), np.array([0.8, 0.3], dtype="float32"), batch_size=2
-        )
+        loader = _make_loader(rewards=np.array([0.8, 0.3], dtype="float32"))
         batch = to_tensor_batch(next(iter(loader)))
         loss = model(batch)["loss_dict"]["loss"]
         assert np.isfinite(float(loss))
@@ -655,15 +737,15 @@ class TestRewardScoring:
 class TestSampler:
     """The RL sampler follows the model capability instead of a type string."""
 
-    @pytest.mark.parametrize("model_type", ["mattergen", "diffcsp"])
+    @pytest.mark.parametrize("model_type", list(_TASK_CONFIG))
     def test_atom_types_follow_capability(self, model_type):
         model = _make_model(model_type)
         sampler = MatInventSampler(
-            batch_size=4,
-            num_batches=1,
+            data_cfg=_load_config(model_type)["Model"]["__init_params__"][
+                "training_cfg"
+            ]["sample_cfg"]["data_cfg"],
             num_inference_steps=1,
             build_structure_cfg={"format": "array", "niggli": False},
-            atom_count_distribution="MP_20",
         )
         with mock.patch.object(model, "sample", return_value={"result": []}) as sample:
             sampler.generate(model)
@@ -695,198 +777,210 @@ class TestModelPackage:
         package_config = _read_config(package_dir / f"{package_name}.yaml")
         for block in ("Global", "Trainer", "Optimizer", "Dataset", "Model", "Sample"):
             assert block in package_config
-        assert package_config["Trainer"]["__class_name__"] == (
-            "ppmat.models.matinvent.trainer.MatInventTrainer"
-        )
+        assert "__class_name__" not in package_config["Trainer"]
 
 
 class TestTrainer:
-    """One epoch is one RL round; the framework owns the checkpoint lifecycle."""
+    """The unmodified BaseTrainer owns RL optimization and checkpointing."""
 
-    def test_round_updates_state_and_persists(self, monkeypatch, tmp_path):
-        _, trainer, loader = _make_round_env(monkeypatch, tmp_path, "diffcsp_joint")
-        time_info, loss_info, metric_info = trainer.train_epoch(loader)
-        assert time_info["round_cost"].avg > 0
-        assert np.isfinite(loss_info["loss"].avg)
-        assert loss_info["loss"].avg > 0
-        assert metric_info["reward_mean"].avg == pytest.approx(0.7, rel=1e-6)
-        assert trainer.state.global_step == 1
-        assert trainer.stop_training is False
-        assert os.path.exists(trainer.rl_state_path)
-        assert trainer.rl_loop.ltm.memory.shape[0] == 2
-
-    def test_resume_restores_rl_state(self, monkeypatch, tmp_path):
-        config, trainer, loader = _make_round_env(monkeypatch, tmp_path, "diffcsp")
-        trainer.train_epoch(loader)
-        rounds = trainer.rl_loop.step + 1
-
-        model = _make_model("diffcsp")
-        resumed = _attach_fake_loop(
-            _build_trainer(
-                config,
-                model,
-                loader,
-                monkeypatch,
-                pathlib.Path(tmp_path) / "test_diffcsp",
-            )
+    @pytest.mark.parametrize("model_type", list(_TASK_CONFIG))
+    @pytest.mark.parametrize("timesteps,epochs", [(2, 1), (3, 2)])
+    def test_native_trainer_runs_rl_rounds(
+        self, monkeypatch, tmp_path, model_type, timesteps, epochs
+    ):
+        config, trainer, loader = _make_round_env(
+            monkeypatch, tmp_path, model_type, timesteps, epochs
         )
-        resumed.state = TrainerState()
-        resumed.state.epoch = rounds + 1
-        resumed.train_epoch(loader)
-        assert resumed.rl_loop.step == rounds
-        assert resumed.rl_loop.ltm.memory.shape[0] == 4
+        assert type(trainer) is BaseTrainer
+        assert len(loader) == epochs * ((timesteps + 1) // 2) * 2
+        trainer.train()
+        context = trainer.model._training_context
+        assert trainer.state.epoch == 2
+        assert trainer.state.global_step == 2 * epochs * ((timesteps + 1) // 2)
+        assert context.loop.ltm.memory.shape[0] == 4
+        assert context.metrics["reward_mean"] == pytest.approx(0.7)
+        assert not context.stopped
+        assert all(bool(paddle.isfinite(p).all()) for p in trainer.model.parameters())
+        checkpoint = pathlib.Path(config["Trainer"]["output_dir"]) / "checkpoints"
+        saved = paddle.load(str(checkpoint / "epoch_1.pdparams"))
+        assert "_matinvent_training" in saved
+        assert not list(checkpoint.glob("*.rlstate"))
+        assert all(
+            p.stop_gradient and p.grad is None for p in context.loop.prior.parameters()
+        )
 
-    def test_early_stop_sets_stop_flag(self, monkeypatch, tmp_path):
-        _, trainer, loader = _make_round_env(monkeypatch, tmp_path, "diffcsp")
-        trainer.rl_loop.early_stop_enabled = True
-        trainer.rl_loop.probe_initial = {
+    def test_optimizer_and_backward_are_owned_by_base_trainer(
+        self, monkeypatch, tmp_path
+    ):
+        _, trainer, _ = _make_round_env(monkeypatch, tmp_path, "diffcsp_joint")
+        step = trainer.optimizer.step
+        with mock.patch.object(trainer.optimizer, "step", wraps=step) as update:
+            trainer.train()
+        assert update.call_count == trainer.state.global_step == 2
+        context = trainer.model._training_context
+        assert "optimizer" not in vars(context.loop)
+
+    def test_partial_accumulation_matches_explicit_optimizer_updates(
+        self, monkeypatch, tmp_path
+    ):
+        config, trainer, _ = _make_round_env(
+            monkeypatch, tmp_path, "diffcsp_joint", timesteps=3, epochs=2
+        )
+        trainer.max_epochs = 1
+        optimizer_cfg = {"__class_name__": "SGD", "__init_params__": {"lr": 1e-4}}
+        trainer.optimizer, _ = build_optimizer(optimizer_cfg, trainer.model, 1, 1)
+        reference = copy.deepcopy(trainer.model)
+        optimizer, _ = build_optimizer(optimizer_cfg, reference, 1, 1)
+        trainer.model.before_train(trainer)
+        context = trainer.model._training_context
+        denoise = trainer.model.denoise_with_time
+        corruptions = []
+
+        def record_corruption(structure_array, times, noise_state=None):
+            result = denoise(structure_array, times, noise_state=noise_state)
+            corruptions.append((times, result["noise_state"]))
+            return result
+
+        monkeypatch.setattr(trainer.model, "denoise_with_time", record_corruption)
+        trainer.train()
+        recorded = iter(corruptions)
+        reference_denoise = reference.denoise_with_time
+
+        def replay_corruption(structure_array, times, noise_state=None):
+            recorded_times, state = next(recorded)
+            return reference_denoise(structure_array, recorded_times, noise_state=state)
+
+        monkeypatch.setattr(reference, "denoise_with_time", replay_corruption)
+        loop = copy.copy(context.loop)
+        loop.agent = reference
+        reference.train()
+        for _ in range(2):
+            for index in range(3):
+                losses = loop.compute_loss(context.batch, index)
+                (losses["objective"] / (2 if index < 2 else 1)).backward()
+                if index in (1, 2):
+                    optimizer.step()
+                    optimizer.clear_grad()
+        for name, actual in trainer.model.named_parameters():
+            np.testing.assert_allclose(
+                actual.numpy(),
+                reference.state_dict()[name].numpy(),
+                atol=1e-7,
+                rtol=1e-6,
+            )
+
+    def test_resume_restores_model_prior_and_replay(self, monkeypatch, tmp_path):
+        config, trainer, loader = _make_round_env(monkeypatch, tmp_path, "diffcsp")
+        with paddle.utils.unique_name.guard():
+            trainer.train()
+        checkpoint = pathlib.Path(trainer.output_dir) / "checkpoints" / "epoch_1"
+        saved = paddle.load(str(checkpoint) + ".pdparams")
+        inference = build_model(config["Model"])
+        assert inference.set_state_dict(saved) == ([], [])
+        assert inference._training_context is None
+        sampled = inference.sample(_batch(), num_inference_steps=2)
+        assert len(sampled["result"]) == 2
+        assert np.isfinite(sampled["result"][0]["frac_coords"]).all()
+        config["Trainer"]["output_dir"] = str(tmp_path / "resumed")
+        config["Trainer"]["resume_from_checkpoint"] = str(checkpoint)
+        config["Trainer"]["max_epochs"] = 1
+        with paddle.utils.unique_name.guard():
+            model = build_model(config["Model"])
+        resumed = _build_trainer(
+            config, model, loader, monkeypatch, tmp_path / "test_diffcsp"
+        )
+        with paddle.utils.unique_name.guard():
+            resumed.train()
+        assert resumed.state.global_step == 1
+        context = model._training_context
+        assert context.loop.step == 0
+        assert context.loop.ltm.memory.shape[0] == 2
+        np.testing.assert_array_equal(
+            model.coord_scheduler.discrete_sigmas_norm.numpy(),
+            trainer.model.coord_scheduler.discrete_sigmas_norm.numpy(),
+        )
+        np.testing.assert_array_equal(
+            context.loop.prior.coord_scheduler.discrete_sigmas_norm.numpy(),
+            model.coord_scheduler.discrete_sigmas_norm.numpy(),
+        )
+        for name, parameter in model.named_parameters():
+            np.testing.assert_array_equal(parameter.numpy(), saved[name].numpy())
+        for name, value in context.loop.prior.state_dict().items():
+            np.testing.assert_array_equal(
+                value.numpy(),
+                trainer.model._training_context.loop.prior.state_dict()[name].numpy(),
+            )
+        resumed.max_epochs = 2
+        with paddle.utils.unique_name.guard():
+            resumed.train()
+        assert resumed.state.global_step == 2
+        assert context.loop.ltm.memory.shape[0] == 4
+
+    def test_early_stop_runs_after_update_and_saves_native_checkpoint(
+        self, monkeypatch, tmp_path
+    ):
+        _, trainer, _ = _make_round_env(monkeypatch, tmp_path, "diffcsp", timesteps=4)
+        trainer.model.before_train(trainer)
+        context = trainer.model._training_context
+        context.loop.early_stop_enabled = True
+        context.loop.probe_initial = {
             "loss": 1.0,
             "loss_lattice": 1.0,
             "loss_coord": 1.0,
+            "loss_atom_type": 1.0,
         }
-        trainer.rl_loop._probe_anchor = lambda: {
+        context.loop._probe_anchor = lambda: {
             "loss": 10.0,
             "loss_lattice": 10.0,
             "loss_coord": 10.0,
-            "loss_atom_type": 0.0,
+            "loss_atom_type": 10.0,
         }
-        trainer.train_epoch(loader)
-        assert trainer.stop_training is True
+        trainer.train()
+        assert context.stopped
+        assert trainer.state.global_step == 1
+        assert trainer.state.epoch == 1
+        checkpoint = pathlib.Path(trainer.output_dir) / "checkpoints"
+        assert (checkpoint / "epoch_1.pdparams").is_file()
+        assert not (checkpoint / "epoch_2.pdparams").exists()
 
     @pytest.mark.parametrize(
-        "mutation, message",
+        "mutation,message",
         [
-            ({"use_amp": True}, "use_amp"),
-            (
-                {"pretrained_model_path": "checkpoints", "both_sources": True},
-                "not both",
-            ),
+            ({"gradient_accumulation_steps": 1}, "accumulation"),
+            ({"eval_freq_steps": 1}, "eval_freq_steps"),
+            ({"save_freq_steps": 1}, "save_freq_steps"),
+            ({"max_iter": 1}, "max_iter"),
         ],
     )
-    def test_rejects_unsupported_configs(
+    def test_rejects_unsupported_training_config(
         self, monkeypatch, tmp_path, mutation, message
     ):
-        package_name, package_dir = _write_package(tmp_path, "diffcsp", "pkg")
-        config = _round_config("diffcsp", tmp_path, package_name)
-        config["Trainer"].update(
-            {k: v for k, v in mutation.items() if k != "both_sources"}
-        )
-        model = _make_model("diffcsp")
-        loader = _make_loader()
-        optimizer, lr_scheduler = build_optimizer(config["Optimizer"], (model,), 2, 1)
-        monkeypatch.setattr(
-            MatInventTrainer,
-            "_resolve_package",
-            staticmethod(lambda name: str(package_dir)),
-        )
+        _, trainer, _ = _make_round_env(monkeypatch, tmp_path, "diffcsp")
+        trainer.config.update(mutation)
+        trainer.gradient_accumulation_steps = trainer.config[
+            "gradient_accumulation_steps"
+        ]
         with pytest.raises(ValueError, match=message):
-            build_trainer(
-                config["Trainer"],
-                model=model,
-                train_dataloader=loader,
-                val_dataloader=loader,
-                optimizer=optimizer,
-                lr_scheduler=lr_scheduler,
-                compute_metric_func_dict=None,
-                execution_config=None,
-            )
+            trainer.train()
 
-    def test_rejects_step_based_lr_schedule(self, monkeypatch, tmp_path):
-        package_name, package_dir = _write_package(tmp_path, "diffcsp", "pkg")
-        config = _round_config("diffcsp", tmp_path, package_name)
-        config["Optimizer"]["__init_params__"]["lr"] = {
-            "__class_name__": "Linear",
-            "__init_params__": {"learning_rate": 1.0e-6, "by_epoch": False},
-        }
+    def test_empty_population_does_not_update_optimizer(self, monkeypatch, tmp_path):
+        _, trainer, _ = _make_round_env(monkeypatch, tmp_path, "diffcsp")
+        trainer.model.before_train(trainer)
+        trainer.model._training_context.loop.sampler = _FakeSampler([])
+        with mock.patch.object(trainer.optimizer, "step") as update:
+            with pytest.raises(RuntimeError, match="No scored structures"):
+                trainer.train()
+        update.assert_not_called()
+
+    def test_evaluation_and_sampling_do_not_initialize_rl(self, tmp_path):
+        config = _load_config("diffcsp")["Trainer"]
+        config["output_dir"] = str(tmp_path)
+        config["pretrained_model_path"] = None
         model = _make_model("diffcsp")
-        loader = _make_loader()
-        optimizer, lr_scheduler = build_optimizer(config["Optimizer"], (model,), 2, 1)
-        monkeypatch.setattr(
-            MatInventTrainer,
-            "_resolve_package",
-            staticmethod(lambda name: str(package_dir)),
-        )
-        with pytest.raises(ValueError, match="by_epoch"):
-            build_trainer(
-                config["Trainer"],
-                model=model,
-                train_dataloader=loader,
-                val_dataloader=loader,
-                optimizer=optimizer,
-                lr_scheduler=lr_scheduler,
-                compute_metric_func_dict=None,
-                execution_config=None,
-            )
-
-    def test_rejects_distributed_launch(self, monkeypatch, tmp_path):
-        package_name, package_dir = _write_package(tmp_path, "diffcsp", "pkg")
-        config = _round_config("diffcsp", tmp_path, package_name)
-        model = _make_model("diffcsp")
-        loader = _make_loader()
-        optimizer, lr_scheduler = build_optimizer(config["Optimizer"], (model,), 2, 1)
-        monkeypatch.setattr(
-            MatInventTrainer,
-            "_resolve_package",
-            staticmethod(lambda name: str(package_dir)),
-        )
-        monkeypatch.setattr("paddle.distributed.get_world_size", lambda: 2)
-        with pytest.raises(ValueError, match="single process"):
-            build_trainer(
-                config["Trainer"],
-                model=model,
-                train_dataloader=loader,
-                val_dataloader=loader,
-                optimizer=optimizer,
-                lr_scheduler=lr_scheduler,
-                compute_metric_func_dict=None,
-                execution_config=None,
-            )
-
-    def test_requires_optimizer(self, monkeypatch, tmp_path):
-        package_name, package_dir = _write_package(tmp_path, "diffcsp", "pkg")
-        config = _round_config("diffcsp", tmp_path, package_name)
-        model = _make_model("diffcsp")
-        loader = _make_loader()
-        monkeypatch.setattr(
-            MatInventTrainer,
-            "_resolve_package",
-            staticmethod(lambda name: str(package_dir)),
-        )
-        with pytest.raises(ValueError, match="Optimizer"):
-            build_trainer(
-                config["Trainer"],
-                model=model,
-                train_dataloader=loader,
-                val_dataloader=loader,
-                optimizer=None,
-                lr_scheduler=None,
-                compute_metric_func_dict=None,
-                execution_config=None,
-            )
-
-    def test_full_train_runs_rounds_and_saves_checkpoints(self, monkeypatch, tmp_path):
-        config, trainer, _ = _make_round_env(monkeypatch, tmp_path, "diffcsp")
-        trainer.train()
-        assert trainer.state.epoch == 2
-        output_dir = pathlib.Path(config["Trainer"]["output_dir"])
-        assert (output_dir / "rl_state.pkl").is_file()
-        assert list((output_dir / "checkpoints").glob("*.pdparams"))
-        assert os.path.exists(trainer.rl_state_path)
-
-    def test_pretrained_name_initializes_agent(self, monkeypatch, tmp_path):
-        package_name, package_dir = _write_package(tmp_path, "diffcsp", "pkg")
-        config = _round_config("diffcsp", tmp_path, package_name)
-        model = _make_model("diffcsp")
-        saved = paddle.load(str(package_dir / "checkpoints" / _WEIGHTS_NAME))
-        loader = _make_loader()
-        trainer = _build_trainer(config, model, loader, monkeypatch, package_dir)
-        for key, value in trainer.model.state_dict().items():
-            np.testing.assert_allclose(
-                value.numpy(), saved[key].numpy(), atol=0, rtol=0
-            )
-        for parameter in trainer.prior.parameters():
-            assert parameter.stop_gradient
-        assert trainer.prior.training is False
+        trainer = BaseTrainer(config, model, val_dataloader=_make_loader())
+        _, losses, _ = trainer.eval(trainer.val_dataloader)
+        assert np.isfinite(losses["loss"].avg)
+        assert model._training_context is None
 
 
 class TestMatterGenBackbone:
@@ -895,11 +989,19 @@ class TestMatterGenBackbone:
     def test_paddle_graph_keeps_mainline_numerics(self):
         mainline_cfg = copy.deepcopy(_tiny_model_cfg("mattergen"))
         mainline_cfg["__class_name__"] = "MatterGen"
+        mainline_cfg["__init_params__"].pop("training_cfg")
         with paddle.utils.unique_name.guard():
             paddle.seed(_DISPATCH_SEED)
             mainline = build_model(mainline_cfg)
         variant = _make_model("mattergen")
-        variant.set_state_dict(_clone_state_dict(mainline))
+        full_state = mainline.state_dict()
+        compact_keys = variant.state_dict().keys()
+        assert variant.set_state_dict(
+            {name: full_state[name].clone() for name in compact_keys}
+        ) == ([], [])
+        removed = full_state.keys() - compact_keys
+        assert removed
+        assert all(".out_blocks." in name for name in removed)
         mainline.eval()
         variant.eval()
 
@@ -912,15 +1014,21 @@ class TestMatterGenBackbone:
             np.testing.assert_allclose(
                 actual[key].numpy(), expected[key].numpy(), atol=0, rtol=0
             )
-        assert mainline.state_dict().keys() == variant.state_dict().keys()
-        mainline_parameters = dict(mainline.named_parameters())
-        newly_frozen = [
-            name
-            for name, parameter in variant.named_parameters()
-            if parameter.stop_gradient and not mainline_parameters[name].stop_gradient
-        ]
-        assert newly_frozen
-        assert all(".out_blocks." in name for name in newly_frozen)
+        paddle.seed(_DISPATCH_SEED)
+        expected_loss = mainline(_batch())["loss_dict"]
+        paddle.seed(_DISPATCH_SEED)
+        actual_loss = variant(_batch())["loss_dict"]
+        for name, loss in expected_loss.items():
+            np.testing.assert_allclose(
+                actual_loss[name].numpy(), loss.numpy(), atol=0, rtol=0
+            )
+        actual_loss["loss"].backward()
+        active = [p for p in variant.parameters() if not p.stop_gradient]
+        assert all(p.grad is not None for p in active)
+        assert all(bool(paddle.isfinite(p.grad).all()) for p in active)
+        optimizer = paddle.optimizer.Adam(parameters=active, learning_rate=1e-6)
+        optimizer.step()
+        assert all(bool(paddle.isfinite(p).all()) for p in active)
 
 
 class TestEdgelessGraph:
@@ -937,6 +1045,11 @@ class TestEdgelessGraph:
         graph = model._build_interaction_graph(structure_array)
         assert tuple(graph[0].shape) == (2, 0)
         assert int(graph[1].sum()) == 0
+        structure_array["batch"] = paddle.to_tensor([0, 0], dtype="int64")
+        predictions = model._denoise(
+            structure_array, paddle.full([1], 0.5, dtype="float32")
+        )
+        assert all(bool(paddle.isfinite(value).all()) for value in predictions.values())
         denoised = model.denoise_with_time(
             structure_array, paddle.full([1], 0.5, dtype="float32")
         )
@@ -1153,10 +1266,9 @@ class TestCinnBenchmarkWorkload:
             lambda *args, **kwargs: "eager",
         )
 
-        workload = cinn_benchmark.build_workflow("matinvent_diffcsp_mp20", "eager")
-        assert workload.scope == matinvent_benchmark.TRAIN_SCOPE
-        assert workload.required_runtime_keys == (
-            matinvent_benchmark.TRAIN_RUNTIME_KEY,
+        workflow, call, scope = cinn_benchmark.build_workflow(
+            "matinvent_diffcsp_mp20", "eager"
         )
-        assert isinstance(workload.workflow.model, _DummyModel)
-        assert callable(workload.call)
+        assert scope == matinvent_benchmark.TRAIN_SCOPE
+        assert isinstance(workflow.model, _DummyModel)
+        assert callable(call)

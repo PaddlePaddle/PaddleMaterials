@@ -1009,14 +1009,6 @@ class BaseTrainer:
                 else:
                     self.lr_scheduler.step()
 
-            # model-specific trainers own the stop condition of their workflow
-            if getattr(self, "stop_training", False):
-                logger.info(
-                    "stop_training is set; stop training after epoch %d.",
-                    self.state.epoch,
-                )
-                break
-
     def _determine_best_metric(
         self, train_loss_info, train_metric_info, eval_loss_info, eval_metric_info
     ):

@@ -6,53 +6,35 @@ Global:
   # Diffusion and sampling step budgets
   num_train_timesteps: 1000
   num_inference_steps: 1000
+  atom_count_distribution: MP_20
   rl_num_inference_steps: 1000
   # Structure parser shared by the RL scorer and the sampler
   build_structure_cfg:
     format: array
     niggli: False
 
-Trainer:
-  __class_name__: ppmat.models.matinvent.trainer.MatInventTrainer
-  # Random seed
-  seed: 42
-  # Save path for checkpoints and logs
-  output_dir: ./output/matinvent_diffcsp_mp20_joint
-  # One epoch is one RL round
-  max_epochs: 3
-  save_freq: 1
-  log_freq: 1
-  start_eval_epoch: 1
-  eval_freq: 10
-  save_freq_steps: null
-  eval_freq_steps: null
-  # Agent/prior weights come from __init_params__.pretrained_model_name
-  pretrained_model_path: null
-  pretrained_weight_name: null
-  resume_from_checkpoint: null
-  use_amp: False
-  amp_level: 'O1'
-  eval_with_no_grad: True
-  gradient_accumulation_steps: 1
-  best_metric_indicator: null
-  name_for_best_metric: 'loss'
-  greater_is_better: False
-  compute_metric_during_train: False
-  metric_strategy_during_eval: 'step'
-  use_visualdl: False
-  use_wandb: False
-  use_tensorboard: False
-  __init_params__:
-    pretrained_model_name: matinvent_diffcsp_mp20_joint
+  transforms: []
+  training_cfg:
     topk_ratio: 0.125
     build_structure_cfg: ${Global.build_structure_cfg}
-    transforms: ${Dataset.train.dataset.__init_params__.transforms}
+    transforms: ${Global.transforms}
     sample_cfg:
-      batch_size: 32
-      num_batches: 1
+      data_cfg:
+        dataset:
+          __class_name__: NumAtomsCrystalDataset
+          __init_params__:
+            total_num: 32
+            dist_name: ${Global.atom_count_distribution}
+            prop_names: []
+            prop_values: []
+        sampler:
+          __class_name__: BatchSampler
+          __init_params__:
+            batch_size: 32
+            shuffle: False
+            drop_last: False
       num_inference_steps: ${Global.rl_num_inference_steps}
       max_num: 16
-      atom_count_distribution: MP_20
     finetune_cfg:
       batch_size: 16
       epochs: 3
@@ -103,6 +85,35 @@ Trainer:
       max_lattice_ratio: 1.30
       max_type_ratio: 2.0
 
+Trainer:
+  # Random seed
+  seed: 42
+  # Save path for checkpoints and logs
+  output_dir: ./output/matinvent_diffcsp_mp20_joint
+  # One epoch is one RL round
+  max_epochs: 3
+  save_freq: 1
+  log_freq: 1
+  start_eval_epoch: 1
+  eval_freq: 10
+  save_freq_steps: null
+  eval_freq_steps: null
+  pretrained_model_path: http://127.0.0.1/models/matinvent_diffcsp_mp20_joint.zip
+  pretrained_weight_name: null
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: 'O1'
+  eval_with_no_grad: True
+  gradient_accumulation_steps: ${Global.training_cfg.finetune_cfg.accum_steps}
+  best_metric_indicator: null
+  name_for_best_metric: 'loss'
+  greater_is_better: False
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'step'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
 Optimizer:
   __class_name__: Adam
   __init_params__:
@@ -113,14 +124,15 @@ Optimizer:
 Dataset:
   train:
     dataset:
-      __class_name__: MP20Dataset
+      __class_name__: MatInventDataset
       __init_params__:
+        finetune_cfg: ${Global.training_cfg.finetune_cfg}
         path: ./data/mp_20/train.csv
         build_structure_cfg:
           format: cif_str
           num_cpus: 10
         cache_path: ./data/mp_20_cache/train
-        transforms: []
+        transforms: ${Global.transforms}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -129,7 +141,7 @@ Dataset:
       __init_params__:
         shuffle: False
         drop_last: False
-        batch_size: 32
+        batch_size: 1
   val:
     dataset:
       __class_name__: MP20Dataset
@@ -139,7 +151,7 @@ Dataset:
           format: cif_str
           num_cpus: 10
         cache_path: ./data/mp_20_cache/val
-        transforms: []
+        transforms: ${Global.transforms}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -158,7 +170,7 @@ Dataset:
           format: cif_str
           num_cpus: 10
         cache_path: ./data/mp_20_cache/test
-        transforms: []
+        transforms: ${Global.transforms}
     loader:
       num_workers: 0
       use_shared_memory: False
@@ -172,6 +184,7 @@ Dataset:
 Model:
   __class_name__: MatinventDiffCSP
   __init_params__:
+    training_cfg: ${Global.training_cfg}
     decoder_cfg:
       hidden_dim: 512
       latent_dim: 256
@@ -184,7 +197,6 @@ Model:
       ip: true
       smooth: true
       pred_type: true
-      prop_dim: 512
       pred_scalar: false
       num_classes: 100
     lattice_noise_scheduler_cfg:
@@ -223,7 +235,9 @@ Sample:
       __class_name__: NumAtomsCrystalDataset
       __init_params__:
         total_num: 16
-        dist_name: MP_20
+        dist_name: ${Global.atom_count_distribution}
+        prop_names: []
+        prop_values: []
     sampler:
       __class_name__: BatchSampler
       __init_params__:

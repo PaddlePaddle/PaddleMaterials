@@ -31,7 +31,6 @@ import smact
 from pymatgen.core.structure import Structure
 from smact.screening import pauling_test
 
-from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.utils import logger
 
@@ -172,22 +171,3 @@ class RLDataset(io.Dataset):
         if self.transforms is not None:
             data = self.transforms(data)
         return data
-
-
-def create_rl_dataloader(
-    structures: List[Structure],
-    rewards: np.ndarray,
-    batch_size: int = 8,
-    shuffle: bool = True,
-    num_workers: int = 0,
-    transforms: Callable = None,
-) -> io.DataLoader:
-    dl = io.DataLoader(
-        dataset=RLDataset(structures, rewards, transforms=transforms),
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        collate_fn=DefaultCollator(),
-    )
-    logger.info(f"DataLoader: {len(dl.dataset)} samples, batch_size={batch_size}")
-    return dl

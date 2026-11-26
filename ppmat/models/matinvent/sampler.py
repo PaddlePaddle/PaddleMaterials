@@ -17,8 +17,8 @@ from typing import List
 import paddle
 from pymatgen.core.structure import Structure
 
+from ppmat.datasets import build_dataloader
 from ppmat.datasets.build_structure import BuildStructure
-from ppmat.datasets.num_atom_crystal_dataset import NumAtomsCrystalDataset
 from ppmat.utils import logger
 
 # Reference propensity to sample atom types over atomic numbers 1..100.
@@ -30,28 +30,21 @@ class MatInventSampler:
 
     def __init__(
         self,
-        batch_size: int,
-        num_batches: int,
+        data_cfg: dict,
         num_inference_steps: int,
         build_structure_cfg: dict,
-        atom_count_distribution: str = "ALEX_MP_20",
     ):
-        self.batch_size = batch_size
-        self.num_batches = num_batches
+        self.data_cfg = data_cfg
         self.num_inference_steps = num_inference_steps
-        self.atom_count_distribution = atom_count_distribution
         self.structure_options = dict(build_structure_cfg)
         self.structure_format = self.structure_options.pop("format")
 
     @paddle.no_grad()
     def generate(self, model) -> List[Structure]:
         structures = []
-        for _ in range(self.num_batches):
-            counts = NumAtomsCrystalDataset(
-                total_num=self.batch_size, dist_name=self.atom_count_distribution
-            ).num_atoms
-            num_atoms = paddle.to_tensor(counts, dtype="int64")
-            inputs = {"num_atoms": num_atoms}
+        for batch in build_dataloader(self.data_cfg):
+            inputs = batch["structure_array"]
+            num_atoms = inputs["num_atoms"]
             if not model.supports_num_atoms_sampling:
                 # Fixed-composition generation needs atom types alongside the counts.
                 inputs["atom_types"] = paddle.randint(
@@ -61,7 +54,7 @@ class MatInventSampler:
                     dtype="int64",
                 )
             sampled = model.sample(
-                {"structure_array": inputs},
+                batch,
                 num_inference_steps=self.num_inference_steps,
             )
             for result in sampled["result"]:

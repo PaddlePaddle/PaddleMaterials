@@ -27,7 +27,6 @@ from ppmat.models import build_model_from_name
 from ppmat.utils.execution import configure_execution_backend
 
 TRAIN_SCOPE = "matinvent_train_step"
-TRAIN_RUNTIME_KEY = "cinn:train:denoise_step"
 
 
 def build_train_batch():
@@ -78,5 +77,4 @@ def build_train_workload(model_name: str, backend: str):
         SimpleNamespace(model=model),
         train_step,
         TRAIN_SCOPE,
-        (TRAIN_RUNTIME_KEY,),
     )

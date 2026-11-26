@@ -25,7 +25,7 @@ from ppmat.datasets import set_signal_handlers
 from ppmat.metrics import build_metric
 from ppmat.models import build_model
 from ppmat.optimizer import build_optimizer
-from ppmat.trainer import build_trainer
+from ppmat.trainer.base_trainer import BaseTrainer
 from ppmat.utils import logger
 from ppmat.utils import misc
 from ppmat.utils.io import append_timestamp_to_output_dir
@@ -129,9 +129,9 @@ if __name__ == "__main__":
         metric_func = None
 
     # # initialize trainer
-    trainer = build_trainer(
+    trainer = BaseTrainer(
         config["Trainer"],
-        model=model,
+        model,
         train_dataloader=train_loader,
         val_dataloader=val_loader,
         optimizer=optimizer,

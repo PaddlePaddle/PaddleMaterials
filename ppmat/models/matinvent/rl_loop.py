@@ -14,18 +14,16 @@
 
 """One MatInvent round: sample, score, select and fine-tune.
 
-The round owns the RL arithmetic only; the optimizer, the data pipeline and the
-checkpoint lifecycle belong to ``MatInventTrainer`` and ``BaseTrainer``.
+The model owns sampling, selection and the objective. BaseTrainer owns backward,
+gradient accumulation, optimizer updates and checkpoints.
 """
 
 import os
-import pickle
-import time
 
 import numpy as np
 import paddle
 
-from ppmat.models.matinvent.dataset import create_rl_dataloader
+from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.models.matinvent.dataset import is_valid_structure
 from ppmat.models.matinvent.dataset import save_structures
 from ppmat.models.matinvent.dataset import to_tensor_batch
@@ -47,7 +45,6 @@ class MatInventRL:
         prior,
         sampler,
         reward,
-        optimizer,
         sample_cfg,
         finetune_cfg,
         topk_ratio,
@@ -88,7 +85,6 @@ class MatInventRL:
         self.prior = prior
         self.sampler = sampler
         self.reward = reward
-        self.optimizer = optimizer
         self.sample_cfg = sample_cfg
         self.finetune_cfg = finetune_cfg
         self.topk_num = topk_num
@@ -132,7 +128,9 @@ class MatInventRL:
                 np.random.seed(20000 + index)
                 paddle.seed(20000 + index)
                 with paddle.no_grad():
-                    loss_dict = self.agent(self.probe_batch)["loss_dict"]
+                    loss_dict = self.agent.diffusion_forward(self.probe_batch)[
+                        "loss_dict"
+                    ]
                 for key in values:
                     if key in loss_dict:
                         values[key].append(float(loss_dict[key]))
@@ -327,126 +325,53 @@ class MatInventRL:
             return self.anchor_batch
         count = int(self.anchor_batch["structure_array"]["num_atoms"].shape[0])
         indices = np.random.choice(len(self.anchor_dataset), size=count, replace=False)
-        from ppmat.datasets.collate_fn import DefaultCollator
-
         batch = DefaultCollator()([self.anchor_dataset[int(i)] for i in indices])
         return to_tensor_batch(batch)
 
-    def _ft_step(self, structures, rewards):
+    def compute_loss(self, batch, index):
         cfg = self.finetune_cfg
-        accum_steps = cfg["accum_steps"]
-        anchor_weight = float(self.anchor_cfg["loss_weight"])
-        anchor_every = int(self.anchor_cfg["every_n_steps"])
-        loader = create_rl_dataloader(
-            structures=structures,
-            rewards=rewards,
-            batch_size=len(structures),
-            transforms=self.transforms,
+        times = self._times_tensor(batch["structure_array"]["num_atoms"], index)
+        denoised = self.agent.denoise_with_time(batch["structure_array"], times)
+        sample_loss = self._weighted_loss(denoised["loss_dict"])
+        with paddle.no_grad():
+            prior_denoised = self.prior.denoise_with_time(
+                batch["structure_array"], times, noise_state=denoised["noise_state"]
+            )
+        kl_term = self._kl_divergence(
+            denoised["pred_dict"],
+            prior_denoised["pred_dict"],
+            batch["structure_array"]["num_atoms"],
         )
-        updates = 0
-        probe_stop = False
-        loss_all = loss_diff_all = loss_kl_all = 0.0
-        anchor_all = 0.0
-        anchor_count = 0
-        self.agent.train()
-        for epoch in range(cfg["epochs"]):
-            for batch in loader:
-                batch = to_tensor_batch(batch)
-                advantage = batch["reward"]
-                batch_loss = batch_diff = batch_kl = 0.0
-                for index in range(cfg["timesteps"]):
-                    times = self._times_tensor(
-                        batch["structure_array"]["num_atoms"], index
-                    )
-                    denoised = self.agent.denoise_with_time(
-                        batch["structure_array"], times
-                    )
-                    sample_loss = self._weighted_loss(denoised["loss_dict"])
-                    with paddle.no_grad():
-                        prior_denoised = self.prior.denoise_with_time(
-                            batch["structure_array"], times
-                        )
-                    kl_term = self._kl_divergence(
-                        denoised["pred_dict"],
-                        prior_denoised["pred_dict"],
-                        batch["structure_array"]["num_atoms"],
-                    )
-                    objective = (
-                        advantage * sample_loss
-                        + kl_term
-                        * (_ADVANTAGE_REWARD_OFFSET - advantage)
-                        * cfg["sigma"]
-                    ).mean()
-                    if (
-                        self.anchor_batch is not None
-                        and anchor_weight > 0
-                        and (index + 1) % anchor_every == 0
-                    ):
-                        anchor_loss = self.agent(self._anchor_training_batch())[
-                            "loss_dict"
-                        ]["loss"]
-                        objective = objective + anchor_weight * anchor_loss
-                        anchor_all += float(anchor_loss)
-                        anchor_count += 1
-                    loss = objective / accum_steps
-                    if not bool(paddle.isfinite(loss).all()):
-                        self.optimizer.clear_grad()
-                        raise FloatingPointError(
-                            f"Nonfinite RL loss at epoch {epoch}, timestep {index}"
-                        )
-                    loss.backward()
-                    if (index + 1) % accum_steps == 0 or index + 1 == cfg["timesteps"]:
-                        for name, parameter in self.agent.named_parameters():
-                            if parameter.grad is not None and not bool(
-                                paddle.isfinite(parameter.grad).all()
-                            ):
-                                self.optimizer.clear_grad()
-                                raise FloatingPointError(
-                                    f"Nonfinite RL gradient in {name} "
-                                    f"at epoch {epoch}, timestep {index}"
-                                )
-                        self.optimizer.step()
-                        self.optimizer.clear_grad()
-                        updates += 1
-                        if (
-                            self.early_stop_enabled
-                            and updates
-                            % int(self.early_stop_cfg["probe_every_updates"])
-                            == 0
-                            and self._check_early_stop(probe_only=True)
-                        ):
-                            probe_stop = True
-                            break
-                    batch_loss += float(objective)
-                    batch_diff += float((advantage * sample_loss).sum())
-                    batch_kl += float(
-                        (kl_term * (_ADVANTAGE_REWARD_OFFSET - advantage)).sum()
-                    )
-                if probe_stop:
-                    break
-                loss_all += batch_loss / cfg["timesteps"] * len(structures)
-                loss_diff_all += batch_diff / cfg["timesteps"]
-                loss_kl_all += batch_kl / cfg["timesteps"]
-            if probe_stop:
-                break
-        anchor_mean = anchor_all / anchor_count if anchor_count > 0 else 0.0
-        logger.info(
-            f"Fine-tune: loss={loss_all / len(structures):.4f}, "
-            f"loss_diff={loss_diff_all / len(structures):.4f}, "
-            f"loss_kl={loss_kl_all / len(structures):.4f}, "
-            f"anchor={anchor_mean:.4f}"
+        loss_diff = (batch["reward"] * sample_loss).mean()
+        loss_kl = (kl_term * (_ADVANTAGE_REWARD_OFFSET - batch["reward"])).mean()
+        anchor_loss = paddle.zeros_like(loss_diff)
+        if (
+            float(self.anchor_cfg["loss_weight"]) > 0
+            and (index + 1) % int(self.anchor_cfg["every_n_steps"]) == 0
+        ):
+            anchor_loss = self.agent.diffusion_forward(self._anchor_training_batch())[
+                "loss_dict"
+            ]["loss"]
+        objective = (
+            loss_diff
+            + cfg["sigma"] * loss_kl
+            + float(self.anchor_cfg["loss_weight"]) * anchor_loss
         )
+        group_start = index // cfg["accum_steps"] * cfg["accum_steps"]
+        group_size = min(cfg["accum_steps"], cfg["timesteps"] - group_start)
+        loss = objective / group_size
+        if not bool(paddle.isfinite(loss).all()):
+            raise FloatingPointError(f"Nonfinite RL loss at timestep {index}")
         return {
-            "loss": loss_all / len(structures),
-            "loss_diff": loss_diff_all / len(structures),
-            "loss_kl": loss_kl_all / len(structures),
-            "anchor_loss": anchor_mean,
-            "updates": updates,
-        }, probe_stop
+            "loss": loss,
+            "objective": objective,
+            "loss_diff": loss_diff,
+            "loss_kl": loss_kl,
+            "anchor_loss": anchor_loss,
+        }
 
-    def run_round(self):
+    def prepare_round(self):
         logger.info(f"*****   ROUND {self.step} START   *****")
-        start_time = time.time()
         logger.info("SAMPLE:")
         training_structures, scoring_structures = self._sample_step()
         logger.info("SCORE:")
@@ -457,15 +382,9 @@ class MatInventRL:
             "num_scored": float(len(scoring_structures)),
             "reward_mean": float("nan"),
             "reward_std": float("nan"),
-            "loss": float("nan"),
-            "loss_diff": float("nan"),
-            "loss_kl": float("nan"),
-            "anchor_loss": float("nan"),
-            "updates": 0.0,
             "burden": float("nan"),
             "div_ratio": float("nan"),
             "cost": float(self.cost),
-            "stop": False,
         }
         for name, values in prop_dict.items():
             metrics[f"{name}_mean"] = (
@@ -484,9 +403,7 @@ class MatInventRL:
             metrics["reward_std"] = float(rewards.std())
             self.ltm.extend(scoring_structures, rewards, self.step)
         else:
-            logger.warning(
-                "No successful rewards, skip memory/replay/finetune updates."
-            )
+            logger.warning("No successful rewards; checking the replay buffer.")
         burden, div_ratio = self.ltm.calc_metrics(self.reward.threshold)
         self.last_div_ratio = div_ratio
         self.ltm.save(os.path.join(self.sample_dir, "long_term_memory.csv"))
@@ -497,17 +414,9 @@ class MatInventRL:
         logger.info(f"round={self.step} metrics={metrics}")
         if len(rewards) == 0:
             if self.replay is not None and len(self.replay) > 0:
-                logger.info("FINETUNE (replay fallback):")
                 replay_data, replay_rewards = self.replay.sample()
-                if len(replay_data) > 0:
-                    finetune_metrics, stop = self._ft_step(
-                        replay_data, np.asarray(replay_rewards, dtype=float)
-                    )
-                    metrics.update(finetune_metrics)
-                    metrics["stop"] = stop
-            metrics["stop"] = metrics["stop"] or self._check_early_stop()
-            logger.info(f"*****   ROUND {self.step} FINISH   *****")
-            return metrics
+                return replay_data, np.asarray(replay_rewards, dtype=float), metrics
+            raise RuntimeError("No scored structures or replay samples for RL training")
 
         penalty_structures = []
         if self.div_filter_cfg is not None:
@@ -537,36 +446,22 @@ class MatInventRL:
             logger.info(f"replay buffer size={len(self.replay)}")
         else:
             finetune_data, finetune_rewards = training_topk, reward_topk
-        logger.info("FINETUNE:")
-        finetune_metrics, stop = self._ft_step(finetune_data, finetune_rewards)
-        metrics.update(finetune_metrics)
-        metrics["stop"] = stop or self._check_early_stop()
-        logger.info(
-            f"*****   ROUND {self.step} FINISH   ***** "
-            f"Total time: {(time.time() - start_time) / 60:.2f} min."
-        )
-        return metrics
+        return finetune_data, finetune_rewards, metrics
 
-    def save_state(self, path):
-        with open(path, "wb") as file:
-            pickle.dump(
-                {
-                    "step": self.step,
-                    "cost": self.cost,
-                    "ltm": self.ltm,
-                    "replay": self.replay,
-                    "probe_initial": self.probe_initial,
-                    "last_hhi": self.last_hhi,
-                    "hhi_best": self.hhi_best,
-                    "hhi_bad_rounds": self.hhi_bad_rounds,
-                    "last_valid_ratio": self.last_valid_ratio,
-                    "last_div_ratio": self.last_div_ratio,
-                },
-                file,
-            )
+    def state_dict(self):
+        return {
+            "step": self.step,
+            "cost": self.cost,
+            "ltm": self.ltm,
+            "replay": self.replay,
+            "probe_initial": self.probe_initial,
+            "last_hhi": self.last_hhi,
+            "hhi_best": self.hhi_best,
+            "hhi_bad_rounds": self.hhi_bad_rounds,
+            "last_valid_ratio": self.last_valid_ratio,
+            "last_div_ratio": self.last_div_ratio,
+        }
 
-    def load_state(self, path):
-        with open(path, "rb") as file:
-            state = pickle.load(file)
+    def set_state_dict(self, state):
         for key, value in state.items():
             setattr(self, key, value)
