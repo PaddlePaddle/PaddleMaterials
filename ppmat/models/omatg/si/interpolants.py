@@ -248,6 +248,10 @@ class StochasticInterpolant(ABC, TimeChecker):
 class StochasticInterpolantSpecies(StochasticInterpolant, ABC):
     """Abstract class for a stochastic interpolant between species x_0 and x_1."""
 
+    def uses_masked_species(self) -> bool:
+        """Whether the base distribution is a single mask token."""
+        raise NotImplementedError
+
     def get_corrector(self) -> Corrector:
         raise RuntimeError("Corrector not defined for StochasticInterpolantSpecies.")
 

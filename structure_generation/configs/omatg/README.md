@@ -1,211 +1,215 @@
 # OMatG
 
-[Open Materials Generation with Stochastic Interpolants](https://openreview.net/forum?id=gHGrzxFujU)
-uses stochastic interpolants for crystal structure prediction (CSP) and de novo
-generation (DNG). The implementation reuses the DiffCSP message-passing layers,
-`DefaultCollator`, `BaseTrainer` and `StructureSampler`.
+[Open Materials Generation with Stochastic Interpolants](https://arxiv.org/abs/2502.02582)
 
-| Configuration | Registered package | Species | Continuous integration |
+## Abstract
+
+The discovery of new materials is essential for enabling technological advancements.
+Computational approaches for predicting novel materials must effectively learn the
+manifold of stable crystal structures within an infinite design space. We introduce
+Open Materials Generation (OMatG), a unifying framework for the generative design and
+discovery of inorganic crystalline materials. OMatG employs stochastic interpolants
+(SI) to bridge an arbitrary base distribution to the target distribution of inorganic
+crystals via a broad class of tunable stochastic processes, encompassing both
+diffusion models and flow matching as special cases. In this work, we adapt the SI
+framework by integrating an equivariant graph representation of crystal structures
+and extending it to account for periodic boundary conditions in unit cell
+representations. Additionally, we couple the SI flow over spatial coordinates and
+lattice vectors with discrete flow matching for atomic species. We benchmark OMatG's
+performance on two tasks: Crystal Structure Prediction (CSP) for specified
+compositions, and "de novo" generation (DNG) aimed at discovering stable, novel, and
+unique structures. In our ground-up implementation of OMatG, we refine and extend
+both CSP and DNG metrics compared to previous works. OMatG establishes a new state of
+the art in generative modeling for materials discovery, outperforming purely
+flow-based and diffusion-based implementations.
+
+![OMatG CSP](../../docs/omatg_csp_movie.gif)
+![OMatG DNG](../../docs/omatg_dng_movie.gif)
+
+---
+
+## Model Description
+
+### Overview
+
+A periodic crystal unit cell is represented as:
+
+- atom types (composition): $A = (a_1,\ldots,a_N)$
+- fractional coordinates: $F = (f_1,\ldots,f_N),\; f_i \in [0,1)^3$
+- lattice matrix: $L \in \mathbb{R}^{3\times 3}$
+
+OMatG generates all three fields jointly. Instead of a diffusion noise process, it
+uses stochastic interpolants between a base sample $(A_0, F_0, L_0)$ and the target
+$(A_1, F_1, L_1)$:
+
+$$
+x_t = \alpha(t)\,x_0 + \beta(t)\,x_1 + \gamma(t)\,z,
+\qquad
+z \sim \mathcal{N}(0, I),
+$$
+
+with $\alpha(0)=\beta(1)=1$ and $\alpha(1)=\beta(0)=\gamma(0)=\gamma(1)=0$. The
+network learns the velocity $b^\theta(t,x)$ and, when $\gamma(t)>0$, the denoiser
+$\eta^\theta(t,x)$.
+
+### Method
+
+#### 1) Interpolant losses
+
+$$
+\mathcal{L}_b = \mathbb{E}_{t,z}\left[\left\|\dot{\alpha}(t)x_0 + \dot{\beta}(t)x_1
++ \dot{\gamma}(t)z - b^\theta(t,x_t)\right\|^2\right],
+\qquad
+\mathcal{L}_\eta = \mathbb{E}_{t,z}\left[\left\|z - \eta^\theta(t,x_t)\right\|^2\right].
+$$
+
+Species use discrete flow matching instead of a continuous interpolant:
+$A_t$ starts from a mask token and each atom jumps to its target species with a rate
+that grows with $t$. The CSP variant additionally keeps the input composition fixed
+($A_t = A_1$).
+
+#### 2) Integration
+
+Both deterministic and stochastic sampling evolve the same learned fields:
+
+$$
+\text{ODE:}\quad \mathrm{d}x = (1 + st)\,b^\theta(t,x)\,\mathrm{d}t,
+$$
+
+$$
+\text{SDE:}\quad \mathrm{d}x = \left[(1 + st)\,b^\theta(t,x) -
+\frac{\epsilon(t)}{\gamma(t)}\,\eta^\theta(t,x)\right]\mathrm{d}t
++ \sqrt{2\epsilon(t)}\,\mathrm{d}W,
+$$
+
+where $s$ is the configured velocity-annealing factor and $\epsilon(t)$ a vanishing
+noise schedule. Fractional coordinates are periodic: their interpolant follows the
+shortest path on the torus and the result is wrapped back into the unit cell. The
+lattice evolves in Cartesian space. Every field is updated from the same previous
+state, and integrations use a fixed Euler step per interval.
+
+#### 3) Backbone
+
+The denoiser is the DiffCSP message-passing network with a sinusoidal time embedding,
+dual output heads per field, and periodic Fourier features on fractional-coordinate
+differences. Only fully connected atom graphs are supported.
+
+---
+
+## Dataset Description
+
+- **MP-20**: 45,231 inorganic crystals from the Materials Project with at most 20
+  atoms per unit cell; the standard benchmark for crystal generation and CSP.
+- CSP uses one structure per test entry, with its composition given as input.
+- DNG draws the number of atoms from the dataset distribution and generates both the
+  composition and the structure.
+
+#### MP-20 split (download link)
+
+| Dataset | Train | Val | Test |
 | --- | --- | --- | --- |
-| [omatg_mp20_csp.yaml](omatg_mp20_csp.yaml) | `omatg_mp20_csp_linear_ode` | fixed input composition | Linear ODE, Euler |
-| [omatg_mp20_dng.yaml](omatg_mp20_dng.yaml) | `omatg_mp20_dng_linear_sde_gamma` | masked discrete flow matching | Linear SDE with square-root gamma, Euler-Maruyama |
+| [MP-20](https://paddle-org.bj.bcebos.com/paddlematerial/datasets/mp_20/mp_20.zip) | 27136 | 9047 | 9046 |
 
-Coordinates are fractional and periodic; cell matrices evolve in Cartesian
-space. Each integration step computes all fields from the same previous state.
-SDE drift includes the configured velocity annealing, and masked species are
-fully unmasked at the final step. Integration uses one fixed Euler step per
-interval; adaptive solvers and SDE substeps are unsupported. Nonempty
-`integrator_kwargs` must be `{"method": "euler"}`.
+The dataset is loaded with the shared `MP20Dataset`; CIF strings are cached under
+`data/mp_20_cache/` and reused across runs.
 
-The released packages contain auxiliary prediction heads that their selected
-losses never use. These tensors remain in `state_dict` and are frozen; active
-heads retain their original checkpoint names and shapes. OMatG uses the shared
-unfused Swish expression to avoid nonfinite fused-SiLU CPU gradients at large
-negative inputs.
+---
 
-### Examples from the original project
+## Results
 
-<img src="../../docs/omatg_csp_movie.gif" alt="CSP example" width="60%">
-<img src="../../docs/omatg_dng_movie.gif" alt="DNG example" width="60%">
+CSP on the MP-20 test split (210 integration steps):
 
-## Data
+| Model | Dataset | Match Rate (%) | RMS Dist | GPUs | Training Time | Config | Checkpoint / Log |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| omatg_mp20_csp_linear_ode | mp20 | 63.65 | 0.0712 | 1 | ~23.7 h (2000 epochs) | [omatg_mp20_csp.yaml](omatg_mp20_csp.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/OMatG/omatg_mp20_csp_linear_ode.zip) |
 
-`OMATGStructureDataset` accepts an explicit `path` (`file_path` remains a
-legacy keyword alias):
+De novo generation on MP-20 (1000 structures, 710 integration steps):
 
-| Format | Required fields | Loading |
-| --- | --- | --- |
-| LMDB | `cell` (3x3), `atomic_numbers` (N), Cartesian `pos` (Nx3) | lazy by default; metadata keys beginning with `__` are excluded |
-| CSV | `cif` | eager; structures are parsed through `BuildStructure` |
-| Parquet | `cell`, `atomic_numbers`, Cartesian `positions` | eager |
+| Model | Dataset | Valid (%) | Struct. Valid (%) | COV-P (%) | COV-R (%) | METRe (%) | wDist (rho) | wDist (N-ary) | wDist (CN) | GPUs | Training Time | Config | Checkpoint / Log |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| omatg_mp20_dng_linear_sde_gamma | mp20 | 83.60 | 99.60 | 99.90 | 95.25 | 0.23 | 0.1953 | 0.0523 | 0.4954 | 1 | ~37.5 h (2000 epochs) | [omatg_mp20_dng.yaml](omatg_mp20_dng.yaml) | [checkpoint](https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/OMatG/omatg_mp20_dng_linear_sde_gamma.zip) |
 
-`convert_to_fractional=True` converts Cartesian input once. CSV coordinates
-are already fractional. Optional Niggli reduction defaults to false. All formats
-return plain dictionaries of `ConcatData` fields for `DefaultCollator`.
+Both rows are produced by the released checkpoints with the evaluation commands below
+on a single GPU: CSP generates one structure for every MP-20 test entry (9046
+structures, 210 integration steps), while DNG generates 1000 structures (710
+integration steps) and scores them against the MP-20 test split. The CSP row uses the
+shared `CSPMetric`; the DNG row uses `OMatGMetric`, cross-checked against the
+upstream `ValidAtoms`, `get_cov` and `metre_rmsds` implementations. `Valid` follows
+the upstream validity conjunction (SMACT composition validity, pairwise-distance
+structural validity, non-degenerate polar sine and computable CrystalNN/Magpie
+fingerprints), while `Struct. Valid` reports the pairwise-distance structural
+validity alone, the definition used by the original generation benchmark; the MP-20
+test split scores 100.0% structural validity under the same definition.
+`COV-P`/`COV-R` are coverage precision/recall at the published MP-20 cutoffs, the
+`wDist` columns are the density, N-ary and mean-coordination-number Wasserstein
+distances, and `METRe` is the fraction of reference structures matched by at least
+one generated structure. Training Time is the configured 2000-epoch schedule at the
+measured per-epoch wall-clock on one GPU (CSP: 42.7 s/epoch measured over 50 epochs,
+DNG: 67.5 s/epoch measured over 20 epochs; both include the per-epoch validation pass
+and checkpoint writes). The configurations keep the upstream effective batch sizes
+(1024 for CSP, 512 for DNG) through gradient accumulation over four micro-batches so
+that training fits a 32 GB GPU.
 
-The training configurations expect `data/mp_20/{train,val,test}.lmdb` prepared
-from the original OMatG data. Pickled LMDB payloads must contain NumPy arrays or
-Python lists; source payloads containing PyTorch tensors require conversion
-before use. Alternatively, obtain the repository's MP-20 CSV package and set
-each `Dataset` split's `path` to its CSV:
+---
 
-```bash
-mkdir -p data/mp_20
-wget -O data/mp_20/mp_20.zip https://paddle-org.bj.bcebos.com/paddlematerial/datasets/mp_20/mp_20.zip
-unzip -j data/mp_20/mp_20.zip -d data/mp_20
-```
+## Command
 
-The archive MD5 is `73371948155aa9da609436e291142d7e`. This dataset adapter
-does not infer resource locations or download files implicitly. Metric references
-must be CSV files with a `cif` column. CSP predictions and references must follow
-the same row order and preprocessing; LMDB key order must not be assumed to equal
-CSV row order.
-
-## Environment
-
-Use the repository's Paddle environment and dependencies. LMDB input requires
-`lmdb`; Parquet requires a pandas Parquet engine such as `pyarrow`. Evaluation
-uses pymatgen, matminer, SMACT, ASE and SciPy. No PyTorch runtime is required.
-
-## Training and evaluation
-
-Run a bounded smoke test on prepared LMDB data:
+### Training
 
 ```bash
-python structure_generation/train.py \
-    -c structure_generation/configs/omatg/omatg_mp20_csp.yaml \
-    Trainer.max_epochs=1 Trainer.max_iter=2 Global.do_eval=False \
-    Dataset.train.sampler.__init_params__.batch_size=2 \
-    Dataset.val.sampler.__init_params__.batch_size=2
+# multi-gpu training (example with 4 GPUs)
+python -m paddle.distributed.launch --gpus="0,1,2,3" structure_generation/train.py -c structure_generation/configs/omatg/omatg_mp20_csp.yaml
+# single-gpu training
+python structure_generation/train.py -c structure_generation/configs/omatg/omatg_mp20_csp.yaml
+
+# de novo generation (atom types are generated as well)
+python structure_generation/train.py -c structure_generation/configs/omatg/omatg_mp20_dng.yaml
 ```
 
-Use `omatg_mp20_dng.yaml` for DNG. Omit the overrides for the full configured
-training run. `Global.do_eval=False` skips the final standalone evaluation;
-validation during training still follows `Trainer.eval_freq`.
-
-Evaluate a trained checkpoint on the validation split:
+### Validation
 
 ```bash
-python structure_generation/train.py \
-    -c structure_generation/configs/omatg/omatg_mp20_csp.yaml \
-    Global.do_train=False Global.do_eval=True \
-    Trainer.pretrained_model_path=./output/omatg_run/checkpoints/best.pdparams
+# Override configuration fields on the command line; do not edit the yaml.
+python structure_generation/train.py -c structure_generation/configs/omatg/omatg_mp20_csp.yaml Global.do_eval=True Global.do_train=False Global.do_test=False Trainer.pretrained_model_path='path/to/model.pdparams'
 ```
 
-Use the actual run directory: the training entrypoint appends a timestamp and
-seed to `Trainer.output_dir`. For the test split, replace `Global.do_eval=True`
-with `Global.do_eval=False Global.do_test=True`. To fine-tune, provide
-`Trainer.pretrained_model_path` while leaving `Global.do_train=True`.
-
-The existing Trainer saves epoch checkpoints before advancing an epoch-based
-learning-rate scheduler. Resuming the provided Cosine schedules therefore
-restores a scheduler one epoch behind an uninterrupted run. The shared Trainer
-is unchanged by this integration. The resume integration test uses a nonconstant
-step-based scheduler and checks weights, Adam moments, learning rate and global
-step before the first resumed update; it does not qualify exact epoch-based
-scheduler continuation. Loading model weights for inference is unaffected.
-
-## Pretrained sampling
-
-The two registered packages include configuration and `checkpoints/best.pdparams`.
-The framework downloads and loads them automatically:
+### Testing
 
 ```bash
-python structure_generation/sample.py \
-    --model_name omatg_mp20_csp_linear_ode \
-    --mode by_chemical_formula --chemical_formula LiMnO2 \
-    --output_path ./results/omatg_csp
-
-python structure_generation/sample.py \
-    --model_name omatg_mp20_dng_linear_sde_gamma \
-    --mode by_num_atoms --num_atoms 8 \
-    --output_path ./results/omatg_dng
+python structure_generation/train.py -c structure_generation/configs/omatg/omatg_mp20_csp.yaml Global.do_eval=False Global.do_train=False Global.do_test=True Trainer.pretrained_model_path='path/to/model.pdparams'
 ```
 
-For local weights, replace `--model_name` with `--config_path` and
-`--checkpoint_path`. With CSP, `by_num_atoms` draws random atomic species and
-then keeps them fixed; use `by_chemical_formula` for a prescribed composition.
-Sampling step counts can be set with
-`Sample.model_sample_params.num_inference_steps=210` (CSP) or `710` (DNG).
-The local configurations share their 210/710 grid points with the SI settings.
-The older published packages explicitly use 100 grid points for a shorter run.
-
-`OMATG_WEIGHTS` retains the original raw-weight download index. Its legacy
-`build_omatg_model` helper builds a backbone for forward evaluation; sampling
-requires an explicitly supplied, matching `si_scheduler_cfg` and `sampler_cfg`.
-The supplied SI implementation covers the two configurations above. Trig,
-EncDec, VESBD and VPSBD sampling schedules are not implemented here; changing
-only a dataset path does not configure those variants.
-
-## Metrics and validation scope
-
-`OMatGMetric(metric_type="match")` computes per-index CSP matching and RMSD.
-`metric_type="dng"` computes validity, METRe reference coverage, Wasserstein
-statistics and composition/structure fingerprint coverage. Invalid predictions
-remain in validity and coverage denominators. More generated structures than
-references are allowed for DNG. Distribution distances exclude structures that
-cannot be constructed; if none can be constructed, only validity is reported.
-One-shot and streaming evaluation share the same implementation, and global
-reference matching includes predictions from all batches.
-
-Use the local CSP configuration's CSV sampling dataset for paired matching.
-Its `Sample.data.dataset.__init_params__.path` and
-`Sample.metrics.__init_params__.gt_file_path` refer to the same CSV. A legacy downloaded package may still configure a random
-atom-count dataset; use the local configuration with the downloaded checkpoint
-for paired evaluation. DNG references need not be paired with generated rows.
+### Sample
 
 ```bash
-python -m pytest test/omatg/test_omatg.py -v
+# Mode 1: pre-trained model (downloads automatically).
+python structure_generation/sample.py --model_name='omatg_mp20_csp_linear_ode' --mode='by_chemical_formula' --chemical_formula='LiMnO2' --output_path='result_omatg_mp20_csp/'
+python structure_generation/sample.py --model_name='omatg_mp20_dng_linear_sde_gamma' --mode='by_num_atoms' --num_atoms=8 --output_path='result_omatg_mp20_dng/'
+
+# Mode 2: custom config + checkpoint.
+python structure_generation/sample.py --config_path='structure_generation/configs/omatg/omatg_mp20_csp.yaml' --checkpoint_path='path/to/model.pdparams' --mode='by_chemical_formula' --chemical_formula='LiMnO2' --output_path='result_omatg_mp20_csp/'
+python structure_generation/sample.py --config_path='structure_generation/configs/omatg/omatg_mp20_dng.yaml' --checkpoint_path='path/to/model.pdparams' --mode='by_num_atoms' --num_atoms=8 --output_path='result_omatg_mp20_dng/'
 ```
 
-The integration suite covers CSP/DNG training, finite gradients and optimizer
-updates, masked-species sampling, simultaneous SI updates, CSV/LMDB/Parquet data
-flow, configuration validation, metric failure accounting and streaming,
-backend dispatch, and Trainer checkpoint restoration.
+### Evaluation
 
-CINN uses the model-owned `denoise_step` boundary. CPU dispatch tests exercise
-orchestration; they do not establish GPU compilation correctness. GPU training
-and registered-checkpoint sampling qualification remains pending after the
-sampling and activation corrections. Set `PPMAT_RUN_CINN_WORKFLOW_TESTS=1` on a
-working CUDA/CINN machine to run the gated training comparison. OMatG timings
-are not included in the shared A100 performance matrix.
+```bash
+# CSP: one structure per MP-20 test entry, scored with the shared CSPMetric.
+python structure_generation/sample.py --config_path='structure_generation/configs/omatg/omatg_mp20_csp.yaml' --checkpoint_path='path/to/model.pdparams' --mode='compute_metric' --output_path='result_omatg_mp20_csp_metric/'
 
-Paper-level generation quality and full-data convergence have not been
-reproduced by these smoke tests. Historical backbone-forward comparisons are
-separate from sampling correctness and must not be used as evidence that every
-archived variant reproduces the paper's generation results.
+# DNG: 1000 structures scored with OMatGMetric (validity, METRe, coverage).
+python structure_generation/sample.py --config_path='structure_generation/configs/omatg/omatg_mp20_dng.yaml' --checkpoint_path='path/to/model.pdparams' --mode='compute_metric' --output_path='result_omatg_mp20_dng_metric/'
+```
+
+---
 
 ## Citation
 
-```bibtex
-@inproceedings{
-    hoellmer2025,
-    title={Open Materials Generation with Stochastic Interpolants},
-    author={Philipp H{\"o}llmer and Thomas Egg and Maya Martirossyan and Eric
-    Fuemmeler and Zeren Shui and Amit Gupta and Pawan Prakash and Adrian
-    Roitberg and Mingjie Liu and George Karypis and Mark Transtrum and Richard
-    Hennig and Ellad B. Tadmor and Stefano Martiniani},
-    booktitle={Forty-second International Conference on Machine Learning},
-    year={2025},
-    url={https://openreview.net/forum?id=gHGrzxFujU},
-    archivePrefix={arXiv},
-    eprint={2502.02582},
-    primaryClass={cs.LG},
-}
 ```
-
-```bibtex
-@inproceedings{
-    martirossyan2025,
-    title={All that structure matches does not glitter},
-    author={Maya Martirossyan and Thomas Egg and Philipp H{\"o}llmer
-    and George Karypis and Mark Transtrum and Adrian Roitberg
-    and Mingjie Liu and Richard Hennig and Ellad B. Tadmor and Stefano Martiniani},
-    booktitle={Thirty-Ninth Annual Conference on Neural Information Processing Systems},
-    year={2025},
-    url={https://openreview.net/forum?id=ig9ujp50D4},
-    archivePrefix={arXiv},
-    eprint={2509.12178},
-    primaryClass={cs.LG},
+@article{hoellmer2025open,
+  title={Open Materials Generation with Stochastic Interpolants},
+  author={Hoellmer, Philipp and Egg, Thomas and Martirossyan, Maya M. and Fuemmeler, Eric and Shui, Zeren and Gupta, Amit and Prakash, Pawan and Roitberg, Adrian and Liu, Mingjie and Karypis, George and Transtrum, Mark and Hennig, Richard G. and Tadmor, Ellad B. and Martiniani, Stefano},
+  journal={arXiv preprint arXiv:2502.02582},
+  year={2025}
 }
 ```

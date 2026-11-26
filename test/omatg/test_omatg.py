@@ -19,52 +19,42 @@ from unittest import mock
 import numpy as np
 import paddle
 
-from ppmat.models.omatg.model import OMATGCSPNetFull
+from ppmat.models.omatg.omatg import OMatG
+from ppmat.models.omatg.omatg import OMATGCSPNetFull
 from ppmat.models.omatg.si.core import BIG_TIME
 from ppmat.models.omatg.si.core import DEFAULT_MAX_ATOMS
 from ppmat.models.omatg.si.core import SMALL_TIME
 
 
 def _make_batch(batch_size=2, atoms_per_struct=(3, 4), max_z=10):
-    """Build a minimal OMatG sample dict batch for forward/loss tests."""
+    """Build a minimal PPMAT-style structure_array batch for forward/loss tests."""
     num_list = list(atoms_per_struct[:batch_size])
     total = sum(num_list)
-    atom_types = paddle.randint(1, max_z, [total], dtype="int64")
-    frac_coords = paddle.rand([total, 3])
-    lattices = paddle.rand([batch_size, 3, 3]) * 2.0 + paddle.eye(3).unsqueeze(0)
-    num_atoms = paddle.to_tensor(num_list, dtype="int64")
-    node2graph = paddle.repeat_interleave(
-        paddle.arange(batch_size, dtype="int64"), num_atoms
-    )
     return {
-        "n_atoms": num_atoms,
-        "species": atom_types,
-        "cell": lattices,
-        "pos": frac_coords,
-        "pos_is_fractional": paddle.ones([batch_size], dtype="bool"),
-        "batch": node2graph,
-        "ptr": paddle.concat(
-            [
-                paddle.to_tensor([0], dtype="int64"),
-                paddle.cumsum(num_atoms, axis=0).cast("int64"),
-            ]
-        ),
+        "structure_array": {
+            "num_atoms": paddle.to_tensor(num_list, dtype="int64"),
+            "atom_types": paddle.randint(1, max_z, [total], dtype="int64"),
+            "frac_coords": paddle.rand([total, 3]),
+            "lattice": paddle.rand([batch_size, 3, 3]) * 2.0
+            + paddle.eye(3).unsqueeze(0),
+        }
     }
 
 
 def _make_concat_sample(n):
-    """Build a ConcatData-wrapped sample dict (DefaultCollator-friendly)."""
+    """Build a ConcatData-wrapped structure_array sample (DefaultCollator-friendly)."""
     from ppmat.datasets.custom_data_type import ConcatData
 
     cell = (paddle.eye(3) * 5.0).numpy()
     nums = np.arange(1, n + 1, dtype="int64")
     pos = paddle.rand([n, 3]).numpy()
     return {
-        "n_atoms": ConcatData(np.array([n], dtype="int64")),
-        "species": ConcatData(nums),
-        "cell": ConcatData(cell.reshape(1, 3, 3)),
-        "pos": ConcatData(pos),
-        "pos_is_fractional": ConcatData(np.array([True], dtype="bool")),
+        "structure_array": {
+            "num_atoms": ConcatData(np.array([n], dtype="int64")),
+            "atom_types": ConcatData(nums),
+            "lattice": ConcatData(cell.reshape(1, 3, 3)),
+            "frac_coords": ConcatData(pos),
+        }
     }
 
 
@@ -194,38 +184,96 @@ def _dng_si_scheduler_cfg(integration_time_steps=710):
     }
 
 
-class TestOMATGCSPNetFull(unittest.TestCase):
-    """CSP / DNG training mode minimal forward and loss tests."""
+def _build_omatg_model(
+    pred_type,
+    steps=10,
+    backend="eager",
+    hidden_dim=32,
+    num_layers=1,
+    time_embed_dim=16,
+):
+    """Build a small OMatG model from the config-dict style constructor."""
+    si_cfg = (
+        _dng_si_scheduler_cfg(steps) if pred_type else _csp_si_scheduler_cfg(steps)
+    )
+    decoder_cfg = {
+        "hidden_dim": hidden_dim,
+        "num_layers": num_layers,
+        "max_atoms": DEFAULT_MAX_ATOMS,
+        "time_embed_dim": time_embed_dim,
+        "edge_style": "fc",
+        "pred_type": pred_type,
+        # Additive lattice updates keep the few-step sampling of a randomly
+        # initialised test model numerically stable.
+        "ip": False,
+    }
+    sampler_cfg = {
+        "dataset_name": "mp_20",
+        "mirror_species": not pred_type,
+        "mask_species": pred_type,
+    }
+    with paddle.utils.unique_name.guard():
+        paddle.seed(2026)
+        model = OMatG(
+            decoder_cfg=decoder_cfg,
+            si_scheduler_cfg=si_cfg,
+            sampler_cfg=sampler_cfg,
+            execution_backend=backend,
+        )
+    return model
+
+
+class TestOMatG(unittest.TestCase):
+    """CSP / DNG training modes and the released-package constructor shim."""
 
     def test_csp_forward_loss(self):
         """CSP mode forward returns finite loss_dict."""
-        model = OMATGCSPNetFull(
-            hidden_dim=64,
-            num_layers=2,
-            max_atoms=DEFAULT_MAX_ATOMS,
-            time_embed_dim=32,
-            edge_style="fc",
-            pred_type=False,
-        )
+        model = _build_omatg_model(False)
+        self.assertFalse(model.supports_num_atoms_sampling)
         output = model(_make_batch())
         self.assertIn("loss_dict", output)
         loss_val = float(output["loss_dict"]["loss"])
         self.assertFalse(loss_val != loss_val, "loss is NaN")
 
     def test_dng_forward_loss(self):
-        """DNG mode forward returns finite loss_dict including loss_type."""
-        model = OMATGCSPNetFull(
-            hidden_dim=64,
-            num_layers=2,
-            max_atoms=DEFAULT_MAX_ATOMS,
-            time_embed_dim=32,
-            edge_style="fc",
-            pred_type=True,
-        )
+        """DNG mode forward returns finite loss_dict including species_loss."""
+        model = _build_omatg_model(True)
+        self.assertTrue(model.supports_num_atoms_sampling)
         output = model(_make_batch())
-        self.assertIn("loss_type", output["loss_dict"])
+        self.assertIn("species_loss", output["loss_dict"])
         loss_val = float(output["loss_dict"]["loss"])
         self.assertFalse(loss_val != loss_val, "DNG loss is NaN")
+
+    def test_released_package_constructor_matches(self):
+        """OMATGCSPNetFull keeps the flat constructor used by the released YAMLs."""
+        cfg = _csp_si_scheduler_cfg(10)
+        sampler_cfg = {"dataset_name": "mp_20", "mirror_species": True}
+        legacy = OMATGCSPNetFull(
+            hidden_dim=32,
+            num_layers=1,
+            max_atoms=DEFAULT_MAX_ATOMS,
+            time_embed_dim=16,
+            si_scheduler_cfg=cfg,
+            sampler_cfg=sampler_cfg,
+        )
+        model = OMatG(
+            decoder_cfg={
+                "hidden_dim": 32,
+                "num_layers": 1,
+                "max_atoms": DEFAULT_MAX_ATOMS,
+                "time_embed_dim": 16,
+                "pred_type": False,
+                "ln": True,
+                "num_freqs": 128,
+            },
+            si_scheduler_cfg=cfg,
+            sampler_cfg=sampler_cfg,
+        )
+        legacy_state = legacy.state_dict()
+        model_state = model.state_dict()
+        self.assertEqual(set(legacy_state), set(model_state))
+        for key in legacy_state:
+            self.assertEqual(legacy_state[key].shape, model_state[key].shape)
 
 
 class TestSITrainingPath(unittest.TestCase):
@@ -233,17 +281,7 @@ class TestSITrainingPath(unittest.TestCase):
 
     def _build_csp_si_model(self):
         """Build a small CSP model with SI (Linear-ODE)."""
-        cfg = _csp_si_scheduler_cfg(integration_time_steps=10)
-        return OMATGCSPNetFull(
-            hidden_dim=32,
-            num_layers=1,
-            max_atoms=DEFAULT_MAX_ATOMS,
-            time_embed_dim=16,
-            pred_type=False,
-            use_si=True,
-            si_scheduler_cfg=cfg,
-            sampler_cfg={"dataset_name": "mp_20", "mirror_species": True},
-        )
+        return _build_omatg_model(False, steps=10)
 
     def test_csp_si_training_and_sampling(self):
         """CSP SI path trains (velocity matching) and samples via si.integrate."""
@@ -263,20 +301,7 @@ class TestSITrainingPath(unittest.TestCase):
     def test_dng_si_training_and_sampling(self):
         """DNG trains every active head and samples synchronously from masks."""
         cfg = _dng_si_scheduler_cfg(integration_time_steps=710)
-        model = OMATGCSPNetFull(
-            hidden_dim=32,
-            num_layers=1,
-            max_atoms=DEFAULT_MAX_ATOMS,
-            time_embed_dim=16,
-            pred_type=True,
-            use_si=True,
-            si_scheduler_cfg=cfg,
-            sampler_cfg={
-                "dataset_name": "mp_20",
-                "mask_species": True,
-                "mirror_species": False,
-            },
-        )
+        model = _build_omatg_model(True, steps=710)
         batch = _make_batch()
         out = _train_step(model, batch)
         self.assertIn("loss", out["loss_dict"])
@@ -303,7 +328,10 @@ class TestSITrainingPath(unittest.TestCase):
 
         def record_noise(*args, **kwargs):
             value = original_randn(*args, **kwargs)
-            if tuple(value.shape) == (int(batch["n_atoms"].sum()), 3):
+            if tuple(value.shape) == (
+                int(batch["structure_array"]["num_atoms"].sum()),
+                3,
+            ):
                 noises.append(value.numpy().copy())
             return value
 
@@ -355,11 +383,13 @@ class TestSIFactory(unittest.TestCase):
         cfg = OmegaConf.load("structure_generation/configs/omatg/omatg_mp20_dng.yaml")
         model_cfg = OmegaConf.to_container(cfg["Model"], resolve=True)
         init_params = model_cfg["__init_params__"]
-        init_params.update(hidden_dim=32, num_layers=1, time_embed_dim=16)
+        init_params["decoder_cfg"].update(
+            hidden_dim=32, num_layers=1, time_embed_dim=16
+        )
         init_params["si_scheduler_cfg"]["integration_time_steps"] = 10
         model = build_model(copy.deepcopy(model_cfg))
-        self.assertTrue(model.use_si)
         self.assertTrue(model.use_min_perm_dist)
+        self.assertTrue(model.supports_num_atoms_sampling)
 
         batch = DefaultCollator()([_make_concat_sample(3), _make_concat_sample(4)])
         out = model(batch)
@@ -380,19 +410,51 @@ class TestSIFactory(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_model(copy.deepcopy(model_cfg))
 
+    def test_config_driven_csp_si_from_yaml(self):
+        """The CSP yaml drives build -> forward -> sample with the PPMAT contract."""
+        import copy
+
+        from omegaconf import OmegaConf
+
+        from ppmat.datasets.collate_fn import DefaultCollator
+        from ppmat.models import build_model
+
+        cfg = OmegaConf.load("structure_generation/configs/omatg/omatg_mp20_csp.yaml")
+        model_cfg = OmegaConf.to_container(cfg["Model"], resolve=True)
+        init_params = model_cfg["__init_params__"]
+        init_params["decoder_cfg"].update(
+            hidden_dim=32, num_layers=1, time_embed_dim=16, ip=False
+        )
+        init_params["si_scheduler_cfg"]["integration_time_steps"] = 10
+        model = build_model(copy.deepcopy(model_cfg))
+        self.assertFalse(model.supports_num_atoms_sampling)
+        self.assertIsNone(model._min_perm_dist_corrector)
+
+        batch = DefaultCollator()([_make_concat_sample(3), _make_concat_sample(4)])
+        out = model(batch)
+        loss_val = float(out["loss_dict"]["loss"])
+        self.assertFalse(loss_val != loss_val, "CSP SI loss is NaN")
+
+        result = model.sample(batch, num_inference_steps=10)
+        self.assertEqual(len(result["result"]), 2)
+        for entry in result["result"]:
+            self.assertEqual(
+                set(entry), {"num_atoms", "atom_types", "frac_coords", "lattice"}
+            )
+            coords = paddle.to_tensor(entry["frac_coords"])
+            self.assertFalse(bool(paddle.isnan(coords).any()))
+
     def test_csv_dataset_to_model_pipeline(self):
-        """CSV -> OMATGStructureDataset -> DefaultCollator -> SI forward."""
-        import pickle
+        """CSV -> MP20Dataset -> DefaultCollator -> SI forward."""
         import tempfile
         from pathlib import Path
 
-        import lmdb
         import pandas as pd
         from pymatgen.core import Lattice
         from pymatgen.core import Structure
 
         from ppmat.datasets.collate_fn import DefaultCollator
-        from ppmat.datasets.omatg_dataset import OMATGStructureDataset
+        from ppmat.datasets.mp20_dataset import MP20Dataset
 
         lengths = [4.0, 4.0, 4.0]
         angles = [90.0, 90.0, 90.0]
@@ -410,56 +472,30 @@ class TestSIFactory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = Path(tmp) / "train.csv"
             pd.DataFrame({"cif": cifs}).to_csv(csv_path, index=False)
-            dataset = OMATGStructureDataset(file_path=str(csv_path), lazy_storage=False)
-            samples = [dataset[i] for i in range(len(dataset))]
-            records = []
-            for cif in cifs:
-                structure = Structure.from_str(cif, fmt="cif")
-                records.append(
-                    {
-                        "cell": structure.lattice.matrix,
-                        "atomic_numbers": structure.atomic_numbers,
-                        "pos": structure.cart_coords,
-                    }
-                )
-            lmdb_path = Path(tmp) / "train.lmdb"
-            with lmdb.open(str(lmdb_path), map_size=1024 * 1024) as env:
-                with env.begin(write=True) as transaction:
-                    for index, record in enumerate(records):
-                        transaction.put(str(index).encode(), pickle.dumps(record))
-            parquet_path = Path(tmp) / "train.parquet"
-            pd.DataFrame(
-                [
-                    {
-                        "cell": record["cell"].tolist(),
-                        "atomic_numbers": record["atomic_numbers"],
-                        "positions": record["pos"].tolist(),
-                    }
-                    for record in records
-                ]
-            ).to_parquet(parquet_path)
-            for path in (lmdb_path, parquet_path):
-                dataset = OMATGStructureDataset(path=str(path))
-                for index, expected in enumerate(samples):
-                    actual = dataset[index]
-                    for key in expected:
-                        np.testing.assert_allclose(
-                            actual[key].data, expected[key].data, atol=1e-6
-                        )
-                del dataset
-
-        # CSV samples carry fractional coords; convert_to_fractional must be
-        # a no-op on them (regression guard against double conversion).
-        for sample, cif in zip(samples, cifs):
-            ref = Structure.from_str(cif, fmt="cif")
-            np.testing.assert_allclose(
-                np.asarray(sample["pos"].data), ref.frac_coords, atol=1e-6
+            dataset = MP20Dataset(
+                path=str(csv_path),
+                build_structure_cfg={
+                    "format": "cif_str",
+                    "primitive": False,
+                    "niggli": False,
+                    "num_cpus": 1,
+                },
+                cache_path=str(Path(tmp) / "cache"),
             )
+            samples = [dataset[i] for i in range(len(dataset))]
+            for sample, cif in zip(samples, cifs):
+                ref = Structure.from_str(cif, fmt="cif")
+                np.testing.assert_allclose(
+                    np.asarray(sample["structure_array"]["frac_coords"].data),
+                    ref.frac_coords,
+                    atol=1e-6,
+                )
 
         self.assertEqual(len(samples), 3)
         batch = DefaultCollator()(samples)
-        self.assertEqual(len(batch["n_atoms"]), 3)
-        self.assertEqual(len(batch["species"]), 9)
+        structure_array = batch["structure_array"]
+        self.assertEqual(len(structure_array["num_atoms"]), 3)
+        self.assertEqual(len(structure_array["atom_types"]), 9)
 
         model = _make_cinn_model("eager")
         out = model(batch)
@@ -774,7 +810,7 @@ def _metric_sample(num_atoms, seed, species=(3, 8, 11)):
 
 
 class TestOMatGMetric(unittest.TestCase):
-    """Metric end-to-end: one-shot call matches streaming accumulation."""
+    """CSP matching (shared CSPMetric) and OMatG de novo metrics."""
 
     @staticmethod
     def _write_gt_csv(csv_path, ref):
@@ -795,11 +831,12 @@ class TestOMatGMetric(unittest.TestCase):
             csv_path, index=False
         )
 
-    def test_match_one_shot_equals_streaming(self):
+    def test_csp_metric_reuses_framework_metric(self):
+        """CSP evaluation goes through the shared CSPMetric."""
         import tempfile
         from pathlib import Path
 
-        from ppmat.metrics.omatg_metric import OMatGMetric
+        from ppmat.metrics.csp_metric import CSPMetric
 
         ref = [_metric_sample(3, 0), _metric_sample(4, 1), _metric_sample(5, 2)]
         gen = [dict(ref[0]), dict(ref[1]), _metric_sample(5, seed=3)]
@@ -807,19 +844,11 @@ class TestOMatGMetric(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = Path(tmp) / "gt.csv"
             self._write_gt_csv(csv_path, ref)
+            metrics = CSPMetric(gt_file_path=str(csv_path))(gen)
 
-            one_shot = OMatGMetric(metric_type="match", gt_file_path=str(csv_path))
-            one_shot_metrics = one_shot(gen)
-
-            streaming = OMatGMetric(metric_type="match", gt_file_path=str(csv_path))
-            streaming.update_step(result={"result": gen[:2]}, batch=None, stage="eval")
-            streaming.update_step(result={"result": gen[2:]}, batch=None, stage="eval")
-            streamed_metrics = streaming.compute_epoch(stage="eval")
-
-        self.assertEqual(set(one_shot_metrics), set(streamed_metrics))
-        for key in one_shot_metrics:
-            self.assertAlmostEqual(one_shot_metrics[key], streamed_metrics[key])
-        self.assertGreater(one_shot_metrics["match_rate"], 0.0)
+        self.assertEqual(set(metrics), {"match_rate", "rms_dist"})
+        self.assertGreater(metrics["match_rate"], 0.0)
+        self.assertTrue(np.isfinite(metrics["rms_dist"]))
 
     def test_dng_metrics_smoke(self):
         """DNG mode reports validity, distribution, METRe and COV metrics."""
@@ -844,9 +873,11 @@ class TestOMatGMetric(unittest.TestCase):
         ]
         invalid = dict(ref[0], lengths=[0.0, 0.0, 0.0])
         gen = [ref[0], invalid, ref[0]]
-        metrics = OMatGMetric(metric_type="dng", dataset_name="mp_20")(gen, gt_data=ref)
+        metrics = OMatGMetric(dataset_name="mp_20")(gen, gt_data=ref)
         expected_keys = {
             "valid_rate",
+            "composition_valid_rate",
+            "structural_valid_rate",
             "wdist_density",
             "wdist_narity",
             "wdist_coordination_numbers",
@@ -864,26 +895,28 @@ class TestOMatGMetric(unittest.TestCase):
         for value in metrics.values():
             self.assertFalse(value != value, "metric value is NaN")
         self.assertAlmostEqual(metrics["valid_rate"], 2.0 / 3.0)
+        # Composition validity is only evaluated for structurally valid entries,
+        # so the copy with zero lattice lengths counts as composition-invalid.
+        self.assertAlmostEqual(metrics["composition_valid_rate"], 2.0 / 3.0)
+        self.assertAlmostEqual(metrics["structural_valid_rate"], 2.0 / 3.0)
         self.assertAlmostEqual(metrics["metre_rate"], 0.5)
         self.assertAlmostEqual(metrics["wdist_coordination_numbers"], 0.5)
 
         with tempfile.TemporaryDirectory() as tmp:
             csv_path = Path(tmp) / "gt.csv"
             self._write_gt_csv(csv_path, ref)
-            streaming = OMatGMetric(
-                metric_type="dng", dataset_name="mp_20", gt_file_path=str(csv_path)
-            )
-            streaming.update_step(
-                result={"result": gen[:2]}, batch=None, stage="sample"
-            )
-            streaming.update_step(
-                result={"result": gen[2:]}, batch=None, stage="sample"
-            )
-            for key, value in streaming.compute_epoch(stage="sample").items():
-                self.assertAlmostEqual(metrics[key], value)
+            csv_metrics = OMatGMetric(
+                dataset_name="mp_20", gt_file_path=str(csv_path)
+            )(gen)
+        for key, value in csv_metrics.items():
+            self.assertAlmostEqual(metrics[key], value)
         self.assertEqual(
-            OMatGMetric(metric_type="dng", dataset_name="mp_20")([invalid], ref),
-            {"valid_rate": 0.0},
+            OMatGMetric(dataset_name="mp_20")([invalid], ref),
+            {
+                "valid_rate": 0.0,
+                "composition_valid_rate": 0.0,
+                "structural_valid_rate": 0.0,
+            },
         )
 
 

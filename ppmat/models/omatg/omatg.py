@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""OMATG-specific CSPNet with time embedding and dual output heads.
+"""OMatG: Open Materials Generation with Stochastic Interpolants.
 
-OMatG uses Stochastic Interpolants (continuous alpha/beta/gamma schedules),
-not diffusion noise schedulers, so ppmat.schedulers (DDPMScheduler etc.) do
-not apply.
+https://openreview.net/forum?id=gHGrzxFujU
+
+The model evolves fractional coordinates, lattice matrices and atomic species
+with stochastic interpolants (SIs) instead of diffusion noise schedulers. Each
+data field owns its own interpolant and integrator, configured through
+``si_scheduler_cfg``. The CSP variant keeps the input composition fixed, while
+the DNG variant masks the species and draws them during integration.
 """
 
 import math
@@ -25,7 +29,6 @@ from typing import Dict
 import paddle
 import paddle.nn as nn
 
-from ppmat.losses import MSELoss
 from ppmat.models.common.activation import swish
 from ppmat.models.common.runtime import RuntimeMixin
 from ppmat.models.common.runtime import runtime_boundary
@@ -36,20 +39,18 @@ from ppmat.models.omatg.si.core import SMALL_TIME
 from ppmat.models.omatg.si.core import StochasticInterpolantSpecies
 from ppmat.models.omatg.si.core import build_si_from_cfg
 from ppmat.models.omatg.si.core import correct_for_minimum_permutation_distance
-from ppmat.utils.crystal import frac_to_cart_coords_with_lattice
-from ppmat.utils.crystal import lattices_to_params_shape_paddle
-from ppmat.utils.crystal import radius_graph_pbc
-from ppmat.utils.misc import repeat_blocks
+from ppmat.utils.crystal import lattice_params_to_matrix_paddle
 from ppmat.utils.scatter import scatter_mean
 
 __all__ = [
-    "OMATGCSPNet",
+    "OMatG",
     "OMATGCSPNetFull",
     "IndependentSampler",
     "build_sampler_from_cfg",
 ]
 
-# Lattice log-length mean/std per dataset (upstream FlowMM lattice_params_stats).
+# Base-distribution lattice statistics used by the released checkpoints. They
+# are only a fallback: sampler_cfg may pass lattice_means/lattice_stds instead.
 LATTICE_PARAMS = {
     "carbon_24": {
         "means": [0.9852757453918457, 1.3865314722061157, 1.7068126201629639],
@@ -94,38 +95,14 @@ def sample_lattice_cell(lattice_means, lattice_stds):
     return cellpar_to_cell(paddle.concat((lengths, angles)).numpy())
 
 
-def _normalize_sample_dict(data: dict) -> dict:
-    """Normalize a collated sample dict to n_atoms/species/cell/pos/batch/ptr."""
-    out = {
-        "n_atoms": data["n_atoms"],
-        "species": data["species"],
-        "cell": data["cell"],
-        "pos": data["pos"],
-        "pos_is_fractional": data["pos_is_fractional"],
-    }
-    n_atoms = out["n_atoms"]
-    if "batch" in data:
-        out["batch"] = data["batch"]
-    else:
-        out["batch"] = paddle.repeat_interleave(
-            paddle.arange(n_atoms.shape[0], dtype="int64"), n_atoms
-        )
-    out["ptr"] = paddle.concat(
-        [
-            paddle.to_tensor([0], dtype="int64"),
-            paddle.cumsum(n_atoms, axis=0).cast("int64"),
-        ]
-    )
-    return out
+def _as_tensor(value, dtype):
+    if paddle.is_tensor(value):
+        return value.cast(dtype)
+    return paddle.to_tensor(value, dtype=dtype)
 
 
 def _validate_relative_si_costs(relative_si_costs, loss_keys) -> dict:
-    """Validate the SI loss weights against the keys the interpolants produce.
-
-    ``relative_si_costs`` must weight every loss exactly once and sum to one, so a
-    typo or a missing entry fails at build time instead of silently reweighting or
-    dropping a loss term.
-    """
+    """Check that the SI loss weights cover every interpolant loss exactly once."""
     if relative_si_costs is None:
         raise ValueError(
             "si_scheduler_cfg requires 'relative_si_costs' mapping every loss key "
@@ -156,7 +133,7 @@ class _UnfusedSiLU(nn.Silu):
 
 
 class OMATGCSPNet(CSPNet):
-    """OMATG-specific CSPNet extending diffcsp backbone."""
+    """CSPNet backbone with the OMatG time embedding and dual velocity heads."""
 
     def __init__(
         self,
@@ -187,12 +164,12 @@ class OMATGCSPNet(CSPNet):
             )
         if act_fn != "silu":
             raise ValueError("OMatG supports act_fn='silu' only.")
+        if edge_style != "fc":
+            raise ValueError("OMatG supports edge_style='fc' only.")
         if time_embed_dim is not None and (time_embed_dim < 4 or time_embed_dim % 2):
             raise ValueError("time_embed_dim must be an even integer of at least four.")
         if num_layers < 1 or hidden_dim < 1 or max_atoms < 1:
             raise ValueError("Model dimensions and num_layers must be positive.")
-        if edge_style not in ("fc", "knn"):
-            raise ValueError("edge_style must be 'fc' or 'knn'.")
         super().__init__(
             hidden_dim=hidden_dim,
             latent_dim=time_embed_dim if time_embed_dim is not None else 1,
@@ -209,7 +186,8 @@ class OMATGCSPNet(CSPNet):
             pred_scalar=pred_scalar,
             num_classes=max_atoms,
         )
-        # OMatG has no property embedding; drop prop_mlp from CSPNet.
+        # OMatG has no property embedding; drop prop_mlp from CSPNet and use the
+        # unfused Swish expression for the two-layer MLPs.
         self.act_fn = _UnfusedSiLU()
         for i in range(num_layers):
             layer = getattr(self, "csp_layer_%d" % i)
@@ -245,69 +223,6 @@ class OMATGCSPNet(CSPNet):
         self.node_embedding = nn.Embedding(self.num_classes + 1, self.hidden_dim)
         self.species_shift = 0
 
-    def reorder_symmetric_edges(self, edge_index, cell_offsets, neighbors, edge_vector):
-        mask_sep_atoms = edge_index[0] < edge_index[1]
-        cell_earlier = (
-            (cell_offsets[:, 0] < 0)
-            | ((cell_offsets[:, 0] == 0) & (cell_offsets[:, 1] < 0))
-            | (
-                (cell_offsets[:, 0] == 0)
-                & (cell_offsets[:, 1] == 0)
-                & (cell_offsets[:, 2] < 0)
-            )
-        )
-        mask_same_atoms = edge_index[0] == edge_index[1]
-        mask_same_atoms = mask_same_atoms & cell_earlier
-        mask = mask_sep_atoms | mask_same_atoms
-        edge_index_new = edge_index[mask[None, :].expand([2, -1])].reshape([2, -1])
-        edge_index_cat = paddle.concat(
-            [
-                edge_index_new,
-                paddle.stack([edge_index_new[1], edge_index_new[0]], axis=0),
-            ],
-            axis=1,
-        )
-        batch_edge = paddle.repeat_interleave(
-            paddle.arange(neighbors.shape[0]), neighbors
-        )
-        batch_edge = batch_edge[mask]
-        neighbors_new = 2 * paddle.bincount(batch_edge, minlength=neighbors.shape[0])
-        edge_reorder_idx = repeat_blocks(
-            neighbors_new // 2,
-            repeats=2,
-            continuous_indexing=True,
-            repeat_inc=edge_index_new.shape[1],
-        )
-        edge_index_new = edge_index_cat[:, edge_reorder_idx]
-        cell_offsets_new = CSPNet.select_symmetric_edges(
-            self, cell_offsets, mask, edge_reorder_idx, True
-        )
-        edge_vector_new = CSPNet.select_symmetric_edges(
-            self, edge_vector, mask, edge_reorder_idx, True
-        )
-        return edge_index_new, cell_offsets_new, neighbors_new, edge_vector_new
-
-    def gen_edges(self, num_atoms, frac_coords, lattices):
-        if self.edge_style == "fc":
-            return CSPNet.gen_edges(self, num_atoms, frac_coords)
-
-        cart_coords = frac_to_cart_coords_with_lattice(frac_coords, num_atoms, lattices)
-        edge_index, to_jimages, num_bonds = radius_graph_pbc(
-            cart_coords,
-            lattices,
-            num_atoms,
-            self.cutoff,
-            self.max_neighbors,
-            num_atoms.place,
-        )
-        j_index, i_index = edge_index[0], edge_index[1]
-        distance_vectors = frac_coords[j_index] - frac_coords[i_index]
-        distance_vectors = distance_vectors + to_jimages
-        edge_index_new, _, _, edge_vector_new = self.reorder_symmetric_edges(
-            edge_index, to_jimages, num_bonds, distance_vectors
-        )
-        return edge_index_new, -edge_vector_new
-
     def forward_with_edges(
         self,
         t,
@@ -318,6 +233,8 @@ class OMATGCSPNet(CSPNet):
         node2graph,
         edges,
         frac_diff,
+        property_emb=None,
+        property_mask=None,
     ):
         edge2graph = node2graph[edges[0]]
 
@@ -344,6 +261,9 @@ class OMATGCSPNet(CSPNet):
                 edges,
                 edge2graph,
                 frac_diff=frac_diff,
+                num_atoms=num_atoms,
+                property_emb=property_emb,
+                property_mask=property_mask,
             )
 
         if self.ln:
@@ -381,7 +301,7 @@ class OMATGCSPNet(CSPNet):
         return lattice_out, coord_out, lattice_out_2, coord_out_2
 
     def forward_dict(self, t, atom_types, frac_coords, lattices, num_atoms, node2graph):
-        edges, frac_diff = self.gen_edges(num_atoms, frac_coords, lattices)
+        edges, frac_diff = self.gen_edges(num_atoms, frac_coords)
         return self._runtime_forward_dict(
             t,
             atom_types,
@@ -433,11 +353,225 @@ class OMATGCSPNet(CSPNet):
         }
 
 
-class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
-    """CSPNet with time embedding, checkpoint-compatible defaults."""
+class OMatG(RuntimeMixin, OMATGCSPNet):
+    """Open Materials Generation with Stochastic Interpolants.
 
-    # Defaults match the released checkpoints so a bare OMATGCSPNetFull()
-    # can load pretrained weights; build_omatg_model() overrides from these.
+    Args:
+        decoder_cfg (dict): Backbone configuration, see :class:`OMATGCSPNet`.
+        si_scheduler_cfg (dict): Per-field stochastic-interpolant configuration.
+            It must provide ``species``, ``pos`` and ``cell`` entries plus
+            ``integration_time_steps`` and ``relative_si_costs``.
+        sampler_cfg (dict): Base-distribution sampler configuration.
+        use_min_perm_dist (bool): Permute the base positions to minimise the
+            periodic distance to the target before building the interpolants.
+        execution_backend (str): Runtime backend used by the shared runtime mixin.
+        runtime_options (dict, optional): Backend-specific runtime options.
+    """
+
+    supports_num_atoms_sampling = False
+
+    def __init__(
+        self,
+        decoder_cfg: dict,
+        si_scheduler_cfg: dict,
+        sampler_cfg: dict,
+        use_min_perm_dist: bool = False,
+        execution_backend: str = "eager",
+        runtime_options: dict = None,
+    ) -> None:
+        if not sampler_cfg:
+            raise ValueError(
+                "OMatG requires sampler_cfg describing the base distribution "
+                "(dataset_name, or explicit lattice_means/lattice_stds)."
+            )
+        super().__init__(**decoder_cfg)
+        self._init_runtime(execution_backend, runtime_options)
+
+        self.use_min_perm_dist = use_min_perm_dist
+        self._si = None
+        self._sampler = None
+        self._relative_si_costs = {}
+        self._min_perm_dist_corrector = None
+
+        self._build_si(si_scheduler_cfg, sampler_cfg)
+        self._freeze_unused_heads()
+
+    def _freeze_unused_heads(self):
+        heads = [self.type_out_2]
+        if not self.pred_type:
+            heads.append(self.type_out)
+        for field, head in (
+            ("pos", self.coord_out_2),
+            ("cell", self.lattice_out_2),
+        ):
+            if "loss_z" not in self._si.get_stochastic_interpolant(field).loss_keys():
+                heads.append(head)
+        for head in heads:
+            for parameter in head.parameters():
+                parameter.stop_gradient = True
+
+    def forward(self, batch, **kwargs):
+        x_1 = self._to_sample_dict(batch)
+        x_0 = self._sampler.sample_p_0(x_1)
+        if self._min_perm_dist_corrector is not None:
+            correct_for_minimum_permutation_distance(
+                x_0, x_1, self._min_perm_dist_corrector
+            )
+
+        batch_size = len(x_1["n_atoms"])
+        t = paddle.rand([batch_size]) * (BIG_TIME - SMALL_TIME) + SMALL_TIME
+
+        losses = self._si.losses(self._make_model_function(), t, x_0, x_1)
+        total_loss = paddle.to_tensor(0.0)
+        loss_dict = {}
+        for key, val in losses.items():
+            weighted = self._relative_si_costs[key] * val
+            loss_dict[key] = weighted
+            total_loss = total_loss + weighted
+        loss_dict["loss"] = total_loss
+        return {"loss_dict": loss_dict}
+
+    @paddle.no_grad()
+    def sample(self, batch_data, num_inference_steps=None, **kwargs):
+        x_1 = self._to_sample_dict(batch_data)
+        x_0 = self._sampler.sample_p_0(x_1)
+
+        gen = self._si.integrate(
+            x_0,
+            self._make_model_function(),
+            integration_time_steps=num_inference_steps,
+        )
+
+        return self._build_sample_result(
+            gen["n_atoms"].tolist(), gen["species"], gen["pos"], gen["cell"]
+        )
+
+    def _make_model_function(self):
+        def model_function(x_t, time):
+            return self.forward_dict(
+                t=time,
+                atom_types=x_t["species"],
+                frac_coords=x_t["pos"],
+                lattices=x_t["cell"],
+                num_atoms=x_t["n_atoms"],
+                node2graph=x_t["batch"],
+            )
+
+        return model_function
+
+    @staticmethod
+    def _build_sample_result(num_atoms_list, atom_types, frac_coords, lattices):
+        start_idx = 0
+        result = []
+        for i, n in enumerate(num_atoms_list):
+            end_idx = start_idx + n
+            result.append(
+                {
+                    "num_atoms": n,
+                    "atom_types": atom_types[start_idx:end_idx].tolist(),
+                    "frac_coords": frac_coords[start_idx:end_idx].tolist(),
+                    "lattice": lattices[i].tolist(),
+                }
+            )
+            start_idx += n
+        return {"result": result}
+
+    def _build_si(self, si_scheduler_cfg: dict, sampler_cfg: dict) -> None:
+        self._si = build_si_from_cfg(si_scheduler_cfg)
+        for field in ("species", "pos", "cell"):
+            self._si.get_stochastic_interpolant(field)
+        self._relative_si_costs = _validate_relative_si_costs(
+            si_scheduler_cfg.get("relative_si_costs"), self._si.loss_keys()
+        )
+
+        species_interpolant = self._si.get_stochastic_interpolant("species")
+        if not isinstance(species_interpolant, StochasticInterpolantSpecies):
+            raise ValueError(
+                "The 'species' data field must be a StochasticInterpolantSpecies "
+                f"interpolant, got {type(species_interpolant).__name__}."
+            )
+        masked_species = species_interpolant.uses_masked_species()
+        if masked_species:
+            if not self.pred_type or not sampler_cfg.get("mask_species", False):
+                raise ValueError(
+                    "Masked-species interpolation requires pred_type=True and "
+                    "sampler_cfg.mask_species=True."
+                )
+            self.enable_masked_species()
+            self.supports_num_atoms_sampling = True
+        elif self.pred_type or sampler_cfg.get("mask_species", False):
+            raise ValueError(
+                "Fixed-species interpolation requires pred_type=False and "
+                "sampler_cfg.mask_species=False."
+            )
+
+        active_costs = dict(self._relative_si_costs)
+        if not self.pred_type:
+            active_costs.pop("species_loss", None)
+        if not any(cost > 0.0 for cost in active_costs.values()):
+            raise ValueError("At least one model-dependent SI loss must have weight.")
+
+        self._sampler = build_sampler_from_cfg(sampler_cfg)
+
+        if self.use_min_perm_dist:
+            self._min_perm_dist_corrector = self._si.get_stochastic_interpolant(
+                "pos"
+            ).get_corrector()
+
+    def _to_sample_dict(self, batch):
+        """Convert a PPMAT ``structure_array`` batch to the internal sample dict."""
+        structure_array = batch["structure_array"]
+
+        num_atoms = _as_tensor(structure_array["num_atoms"], "int64").reshape([-1])
+        total = int(num_atoms.sum().item())
+
+        if "atom_types" in structure_array:
+            species = _as_tensor(structure_array["atom_types"], "int64").reshape([-1])
+        else:
+            # Sample requests carry no composition for DNG; the masked-species
+            # interpolant replaces these placeholders with the mask token anyway.
+            species = paddle.zeros([total], dtype="int64")
+
+        if "lattice" in structure_array:
+            cell = _as_tensor(structure_array["lattice"], "float32").reshape([-1, 3, 3])
+        elif "lengths" in structure_array and "angles" in structure_array:
+            cell = lattice_params_to_matrix_paddle(
+                _as_tensor(structure_array["lengths"], "float32"),
+                _as_tensor(structure_array["angles"], "float32"),
+            )
+        else:
+            cell = paddle.eye(3).unsqueeze(0).tile([len(num_atoms), 1, 1])
+
+        if "frac_coords" in structure_array:
+            pos = _as_tensor(structure_array["frac_coords"], "float32").reshape([-1, 3])
+        else:
+            pos = paddle.zeros([total, 3])
+
+        batch_idx = paddle.repeat_interleave(
+            paddle.arange(len(num_atoms), dtype="int64"), num_atoms
+        )
+        return {
+            "n_atoms": num_atoms,
+            "species": species,
+            "cell": cell,
+            "pos": pos,
+            "batch": batch_idx,
+            "ptr": paddle.concat(
+                [
+                    paddle.to_tensor([0], dtype="int64"),
+                    paddle.cumsum(num_atoms, axis=0).cast("int64"),
+                ]
+            ),
+        }
+
+
+class OMATGCSPNetFull(OMatG):
+    """Constructor shim for the released checkpoints.
+
+    The published packages pin this class name and a flat ``__init_params__``
+    layout. New configurations should use :class:`OMatG` with ``decoder_cfg``.
+    """
+
     def __init__(
         self,
         hidden_dim: int = 512,
@@ -455,309 +589,50 @@ class OMATGCSPNetFull(RuntimeMixin, OMATGCSPNet):
         pred_type: bool = False,
         pred_scalar: bool = False,
         time_embed_dim: int = 256,
-        use_si: bool = False,
+        use_si: bool = True,
         si_scheduler_cfg: dict = None,
         sampler_cfg: dict = None,
         use_min_perm_dist: bool = False,
         execution_backend: str = "eager",
         runtime_options: dict = None,
     ):
+        if not use_si:
+            raise ValueError(
+                "OMATGCSPNetFull always uses stochastic interpolants; set "
+                "use_si=True or build OMatG with a si_scheduler_cfg."
+            )
+        decoder_cfg = {
+            "hidden_dim": hidden_dim,
+            "num_layers": num_layers,
+            "max_atoms": max_atoms,
+            "act_fn": act_fn,
+            "dis_emb": dis_emb,
+            "num_freqs": num_freqs,
+            "edge_style": edge_style,
+            "cutoff": cutoff,
+            "max_neighbors": max_neighbors,
+            "ln": ln,
+            "ip": ip,
+            "smooth": smooth,
+            "pred_type": pred_type,
+            "pred_scalar": pred_scalar,
+            "time_embed_dim": time_embed_dim,
+        }
         super().__init__(
-            hidden_dim=hidden_dim,
-            num_layers=num_layers,
-            max_atoms=max_atoms,
-            act_fn=act_fn,
-            dis_emb=dis_emb,
-            num_freqs=num_freqs,
-            edge_style=edge_style,
-            cutoff=cutoff,
-            max_neighbors=max_neighbors,
-            ln=ln,
-            ip=ip,
-            smooth=smooth,
-            pred_type=pred_type,
-            pred_scalar=pred_scalar,
-            time_embed_dim=time_embed_dim,
+            decoder_cfg=decoder_cfg,
+            si_scheduler_cfg=si_scheduler_cfg,
+            sampler_cfg=sampler_cfg,
+            use_min_perm_dist=use_min_perm_dist,
+            execution_backend=execution_backend,
+            runtime_options=runtime_options,
         )
-        self._init_runtime(execution_backend, runtime_options)
-        self.use_si = use_si
-        self.use_min_perm_dist = use_min_perm_dist
-        self._si = None
-        self._sampler = None
-        self._relative_si_costs = {}
-        self._min_perm_dist_corrector = None
-        self.mse_loss = MSELoss()
-        if use_min_perm_dist and not use_si:
-            raise ValueError(
-                "use_min_perm_dist requires use_si=True: the correction reuses the "
-                "position corrector of the stochastic interpolants."
-            )
-        if use_si:
-            self._build_si(si_scheduler_cfg or {}, sampler_cfg or {})
-        self._freeze_unused_heads()
-
-    def _freeze_unused_heads(self):
-        heads = [self.type_out_2]
-        if not self.pred_type:
-            heads.append(self.type_out)
-        for field, head in (
-            ("pos", self.coord_out_2),
-            ("cell", self.lattice_out_2),
-        ):
-            if (
-                not self.use_si
-                or "loss_z"
-                not in self._si.get_stochastic_interpolant(field).loss_keys()
-            ):
-                heads.append(head)
-        for head in heads:
-            for parameter in head.parameters():
-                parameter.stop_gradient = True
-
-    def forward(self, data, t=None):
-        """Forward pass on a sample dict; returns loss_dict.
-
-        OMatG training forward does not emit per-attribute predictions aligned
-        with labels, so compute_metric_func_dict does not apply; evaluation is
-        loss-based (eval_loss).
-        """
-        if self.use_si:
-            if self._si is None or self._sampler is None:
-                raise ValueError(
-                    "use_si=True requires si_cfg and sampler_cfg to be provided "
-                    "and valid (got si_cfg that built no stochastic interpolants)."
-                )
-            return self._si_forward(data)
-
-        atom_types = data["species"]
-        frac_coords = data["pos"]
-        lattices = data["cell"]
-        num_atoms = data["n_atoms"]
-        node2graph = data["batch"]
-
-        if t is None:
-            batch_size = lattices.shape[0]
-            t = paddle.rand([batch_size])
-
-        predictions = self.forward_dict(
-            t=t,
-            atom_types=atom_types,
-            frac_coords=frac_coords,
-            lattices=lattices,
-            num_atoms=num_atoms,
-            node2graph=node2graph,
-        )
-
-        lattices_gt = lattices
-        frac_coords_gt = frac_coords
-
-        if self.pred_type:
-            loss_lattice = self.mse_loss(predictions["cell_b"], lattices_gt)
-            loss_coord = self.mse_loss(predictions["pos_b"], frac_coords_gt)
-            loss_type = paddle.nn.functional.cross_entropy(
-                input=predictions["species_b"], label=atom_types - 1
-            )
-            loss = loss_lattice + loss_coord + loss_type
-            return {
-                "loss_dict": {
-                    "loss": loss,
-                    "loss_lattice": loss_lattice,
-                    "loss_coord": loss_coord,
-                    "loss_type": loss_type,
-                }
-            }
-
-        loss_lattice = self.mse_loss(predictions["cell_b"], lattices_gt)
-        loss_coord = self.mse_loss(predictions["pos_b"], frac_coords_gt)
-        loss = loss_lattice + loss_coord
-        return {
-            "loss_dict": {
-                "loss": loss,
-                "loss_lattice": loss_lattice,
-                "loss_coord": loss_coord,
-            }
-        }
-
-    def sample(self, batch_data, num_inference_steps=None, **kwargs):
-        """Sample via SI integration; requires use_si=True (see configs)."""
-        if not self.use_si:
-            raise ValueError(
-                "OMATGCSPNetFull.sample() requires the StochasticInterpolants "
-                "sampling path (use_si=True). Build the model with an "
-                "si_cfg/sampler_cfg, e.g. load one of the "
-                "structure_generation/configs/omatg/*.yaml configs."
-            )
-        if self._si is None or self._sampler is None:
-            raise ValueError(
-                "use_si=True requires si_cfg and sampler_cfg to be provided "
-                "and valid (got si_cfg that built no stochastic interpolants)."
-            )
-        return self._si_sample(batch_data, num_inference_steps, **kwargs)
-
-    def _make_model_function(self):
-        def model_function(x_t, time):
-            return self.forward_dict(
-                t=time,
-                atom_types=x_t["species"],
-                frac_coords=x_t["pos"],
-                lattices=x_t["cell"],
-                num_atoms=x_t["n_atoms"],
-                node2graph=x_t["batch"],
-            )
-
-        return model_function
-
-    @staticmethod
-    def _build_sample_result(num_atoms_list, atom_types, frac_coords, lattices):
-        lengths, angles = lattices_to_params_shape_paddle(lattices)
-        start_idx = 0
-        result = []
-        for i, n in enumerate(num_atoms_list):
-            end_idx = start_idx + n
-            result.append(
-                {
-                    "num_atoms": n,
-                    "atom_types": atom_types[start_idx:end_idx].tolist(),
-                    "frac_coords": frac_coords[start_idx:end_idx].tolist(),
-                    "lengths": lengths[i].tolist(),
-                    "angles": angles[i].tolist(),
-                }
-            )
-            start_idx += n
-        return {"result": result}
-
-    def _si_sample(self, batch_data, num_inference_steps, **kwargs):
-        x_1 = self._data_to_omatg(batch_data)
-        x_0 = self._sampler.sample_p_0(x_1)
-
-        gen = self._si.integrate(
-            x_0,
-            self._make_model_function(),
-            integration_time_steps=num_inference_steps,
-        )
-
-        return self._build_sample_result(
-            gen["n_atoms"].tolist(), gen["species"], gen["pos"], gen["cell"]
-        )
-
-    def _build_si(self, si_scheduler_cfg: dict, sampler_cfg: dict) -> None:
-        # Normalize an OmegaConf DictConfig (direct build_omatg_model use) to a dict.
-        if not isinstance(si_scheduler_cfg, dict):
-            from omegaconf import OmegaConf
-
-            si_scheduler_cfg = OmegaConf.to_container(si_scheduler_cfg, resolve=True)
-
-        if not si_scheduler_cfg:
-            raise ValueError(
-                "use_si=True requires a non-empty si_scheduler_cfg mapping data "
-                "fields to stochastic-interpolant configs (e.g. "
-                "'si_scheduler_cfg: {species: {...}, pos: {...}, cell: {...}, "
-                "integration_time_steps: 210}')."
-            )
-
-        self._si = build_si_from_cfg(si_scheduler_cfg)
-        for field in ("species", "pos", "cell"):
-            self._si.get_stochastic_interpolant(field)
-        self._relative_si_costs = _validate_relative_si_costs(
-            si_scheduler_cfg.get("relative_si_costs"), self._si.loss_keys()
-        )
-
-        # Masked-species schemes (DNG) need an extra embedding token (species 0).
-        species_interpolant = self._si.get_stochastic_interpolant("species")
-        if not isinstance(species_interpolant, StochasticInterpolantSpecies):
-            raise ValueError(
-                "The 'species' data field must be a StochasticInterpolantSpecies "
-                f"interpolant, got {type(species_interpolant).__name__}."
-            )
-        if species_interpolant.uses_masked_species():
-            if not self.pred_type or not sampler_cfg.get("mask_species", False):
-                raise ValueError(
-                    "Masked-species interpolation requires pred_type=True and "
-                    "sampler_cfg.mask_species=True."
-                )
-            self.enable_masked_species()
-        elif self.pred_type or sampler_cfg.get("mask_species", False):
-            raise ValueError(
-                "Fixed-species interpolation requires pred_type=False and "
-                "sampler_cfg.mask_species=False."
-            )
-
-        active_costs = dict(self._relative_si_costs)
-        if not self.pred_type:
-            active_costs.pop("species_loss", None)
-        if not any(cost > 0.0 for cost in active_costs.values()):
-            raise ValueError("At least one model-dependent SI loss must have weight.")
-
-        if sampler_cfg:
-            self._sampler = build_sampler_from_cfg(sampler_cfg)
-
-        if self.use_min_perm_dist:
-            self._min_perm_dist_corrector = self._si.get_stochastic_interpolant(
-                "pos"
-            ).get_corrector()
-
-    def _data_to_omatg(self, data):
-        if isinstance(data, dict) and "structure_array" in data:
-            # StructureSampler input. Without atom_types the species are drawn
-            # uniformly from the model's atomic-number range (a CSP model then
-            # mirrors them); use --mode by_chemical_formula to fix the species.
-            sa = data["structure_array"]
-            num_atoms = paddle.to_tensor(sa["num_atoms"], dtype="int64")
-            if "atom_types" in sa:
-                species = paddle.to_tensor(sa["atom_types"], dtype="int64")
-            else:
-                total = int(num_atoms.sum().item())
-                species = paddle.randint(
-                    1, self.num_classes + 1, [total], dtype="int64"
-                )
-            data = {
-                "n_atoms": num_atoms,
-                "species": species,
-                "cell": paddle.eye(3).unsqueeze(0).tile([len(num_atoms), 1, 1]),
-                "pos": paddle.zeros([int(num_atoms.sum().item()), 3]),
-                "pos_is_fractional": paddle.ones([len(num_atoms)], dtype="bool"),
-            }
-        # DefaultCollator returns numpy arrays; convert to tensors.
-        data = {
-            k: (paddle.to_tensor(v) if not paddle.is_tensor(v) else v)
-            for k, v in data.items()
-        }
-        sample = _normalize_sample_dict(data)
-        if not bool(paddle.all(sample["pos_is_fractional"])):
-            raise ValueError(
-                "OMatG evolves fractional coordinates, but the batch carries "
-                "Cartesian positions; keep convert_to_fractional=True on the dataset."
-            )
-        return sample
-
-    def _si_forward(self, data: dict) -> dict:
-        """SI velocity-matching loss step."""
-        x_1 = self._data_to_omatg(data)
-        x_0 = self._sampler.sample_p_0(x_1)
-        if self._min_perm_dist_corrector is not None:
-            correct_for_minimum_permutation_distance(
-                x_0, x_1, self._min_perm_dist_corrector
-            )
-        batch_size = len(x_1["n_atoms"])
-        t = paddle.rand([batch_size]) * (BIG_TIME - SMALL_TIME) + SMALL_TIME
-
-        losses = self._si.losses(self._make_model_function(), t, x_0, x_1)
-        total_loss = paddle.to_tensor(0.0)
-        loss_dict = {}
-        for key, val in losses.items():
-            weighted = self._relative_si_costs[key] * val
-            loss_dict[key] = weighted
-            total_loss = total_loss + weighted
-        loss_dict["loss"] = total_loss
-        return {"loss_dict": loss_dict}
 
 
 class IndependentSampler:
     """Sample SI base distributions (lattice / species).
 
-    Internal SI x_0 sampler; bridged to the public StructureSampler via
-    model.sample() in sample.py. Masked-species interpolation starts from the
-    mask token, fixed-species interpolation mirrors the target species.
+    Masked-species interpolation starts from the mask token, fixed-species
+    interpolation mirrors the target species.
     """
 
     def __init__(
@@ -821,7 +696,6 @@ class IndependentSampler:
             "species": paddle.concat(species_list),
             "cell": paddle.concat(cell_list),
             "pos": paddle.concat(pos_list),
-            "pos_is_fractional": paddle.ones([batch_size], dtype="bool"),
             "batch": paddle.concat(batch_indices),
             "ptr": paddle.concat(
                 [
@@ -833,11 +707,7 @@ class IndependentSampler:
 
 
 def build_sampler_from_cfg(sampler_cfg: dict):
-    """Build an IndependentSampler from a config dict.
-
-    Unknown keys are rejected so that an unsupported or misspelled sampler option
-    fails loudly instead of being silently ignored.
-    """
+    """Build an IndependentSampler from a config dict."""
     unknown_keys = sorted(set(sampler_cfg) - _SAMPLER_CFG_KEYS)
     if unknown_keys:
         raise ValueError(

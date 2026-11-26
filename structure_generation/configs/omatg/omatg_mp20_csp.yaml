@@ -1,9 +1,11 @@
 Global:
+  # Whether to train, evaluate or test
   do_train: True
   do_eval: True
   do_test: False
 
 Trainer:
+  # Max epochs to train
   max_epochs: 2000
   seed: 42
   output_dir: ./output/omatg_mp20_csp
@@ -16,7 +18,9 @@ Trainer:
   use_amp: False
   amp_level: 'O1'
   eval_with_no_grad: True
-  gradient_accumulation_steps: 1
+  # The upstream effective batch is 1024. A per-step batch of 256 with four
+  # accumulation steps keeps that effective batch and fits a 32 GB GPU.
+  gradient_accumulation_steps: 4
   best_metric_indicator: 'eval_loss'
   name_for_best_metric: "loss"
   greater_is_better: False
@@ -27,32 +31,31 @@ Trainer:
   use_tensorboard: False
 
 Model:
-  __class_name__: OMATGCSPNetFull
+  __class_name__: OMatG
   __init_params__:
-    hidden_dim: 512
-    num_layers: 6
-    max_atoms: 100
-    act_fn: silu
-    dis_emb: sin
-    num_freqs: 128
-    edge_style: fc
-    cutoff: 7.0
-    max_neighbors: 20
-    ln: True
-    ip: True
-    smooth: False
-    pred_type: False
-    pred_scalar: False
-    time_embed_dim: 256
-    use_si: True
+    decoder_cfg:
+      hidden_dim: 512
+      num_layers: 6
+      max_atoms: 100
+      act_fn: silu
+      dis_emb: sin
+      num_freqs: 128
+      edge_style: fc
+      cutoff: 7.0
+      max_neighbors: 20
+      ln: True
+      ip: True
+      smooth: False
+      pred_type: False
+      pred_scalar: False
+      time_embed_dim: 256
     si_scheduler_cfg:
-      # SI hyper-parameters from the official OMatG csp_linear_ode_mp_20.yaml.
-      # Top-level keys are data fields (species / pos / cell) plus the
-      # metadata entries 'integration_time_steps' (required) and
-      # 'relative_si_costs' (optional). All other top-level keys are
-      # rejected by build_si_from_cfg to prevent silent typos.
+      # Per-field stochastic interpolants from the official
+      # csp_linear_ode_mp_20.yaml. Every top-level key is a data field except
+      # 'integration_time_steps' and 'relative_si_costs'.
       species:
         __class_name__: SingleStochasticInterpolantIdentity
+        __init_params__: {}
       pos:
         __class_name__: SingleStochasticInterpolant
         __init_params__:
@@ -84,7 +87,7 @@ Model:
       dataset_name: mp_20
       mirror_species: True
       mask_species: False
-    # Official OMatG csp config keeps the base positions unpermuted.
+    # The official CSP configuration keeps the base positions unpermuted.
     use_min_perm_dist: False
 
 Optimizer:
@@ -94,7 +97,6 @@ Optimizer:
     beta2: 0.999
     weight_decay: 0.0
     lr:
-      # Official OMatG csp_linear_ode_mp_20.yaml learning rate.
       __class_name__: Cosine
       __init_params__:
         learning_rate: 0.0006689636445843722
@@ -103,76 +105,75 @@ Optimizer:
 Dataset:
   train:
     dataset:
-      __class_name__: OMATGStructureDataset
+      __class_name__: MP20Dataset
       __init_params__:
-        path: "./data/mp_20/train.lmdb"
-        lazy_storage: True
-        convert_to_fractional: True
-        niggli_reduce: False
-    loader:
-      num_workers: 0
-      use_shared_memory: False
-      collate_fn: DefaultCollator
+        path: "./data/mp_20/train.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 10
     sampler:
       __class_name__: BatchSampler
       __init_params__:
         shuffle: True
         drop_last: False
-        batch_size: 1024
+        batch_size: 256
   val:
     dataset:
-      __class_name__: OMATGStructureDataset
+      __class_name__: MP20Dataset
       __init_params__:
-        path: "./data/mp_20/val.lmdb"
-        lazy_storage: True
-        convert_to_fractional: True
-        niggli_reduce: False
-    loader:
-      num_workers: 0
-      use_shared_memory: False
-      collate_fn: DefaultCollator
+        path: "./data/mp_20/val.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 10
     sampler:
       __class_name__: BatchSampler
       __init_params__:
         shuffle: False
         drop_last: False
-        batch_size: 1024
+        batch_size: 512
   test:
     dataset:
-      __class_name__: OMATGStructureDataset
+      __class_name__: MP20Dataset
       __init_params__:
-        path: "./data/mp_20/test.lmdb"
-        lazy_storage: True
-        convert_to_fractional: True
-        niggli_reduce: False
-    loader:
-      num_workers: 0
-      use_shared_memory: False
-      collate_fn: DefaultCollator
+        path: "./data/mp_20/test.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 10
     sampler:
       __class_name__: DistributedBatchSampler
       __init_params__:
         shuffle: False
         drop_last: False
-        batch_size: 1024
+        batch_size: 512
 
 Sample:
+  # One structure per MP-20 test entry, using its composition as the input.
   data:
     dataset:
-      __class_name__: OMATGStructureDataset
+      __class_name__: MP20Dataset
       __init_params__:
-        path: ${Sample.metrics.__init_params__.gt_file_path}
-        convert_to_fractional: True
-        niggli_reduce: False
-    loader:
-      num_workers: 0
-      collate_fn: DefaultCollator
+        path: "./data/mp_20/test.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 10
     sampler:
       __class_name__: BatchSampler
       __init_params__:
         shuffle: False
         drop_last: False
-        batch_size: 10
+        batch_size: 32
 
   build_structure_cfg:
     format: array
@@ -182,7 +183,6 @@ Sample:
     num_inference_steps: ${Model.__init_params__.si_scheduler_cfg.integration_time_steps}
 
   metrics:
-    __class_name__: OMatGMetric
+    __class_name__: CSPMetric
     __init_params__:
-      metric_type: match
       gt_file_path: "./data/mp_20/test.csv"
