@@ -74,7 +74,16 @@ def build_optimizer(
 
     Returns:
         Optimizer, LRScheduler: Optimizer and learning rate scheduler.
+
+    ``groups`` opts into named Adam optimizers on sublayers of one model.
+    Each group adds ``model_attr`` to a regular Adam config with a validation
+    ReduceOnPlateau scheduler. Set ``clip_norm_global`` on the outer config to
+    clip all groups together before any optimizer updates its parameters.
+    Groups are saved in name order and must partition the trainable parameters.
     """
+    if "groups" in cfg:
+        return _build_grouped_optimizer(cfg, model_list, epochs, iters_per_epoch)
+
     # build lr_scheduler
     cfg = copy.deepcopy(cfg)
     init_params = cfg.pop("__init_params__")
@@ -105,3 +114,61 @@ def build_optimizer(
     if isinstance(lr_scheduler, float):
         return optimizer, None
     return optimizer, lr_scheduler
+
+
+def _build_grouped_optimizer(cfg, model, epochs, iters_per_epoch):
+    if set(cfg) - {"groups", "clip_norm_global"}:
+        raise ValueError("Grouped optimizers only support outer clip_norm_global.")
+    if isinstance(model, (list, tuple)) and len(model) == 1:
+        model = model[0]
+    if not isinstance(model, nn.Layer):
+        raise ValueError("Grouped optimizers require a single model.")
+    if not cfg["groups"]:
+        raise ValueError("Optimizer.groups must contain at least one group.")
+
+    optimizers, schedulers = [], []
+    parameters = {}
+    group_names = tuple(sorted(cfg["groups"]))
+    for name in group_names:
+        group = cfg["groups"][name]
+        layer = getattr(model, group["model_attr"], None)
+        if not isinstance(layer, nn.Layer):
+            raise ValueError(f"Optimizer group {name!r} must select a model sublayer.")
+        if group.get("__class_name__") != "Adam":
+            raise ValueError(f"Optimizer group {name!r} must use Adam.")
+        if {"clip_norm", "clip_norm_global", "clip_value"} & group.keys():
+            raise ValueError("Only outer clip_norm_global is supported for groups.")
+        group_parameters = {id(param): param for param in layer.parameters()}
+        if parameters.keys() & group_parameters.keys():
+            raise ValueError("A parameter cannot belong to multiple optimizer groups.")
+        parameters.update(group_parameters)
+        child_cfg = {key: value for key, value in group.items() if key != "model_attr"}
+        optimizer, scheduler = build_optimizer(
+            child_cfg, layer, epochs, iters_per_epoch
+        )
+        if not isinstance(
+            scheduler, paddle.optimizer.lr.ReduceOnPlateau
+        ) or scheduler.indicator not in ("eval_loss", "eval_metric"):
+            raise ValueError(
+                f"Optimizer group {name!r} requires a validation ReduceOnPlateau."
+            )
+        optimizers.append(optimizer)
+        schedulers.append(scheduler)
+
+    if any(
+        not param.stop_gradient and id(param) not in parameters
+        for param in model.parameters()
+    ):
+        raise ValueError("Optimizer groups must cover all trainable parameters.")
+
+    clip_norm = cfg.get("clip_norm_global")
+    clip_parameters = tuple(parameters.values()) if clip_norm is not None else ()
+    return (
+        OptimizerList(
+            tuple(optimizers),
+            group_names=group_names,
+            clip_norm_global=clip_norm,
+            clip_parameters=clip_parameters,
+        ),
+        lr_scheduler.SchedulerList(tuple(schedulers), by_epoch=True),
+    )

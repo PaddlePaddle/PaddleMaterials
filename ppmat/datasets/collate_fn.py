@@ -91,6 +91,15 @@ class DefaultCollator(object):
         )
 
 
+class GeomConformerCollator(DefaultCollator):
+    """Send a collated molecular graph through the reader as tensor fields."""
+
+    def __call__(self, batch):
+        graphs = super().__call__(batch)
+        # The Paddle reader only extracts tensors from sequences and mappings.
+        return dict(graphs.to_dict(), num_graphs=graphs.num_graphs)
+
+
 class RadiusGraphCollator:
     """Collate PGL radius graphs and offset their edge-based triplet indices."""
 

@@ -36,6 +36,7 @@ from ppmat.models.diffnmr.diffnmr import DiffPrior
 from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
 from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
 from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
+from ppmat.models.geodiff.geodiff import GeoDiff
 from ppmat.models.infgcn.infgcn import InfGCN
 from ppmat.models.mattergen.mattergen import MatterGen
 from ppmat.models.mattergen.mattergen import MatterGenWithCondition
@@ -56,6 +57,7 @@ __all__ = [
     "ComformerGraphConverter",
     "DiffCSP",
     "DiffCSPWithType",
+    "GeoDiff",
     "FindPointsInSpheres",
     "MEGNetPlus",
     "MatterGen",

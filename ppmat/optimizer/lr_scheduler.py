@@ -852,16 +852,29 @@ class SchedulerList:
 
     Args:
         scheduler_list (Tuple[lr.LRScheduler, ...]): Schedulers listed in a tuple.
+        by_epoch (bool): Mark validation-driven Plateau groups so they are not
+            advanced by the per-update clock.
     """
 
-    def __init__(self, scheduler_list: Tuple[lr.LRScheduler, ...]):
+    def __init__(
+        self, scheduler_list: Tuple[lr.LRScheduler, ...], *, by_epoch: bool = False
+    ):
         super().__init__()
         self._sch_list = scheduler_list
-        self.by_epoch = False
+        self.by_epoch = by_epoch
 
     def step(self):
         for sch in self._sch_list:
             sch.step()
+
+    def step_on_validation(self, loss_info, metric_info):
+        """Step each Plateau with the validation aggregate configured for it."""
+        indicators = {"eval_loss": loss_info, "eval_metric": metric_info}
+        values = [
+            indicators[sch.indicator][sch.indicator_name].avg for sch in self._sch_list
+        ]
+        for sch, value in zip(self._sch_list, values):
+            sch.step(metrics=value)
 
     def get_lr(self) -> float:
         """Return learning rate of first scheduler"""
