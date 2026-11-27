@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# This file follows the D3PM formulation (arXiv:2107.03006) with the uniform
+# transition kernel and cosine schedule used by MiAD (arXiv:2511.14426).
+
 import math
 
 import paddle

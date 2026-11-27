@@ -32,49 +32,47 @@ Trainer:
 Model:
   __class_name__: MiAD
   __init_params__:
-    model_cfg:
-      hidden_dim: 512
-      latent_dim: ${Global.time_embed_dim}
-      num_layers: 6
-      max_atoms: ${Global.num_atom_types}
-      mirage_num_atoms: 25
-      act_fn: silu
-      dis_emb: sin
-      num_freqs: 128
-      edge_style: fc
-      ln: true
-      ip: true
-      smooth: true
-      pred_type: true
-    diffusion_cfg:
-      cont_time: false
-      num_steps: ${Global.num_train_timesteps}
-      time_embed_dim: ${Global.time_embed_dim}
-      eps: 1e-3
-      lattice_noise_scheduler_cfg:
-        __class_name__: CosineDDPMScheduler
-        __init_params__:
-          num_train_timesteps: ${Global.num_train_timesteps}
-          s: 0.008
-          beta_min: 0.0001
-          beta_max: 0.9999
-          clip_sample: false
-      coord_noise_scheduler_cfg:
-        __class_name__: WrappedVESDEPCScheduler
-        __init_params__:
-          num_train_timesteps: ${Global.num_train_timesteps}
-          step_lr: 0.00001
-          sigma_min: 0.005
-          sigma_max: 0.5
-          sampling_eps: 0.001
-      atom_noise_scheduler_cfg:
-        __class_name__: D3PMUniformScheduler
-        __init_params__:
-          loss_scale: 1000
-          num_train_timesteps: ${Global.num_train_timesteps}
-          num_types: ${Global.num_atom_types}
-          s: 0.008
-          kl_eps: 0.0001
+    hidden_dim: 512
+    latent_dim: ${Global.time_embed_dim}
+    num_layers: 6
+    act_fn: silu
+    dis_emb: sin
+    num_freqs: 128
+    edge_style: fc
+    ln: true
+    ip: true
+    smooth: true
+    pred_type: true
+    num_classes: ${Global.num_atom_types}
+    mirage_num_atoms: 25
+    num_train_timesteps: ${Global.num_train_timesteps}
+    cont_time: false
+    eps: 1e-3
+    time_dim: ${Global.time_embed_dim}
+    lattice_noise_scheduler_cfg:
+      __class_name__: CosineDDPMScheduler
+      __init_params__:
+        num_train_timesteps: ${Global.num_train_timesteps}
+        s: 0.008
+        beta_min: 0.0001
+        beta_max: 0.9999
+        clip_sample: false
+    coord_noise_scheduler_cfg:
+      __class_name__: WrappedVESDEPCScheduler
+      __init_params__:
+        num_train_timesteps: ${Global.num_train_timesteps}
+        step_lr: 0.00001
+        sigma_min: 0.005
+        sigma_max: 0.5
+        sampling_eps: 0.001
+    atom_noise_scheduler_cfg:
+      __class_name__: D3PMUniformScheduler
+      __init_params__:
+        loss_scale: 1000
+        num_train_timesteps: ${Global.num_train_timesteps}
+        num_types: ${Global.num_atom_types}
+        s: 0.008
+        kl_eps: 0.0001
 
 Optimizer:
   __class_name__: Adam
@@ -84,6 +82,8 @@ Optimizer:
     lr: 0.001
 
 Dataset:
+  # MiAD diffuses the raw lattice matrix in Euclidean space, so the datasets
+  # intentionally omit the LatticePolarDecomposition transform.
   train:
     dataset:
       __class_name__: MP20Dataset

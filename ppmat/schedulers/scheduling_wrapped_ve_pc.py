@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# This file extends ppmat.schedulers.scheduling_sde_ve with the per-atom
+# indexed predictor-corrector steps used by MiAD (arXiv:2511.14426).
+
 import paddle
 
 from ppmat.schedulers.scheduling_sde_ve import SchedulerOutput

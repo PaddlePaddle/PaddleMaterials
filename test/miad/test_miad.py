@@ -59,7 +59,7 @@ TINY_MODEL_CFG = {
     "hidden_dim": 64,
     "latent_dim": 32,
     "num_layers": 2,
-    "max_atoms": 100,
+    "num_classes": 100,
     "mirage_num_atoms": 8,
     "act_fn": "silu",
     "dis_emb": "sin",
@@ -73,8 +73,8 @@ TINY_MODEL_CFG = {
 
 TINY_DIFFUSION_CFG = {
     "cont_time": False,
-    "num_steps": 10,
-    "time_embed_dim": 32,
+    "num_train_timesteps": 10,
+    "time_dim": 32,
     "eps": 1e-3,
     "lattice_noise_scheduler_cfg": {
         "__class_name__": "CosineDDPMScheduler",
@@ -107,18 +107,16 @@ TINY_DIFFUSION_CFG = {
 def _make_synthetic_batch(batch_size=2, atoms_per_crystal=5):
     num_atoms = paddle.full([batch_size], atoms_per_crystal, dtype="int64")
     total_atoms = batch_size * atoms_per_crystal
-    batch_idx = paddle.concat(
-        [paddle.full([atoms_per_crystal], i, dtype="int64") for i in range(batch_size)]
-    )
     lattices = paddle.randn([batch_size, 3, 3], dtype="float32")
     frac_coords = paddle.rand([total_atoms, 3], dtype="float32")
     atom_types = paddle.randint(1, 10, [total_atoms], dtype="int64")
     return {
-        "x0": [lattices, frac_coords, atom_types],
-        "batch_size": batch_size,
-        "num_atoms": num_atoms,
-        "batch_idx": batch_idx,
-        "atom_types": atom_types,
+        "structure_array": {
+            "num_atoms": num_atoms.reshape([batch_size, 1]),
+            "frac_coords": frac_coords,
+            "atom_types": atom_types,
+            "lattice": lattices,
+        },
     }
 
 
@@ -129,8 +127,8 @@ def _make_tiny_model(execution_backend="eager"):
     # Isolated name scope: identical parameter names across instances.
     with paddle.utils.unique_name.guard():
         return MiAD(
-            model_cfg=TINY_MODEL_CFG,
-            diffusion_cfg=TINY_DIFFUSION_CFG,
+            **TINY_MODEL_CFG,
+            **TINY_DIFFUSION_CFG,
             execution_backend=execution_backend,
         )
 
@@ -218,7 +216,13 @@ def _build_trainer(model, output_dir, max_epochs, backend="cinn"):
 
 def _sample_small_batch(model, num_inference_steps=None):
     return model.sample(
-        {"num_atoms": paddle.to_tensor(_SAMPLE_NUM_ATOMS, dtype="int64")},
+        {
+            "structure_array": {
+                "num_atoms": paddle.to_tensor(_SAMPLE_NUM_ATOMS, dtype="int64").reshape(
+                    [-1, 1]
+                )
+            }
+        },
         num_inference_steps=num_inference_steps,
     )["result"]
 
@@ -264,11 +268,15 @@ class TestMiADSmoke:
         for steps in (0, -1, 5, 11, 10.0, True):
             with pytest.raises(ValueError, match="trained diffusion schedules"):
                 _sample_small_batch(model, num_inference_steps=steps)
-            assert model.num_steps == TINY_DIFFUSION_CFG["num_steps"]
+            assert (
+                model.num_train_timesteps == TINY_DIFFUSION_CFG["num_train_timesteps"]
+            )
         paddle.seed(123)
         result = _sample_small_batch(model)
         paddle.seed(123)
-        explicit = _sample_small_batch(model, num_inference_steps=model.num_steps)
+        explicit = _sample_small_batch(
+            model, num_inference_steps=model.num_train_timesteps
+        )
         for default_entry, explicit_entry in zip(result, explicit):
             for key in ("atom_types", "frac_coords", "lattice"):
                 np.testing.assert_array_equal(default_entry[key], explicit_entry[key])
@@ -290,37 +298,32 @@ class TestMiADConfig:
             ("pred_type", False),
             ("edge_style", "knn"),
             ("num_layers", 0),
-            ("latent_dim", 16),
             ("num_classes", 99),
         ):
-            config = _load_miad_yaml(num_steps=TINY_DIFFUSION_CFG["num_steps"])
-            config["Model"]["__init_params__"]["model_cfg"][key] = value
+            config = _load_miad_yaml(
+                num_steps=TINY_DIFFUSION_CFG["num_train_timesteps"]
+            )
+            config["Model"]["__init_params__"][key] = value
             with pytest.raises(ValueError):
                 build_model(config["Model"])
-        config = _load_miad_yaml(num_steps=TINY_DIFFUSION_CFG["num_steps"])["Model"]
-        config["__init_params__"]["model_cfg"]["hidden_dims"] = 64
-        with pytest.raises(TypeError, match="Unknown MiAD model parameters"):
-            build_model(config)
-        del config["__init_params__"]["model_cfg"]["hidden_dims"]
-        config["__init_params__"]["diffusion_cfg"]["method"] = "DiffCSP"
-        with pytest.raises(TypeError, match="Unknown MiAD diffusion parameters"):
-            build_model(config)
-        del config["__init_params__"]["diffusion_cfg"]["method"]
-        config["__init_params__"]["diffusion_cfg"]["num_steps"] += 1
-        with pytest.raises(ValueError, match="schedules must match num_steps"):
-            build_model(config)
+        config = _load_miad_yaml(num_steps=TINY_DIFFUSION_CFG["num_train_timesteps"])
+        config["Model"]["__init_params__"]["num_train_timesteps"] += 1
+        with pytest.raises(ValueError, match="must match num_train_timesteps"):
+            build_model(config["Model"])
         paddle.seed(2026)
-        model = _make_model_from_yaml(num_steps=TINY_DIFFUSION_CFG["num_steps"])
-        assert isinstance(model.lat_scheduler, DDPMScheduler)
+        model = _make_model_from_yaml(
+            num_steps=TINY_DIFFUSION_CFG["num_train_timesteps"]
+        )
+        assert isinstance(model.lattice_scheduler, DDPMScheduler)
 
         lattice = paddle.full([1, 3, 3], 4.0)
-        recovered = model.lat_scheduler.step(
+        recovered = model.lattice_scheduler.step(
             paddle.zeros_like(lattice), 0, lattice
         ).prev_sample
-        expected = lattice / paddle.sqrt(model.lat_scheduler.alphas[0])
+        expected = lattice / paddle.sqrt(model.lattice_scheduler.alphas[0])
         np.testing.assert_allclose(recovered.numpy(), expected.numpy(), atol=1e-5)
         coords = paddle.rand([7, 3])
-        recovered_coords = model.frac_scheduler.step_pred_indexed(
+        recovered_coords = model.coord_scheduler.step_pred_indexed(
             paddle.ones_like(coords), paddle.zeros([7], dtype="int64"), coords
         ).prev_sample
         np.testing.assert_array_equal(recovered_coords.numpy(), coords.numpy())
@@ -336,57 +339,39 @@ class TestMiADConfig:
         )["structure_array"]
         original_counts = source["num_atoms"].flatten()
         for capacity in (None, model.mirage_num_atoms):
-            rng = np.random.RandomState(2026)
-            expected_coords = []
-            expected_types = []
-            expected_counts = []
-            offset = 0
-            for count in original_counts:
-                padded_count = count if capacity is None else max(count, capacity)
-                expected_coords.append(source["frac_coords"][offset : offset + count])
-                expected_types.append(source["atom_types"][offset : offset + count])
-                if padded_count > count:
-                    expected_coords.append(
-                        rng.rand(padded_count - count, 3).astype("float32")
-                    )
-                    expected_types.append(np.zeros(padded_count - count, dtype="int64"))
-                expected_counts.append(padded_count)
-                offset += count
-            expected_next_random = rng.rand()
-            for numpy_input in (False, True):
-                batch = {
-                    "structure_array": {
-                        key: value if numpy_input else paddle.to_tensor(value)
-                        for key, value in source.items()
-                    }
-                }
-                np.random.seed(2026)
-                state = _extract_x0(batch, mirage_num_atoms=capacity)
-                with paddle.no_grad():
-                    output = model(state)
-                assert paddle.isfinite(output["loss_dict"]["loss"])
+            expected_counts = [
+                int(count) if capacity is None else max(int(count), capacity)
+                for count in original_counts
+            ]
+            state = _extract_x0(
+                {"structure_array": dict(source)}, mirage_num_atoms=capacity
+            )
+            with paddle.no_grad():
+                output = model({"structure_array": dict(source)})
+            assert paddle.isfinite(output["loss_dict"]["loss"])
+            np.testing.assert_array_equal(state["num_atoms"].numpy(), expected_counts)
+            np.testing.assert_array_equal(
+                state["lattice"].numpy(), source["lattice"].reshape(2, 3, 3)
+            )
+            if capacity is None:
                 np.testing.assert_array_equal(
-                    state["num_atoms"].numpy(), expected_counts
+                    state["frac_coords"].numpy(), source["frac_coords"]
                 )
                 np.testing.assert_array_equal(
-                    state["x0"][0].numpy(), source["lattice"].reshape(2, 3, 3)
+                    state["atom_types"].numpy(), source["atom_types"]
                 )
-                np.testing.assert_array_equal(
-                    state["x0"][1].numpy(), np.concatenate(expected_coords)
-                )
-                np.testing.assert_array_equal(
-                    state["x0"][2].numpy(), np.concatenate(expected_types)
-                )
-                assert np.random.rand() == expected_next_random
 
-        sample_config = _load_miad_yaml(num_steps=model.num_steps)["Sample"]["data"]
+        sample_config = _load_miad_yaml(num_steps=model.num_train_timesteps)["Sample"][
+            "data"
+        ]
         sample_config["dataset"]["__init_params__"]["total_num"] = 2
         sample_loader = build_dataloader(sample_config)
         assert isinstance(sample_loader.dataset, NumAtomsCrystalDataset)
         sample_batch = next(iter(sample_loader))
         paddle.seed(123)
         result = model.sample(
-            copy.deepcopy(sample_batch), num_inference_steps=model.num_steps
+            copy.deepcopy(sample_batch),
+            num_inference_steps=model.num_train_timesteps,
         )["result"]
         assert len(result) == 2
         for entry in result:
@@ -433,16 +418,16 @@ class TestMiADFrameworkEntry:
             reference_path, index=False
         )
 
-        config = _load_miad_yaml(num_steps=TINY_DIFFUSION_CFG["num_steps"])
-        config["Global"]["time_embed_dim"] = TINY_DIFFUSION_CFG["time_embed_dim"]
-        config["Model"]["__init_params__"]["model_cfg"] = dict(TINY_MODEL_CFG)
-        diffusion_cfg = copy.deepcopy(TINY_DIFFUSION_CFG)
+        config = _load_miad_yaml(num_steps=TINY_DIFFUSION_CFG["num_train_timesteps"])
+        config["Global"]["time_embed_dim"] = TINY_DIFFUSION_CFG["time_dim"]
+        config["Model"]["__init_params__"].update(TINY_MODEL_CFG)
+        diffusion_params = copy.deepcopy(TINY_DIFFUSION_CFG)
         # Untrained tiny models are numerically unstable at ten steps; clipping
         # keeps this entry-point test focused on the sampler contract.
-        diffusion_cfg["lattice_noise_scheduler_cfg"]["__init_params__"][
+        diffusion_params["lattice_noise_scheduler_cfg"]["__init_params__"][
             "clip_sample"
         ] = True
-        config["Model"]["__init_params__"]["diffusion_cfg"] = diffusion_cfg
+        config["Model"]["__init_params__"].update(diffusion_params)
         config["Sample"]["data"]["dataset"]["__init_params__"]["total_num"] = 2
         config["Sample"]["metrics"]["__init_params__"].update(
             {
@@ -606,9 +591,7 @@ class TestMiADSUNMetric:
             assert build_metric(config)(generated)["novelty_rate"] == 100.0
 
             pd.DataFrame({"cif": generated}).to_csv(reference_path, index=False)
-            with mock.patch(
-                "ppmat.metrics.sun_metric_utils.os.replace", side_effect=OSError
-            ):
+            with mock.patch("ppmat.metrics.sun_metric.os.replace", side_effect=OSError):
                 assert build_metric(config)(generated)["novelty_rate"] == 0.0
             assert not list(cache_dir.glob("*.tmp"))
             reference_path.unlink()

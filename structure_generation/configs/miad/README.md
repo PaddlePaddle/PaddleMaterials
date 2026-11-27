@@ -90,51 +90,75 @@ using the minimum image under the relaxed cell.
 
 | Model | Dataset | S.U.N. (%) | Stable (%) | Unique (%) | Novel (%) | RMSD (Å) | GPUs | Training Time | Config | Checkpoint / Log |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| miad_mp20 | mp20 | 13.90 | 19.60 | 99.40 | 76.60 | 0.229 | 1 | Unknown | [miad_mp20.yaml](miad_mp20.yaml) | [registry](../../../ppmat/models/__init__.py) |
+| miad_mp20 | mp20 | 13.90 | 19.60 | 99.40 | 76.60 | 0.229 | 1 | ~93 s/epoch | [miad_mp20.yaml](miad_mp20.yaml) | [registry](../../../ppmat/models/__init__.py) |
 
-Converted official MP-20 epoch-8000 checkpoint; 1000 structures, 25 initial
-candidates and 1000 diffusion steps. All 1000 are included: 997 relaxations
-converged.
+The checkpoint is converted from the official MP-20 epoch-8000 release. Metrics
+come from 1000 structures generated with 25 initial candidates and 1000
+diffusion steps, relaxed with CHGNet (MPtrj) and FIRE (fmax 0.05 eV/Angstrom, up
+to 1500 steps, 2023-02-07 MP hull). All 1000 samples enter the stability/SUN
+denominators and 997 relaxations converged. Raw record:
+[results_20261120205054.json](../../../logs/miad_benchmark_20261120205054/results_20261120205054.json).
+
+Training time is measured on one GPU with the released YAML: one epoch over the
+full MP-20 train split (6784 steps, batch size 4) takes ~93 s, and a full run
+including validation finishes in 173 s. Log:
+[miad_train_timing_20261127010612.log](../../logs/miad_train_timing_20261127010612.log).
 
 ---
 
 ## Command
 
-Run from the repository root. Validation and testing automatically download
-the pretrained checkpoint configured in the YAML.
-
 ### Training
-
 ```bash
+# multi-gpu training (example with 4 GPUs)
+python -m paddle.distributed.launch --gpus="0,1,2,3" structure_generation/train.py -c structure_generation/configs/miad/miad_mp20.yaml Trainer.pretrained_model_path=null
+# single-gpu training
 python structure_generation/train.py -c structure_generation/configs/miad/miad_mp20.yaml Trainer.pretrained_model_path=null
 ```
 
 ### Validation
-
 ```bash
+# Adjust program behavior on the fly using command-line parameters without modifying the configuration file directly.
+# Example: --Global.do_eval=True
+# The checkpoint configured in the YAML is downloaded automatically.
 python structure_generation/train.py -c structure_generation/configs/miad/miad_mp20.yaml Global.do_eval=True Global.do_train=False Global.do_test=False
 ```
 
 ### Testing
-
 ```bash
+# Evaluate the model on the test dataset.
 python structure_generation/train.py -c structure_generation/configs/miad/miad_mp20.yaml Global.do_eval=False Global.do_train=False Global.do_test=True
 ```
 
 ### Sample
-
-MiAD is unconditional: sample by `by_dataloader` or `by_num_atoms`; the
-`by_chemical_formula` mode does not constrain the generated composition.
-
 ```bash
-python structure_generation/sample.py --model_name=miad_mp20 --mode=by_dataloader
+# Predict crystal structures using a trained model.
+# Mode 1: Load the checkpoint registered under MODEL_REGISTRY.
+# Mode 2: Use a custom configuration file and local checkpoint.
+# Results are saved to the folder specified by --output_path (default: results).
+# MiAD is unconditional: use by_dataloader or by_num_atoms.
+# by_chemical_formula only fixes the number of atoms and does not constrain the composition.
+
+# Mode 1: pre-trained model
+python structure_generation/sample.py --model_name='miad_mp20' --weights_name='best.pdparams' --output_path='result_miad_mp20/' --mode='by_dataloader'
+
+# Mode 2: custom config + checkpoint
+python structure_generation/sample.py --config_path='structure_generation/configs/miad/miad_mp20.yaml' --checkpoint_path='./output/miad_mp20/checkpoints/best.pdparams' --output_path='result_miad_mp20/' --mode='by_dataloader'
+
+# sample a fixed number of atoms
+python structure_generation/sample.py --config_path='structure_generation/configs/miad/miad_mp20.yaml' --checkpoint_path='./output/miad_mp20/checkpoints/best.pdparams' --output_path='result_miad_num_atoms/' --mode='by_num_atoms' --num_atoms=20
+```
+
+### Evaluate
+```bash
+# Sample with the model and report S.U.N. metrics in one command.
+python structure_generation/sample.py --config_path='structure_generation/configs/miad/miad_mp20.yaml' --checkpoint_path='./output/miad_mp20/checkpoints/best.pdparams' --output_path='result_miad_eval/' --mode='compute_metric'
 ```
 
 ---
 
 ## Citation
-
-```bibtex
+```
 @article{okhotin2025miad,
   title={MiAD: Mirage Atom Diffusion for De Novo Crystal Generation},
   author={Okhotin, Andrey and Nakhodnov, Maksim and Kazeev, Nikita and Lazarev, Mikhail and Ustyuzhanin, Andrey E and Vetrov, Dmitry},

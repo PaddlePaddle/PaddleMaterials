@@ -12,6 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# This file extends ppmat.schedulers.scheduling_ddpm with the clipped cosine
+# noise table used by MiAD (arXiv:2511.14426).
+
 import math
 
 import paddle
