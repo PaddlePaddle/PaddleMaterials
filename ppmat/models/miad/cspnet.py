@@ -16,7 +16,12 @@ import paddle
 from paddle import nn
 
 from ppmat.models.common.activation import swish
+from ppmat.models.diffcsp.diffcsp import CSPLayer
 from ppmat.models.diffcsp.diffcsp import CSPNet
+from ppmat.models.diffcsp.diffcsp import SinusoidsEmbedding
+
+_SPACE_DIM = 3
+_LATTICE_DIM = _SPACE_DIM**2
 
 
 class _MiADSiLU(nn.Silu):
@@ -27,6 +32,31 @@ class _MiADSiLU(nn.Silu):
         if x.place.is_cpu_place() and paddle.is_grad_enabled():
             return swish(x)
         return super().forward(x)
+
+
+class _MiADCSPLayer(CSPLayer):
+    """Reuse CSP message passing without property-conditioning parameters."""
+
+    def __init__(self, hidden_dim, act_fn, dis_emb, ln, ip):
+        nn.Layer.__init__(self)
+        self.dis_emb = dis_emb
+        self.dis_dim = _SPACE_DIM if dis_emb is None else dis_emb.dim
+        self.ip = ip
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(hidden_dim * 2 + _LATTICE_DIM + self.dis_dim, hidden_dim),
+            act_fn,
+            nn.Linear(hidden_dim, hidden_dim),
+            act_fn,
+        )
+        self.node_mlp = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            act_fn,
+            nn.Linear(hidden_dim, hidden_dim),
+            act_fn,
+        )
+        self.ln = ln
+        if ln:
+            self.layer_norm = nn.LayerNorm(hidden_dim)
 
 
 class MiADCSPNet(CSPNet):
@@ -61,19 +91,31 @@ class MiADCSPNet(CSPNet):
         if num_layers < 1:
             raise ValueError("MiAD requires at least one message-passing layer")
 
-        super().__init__(
-            hidden_dim=hidden_dim,
-            latent_dim=latent_dim,
-            num_layers=num_layers,
-            act_fn=act_fn,
-            dis_emb=dis_emb,
-            num_freqs=num_freqs,
-            edge_style=edge_style,
-            ln=ln,
-            ip=ip,
-            smooth=smooth,
-            pred_type=pred_type,
-            prop_dim=None,
-            num_classes=num_classes,
-            act_layer=_MiADSiLU,
-        )
+        nn.Layer.__init__(self)
+        self.ip = ip
+        self.smooth = smooth
+        self.num_classes = num_classes
+        self.node_embedding = nn.Linear(num_classes, hidden_dim)
+        self.atom_latent_emb = nn.Linear(hidden_dim + latent_dim, hidden_dim)
+        self.act_fn = _MiADSiLU()
+        if dis_emb == "sin":
+            self.dis_emb = SinusoidsEmbedding(n_frequencies=num_freqs)
+        elif dis_emb == "none":
+            self.dis_emb = None
+        else:
+            raise ValueError("MiAD requires dis_emb='sin' or dis_emb='none'")
+        for i in range(num_layers):
+            self.add_sublayer(
+                name=f"csp_layer_{i}",
+                sublayer=_MiADCSPLayer(hidden_dim, self.act_fn, self.dis_emb, ln, ip),
+            )
+        self.num_layers = num_layers
+        self.coord_out = nn.Linear(hidden_dim, _SPACE_DIM, bias_attr=False)
+        self.lattice_out = nn.Linear(hidden_dim, _LATTICE_DIM, bias_attr=False)
+        self.pred_type = pred_type
+        self.ln = ln
+        self.edge_style = edge_style
+        if ln:
+            self.final_layer_norm = nn.LayerNorm(hidden_dim)
+        self.type_out = nn.Linear(hidden_dim, num_classes)
+        self.pred_scalar = False

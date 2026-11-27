@@ -64,7 +64,7 @@ class CSPLayer(paddle.nn.Layer):
     def __init__(
         self,
         hidden_dim=128,
-        prop_dim: int | None = 512,
+        prop_dim=512,
         act_fn=paddle.nn.Silu(),
         dis_emb=None,
         ln=False,
@@ -91,15 +91,12 @@ class CSPLayer(paddle.nn.Layer):
             act_fn,
         )
 
-        self.prop_dim = prop_dim
-        if self.prop_dim is not None:
-            prop_in_dim = self.prop_dim
-            self.prop_mlp = paddle.nn.Sequential(
-                paddle.nn.Linear(in_features=prop_in_dim, out_features=hidden_dim),
-                act_fn,
-                paddle.nn.Linear(in_features=hidden_dim, out_features=hidden_dim),
-                act_fn,
-            )
+        self.prop_mlp = paddle.nn.Sequential(
+            paddle.nn.Linear(in_features=prop_dim, out_features=hidden_dim),
+            act_fn,
+            paddle.nn.Linear(in_features=hidden_dim, out_features=hidden_dim),
+            act_fn,
+        )
 
         self.ln = ln
         if self.ln:
@@ -157,11 +154,6 @@ class CSPLayer(paddle.nn.Layer):
         property_mask=None,
     ):
         if property_emb is not None:
-            if self.prop_dim is None:
-                raise ValueError(
-                    "This CSPLayer was built without property conditioning "
-                    "(prop_dim=None) but received property_emb."
-                )
             property_features = self.prop_mlp(property_emb)
             if property_mask is not None:
                 property_features = property_features * property_mask
@@ -222,10 +214,9 @@ class CSPNet(paddle.nn.Layer):
         ip: bool = True,
         smooth: bool = False,
         pred_type: bool = False,
-        prop_dim: int | None = 512,
+        prop_dim: int = 512,
         pred_scalar: bool = False,
         num_classes: int = 100,
-        act_layer: type[paddle.nn.Layer] | None = None,
     ):
         super(CSPNet, self).__init__()
         self.ip = ip
@@ -244,7 +235,7 @@ class CSPNet(paddle.nn.Layer):
             in_features=hidden_dim + latent_dim, out_features=hidden_dim
         )
         if act_fn == "silu":
-            self.act_fn = act_layer() if act_layer is not None else paddle.nn.Silu()
+            self.act_fn = paddle.nn.Silu()
         if dis_emb == "sin":
             self.dis_emb = SinusoidsEmbedding(n_frequencies=num_freqs)
         elif dis_emb == "none":
