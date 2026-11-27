@@ -41,7 +41,6 @@ CINN_SUPPORTED_PREFIXES = (
     "mattergen_",
     "mattersim_",
     "megnet_",
-    "omatg_",
     "sfin_",
     "spherenet_",
 )

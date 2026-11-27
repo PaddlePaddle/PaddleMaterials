@@ -13,7 +13,7 @@ Trainer:
   log_freq: 10
   start_eval_epoch: 1
   eval_freq: 1
-  pretrained_model_path: null
+  pretrained_model_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/OMatG/omatg_mp20_csp_linear_ode.zip
   resume_from_checkpoint: null
   use_amp: False
   amp_level: 'O1'

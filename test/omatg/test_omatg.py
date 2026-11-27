@@ -22,6 +22,7 @@ metric entry points.
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import paddle
@@ -47,9 +48,7 @@ def _load_small_model_config(kind):
     cfg = OmegaConf.load(_CONFIGS[kind])
     model_cfg = OmegaConf.to_container(cfg["Model"], resolve=True)
     params = model_cfg["__init_params__"]
-    params["decoder_cfg"].update(
-        hidden_dim=32, num_layers=1, time_embed_dim=16, ip=False
-    )
+    params["decoder_cfg"].update(hidden_dim=32, num_layers=1, time_embed_dim=16)
     params["si_scheduler_cfg"]["integration_time_steps"] = 10
     return model_cfg
 
@@ -74,21 +73,6 @@ def _make_batch(atoms_per_struct=(3, 4), max_z=10):
     }
 
 
-def _make_concat_sample(n, cell_size=5.0):
-    from ppmat.datasets.custom_data_type import ConcatData
-
-    return {
-        "structure_array": {
-            "num_atoms": ConcatData(np.array([n], dtype="int64")),
-            "atom_types": ConcatData(np.arange(1, n + 1, dtype="int64")),
-            "lattice": ConcatData(
-                (np.eye(3) * cell_size).reshape(1, 3, 3).astype("float32")
-            ),
-            "frac_coords": ConcatData(np.random.rand(n, 3).astype("float32")),
-        }
-    }
-
-
 def _train_one_step(model, batch):
     optimizer = paddle.optimizer.Adam(learning_rate=1e-4, parameters=model.parameters())
     output = model(batch)
@@ -96,7 +80,12 @@ def _train_one_step(model, batch):
     loss_val = float(loss)
     assert np.isfinite(loss_val), "training loss is not finite"
     loss.backward()
+    for parameter in model.parameters():
+        if not parameter.stop_gradient:
+            assert parameter.grad is not None
+            assert np.isfinite(parameter.grad.numpy()).all()
     optimizer.step()
+    assert all(np.isfinite(p.numpy()).all() for p in model.parameters())
     optimizer.clear_grad()
     return loss_val
 
@@ -152,6 +141,30 @@ class TestOMatGFlows(unittest.TestCase):
                 self.assertEqual(len(result["result"]), 2)
                 for entry in result["result"]:
                     self.assertTrue(np.isfinite(entry["frac_coords"]).all())
+
+    def test_runtime_dispatch_preserves_outputs(self):
+        calls = set()
+
+        def dispatch(model, boundary, function, *args, **kwargs):
+            calls.add((model.execution_backend, boundary))
+            return function(*args, **kwargs)
+
+        for kind in _CONFIGS:
+            batch = _make_batch()
+            outputs = []
+            for backend in ("eager", "cinn"):
+                cfg = _load_small_model_config(kind)
+                cfg["__init_params__"]["execution_backend"] = backend
+                paddle.seed(2026)
+                model = build_model(cfg)
+                with patch.object(OMatG, "_run_runtime", dispatch):
+                    paddle.seed(42)
+                    loss = float(model(batch)["loss_dict"]["loss"])
+                    model.eval()
+                    sample = model.sample(batch, num_inference_steps=5)
+                outputs.append((loss, sample))
+            self.assertEqual(outputs[0], outputs[1])
+        self.assertEqual(calls, {("eager", "denoise_step"), ("cinn", "denoise_step")})
 
 
 class TestDataFlow(unittest.TestCase):
@@ -232,9 +245,28 @@ class TestMetrics(unittest.TestCase):
             _crystal_dict(5.0, [3, 9], [[0.0, 0.0, 0.0], [0.3, 0.0, 0.0]]),
         ]
         invalid = dict(ref[0], lengths=[0.0, 0.0, 0.0])
-        gen = [ref[0], invalid, ref[0]]
+        overlapping = dict(ref[1], frac_coords=[[0.0, 0.0, 0.0], [0.01, 0.0, 0.0]])
+        gen = [ref[0], invalid, overlapping, ref[0]]
 
-        metrics = DNGMetric(dataset_name="mp_20")(gen, gt_data=ref)
+        with tempfile.TemporaryDirectory() as tmp:
+            csv_path = Path(tmp) / "gt.csv"
+            self._write_gt_csv(csv_path, ref)
+            metric = DNGMetric(gt_file_path=str(csv_path))
+            metrics = metric(gen)
+            metric.update_step(result={"result": gen[:2]}, batch={}, stage="sample")
+            metric.update_step(result={"result": gen[2:]}, batch={}, stage="sample")
+            self.assertEqual(metrics, metric.compute_epoch(stage="sample"))
+            metric.update_step(result={"loss_dict": {}}, batch={}, stage="eval")
+            self.assertEqual(metric.compute_epoch(stage="eval"), {})
+            metric.update_step(result={"result": [ref[0]]}, batch={}, stage="eval")
+            self.assertAlmostEqual(
+                metric.compute_epoch(stage="eval")["valid_rate"], 1.0
+            )
+            self.assertEqual(metrics, metric.compute_epoch(stage="sample"))
+            cached_reference = metric._gt_crystals
+            metric.reset()
+            self.assertIs(metric._gt_crystals, cached_reference)
+            self.assertEqual(metric.compute_epoch(stage="sample"), {})
         expected = {
             "valid_rate",
             "composition_valid_rate",
@@ -248,4 +280,9 @@ class TestMetrics(unittest.TestCase):
         self.assertTrue(expected <= set(metrics))
         for value in metrics.values():
             self.assertFalse(np.isnan(value))
-        self.assertAlmostEqual(metrics["valid_rate"], 2.0 / 3.0)
+        self.assertAlmostEqual(metrics["valid_rate"], 0.5)
+        self.assertAlmostEqual(metrics["structural_valid_rate"], 0.5)
+        self.assertAlmostEqual(metrics["cov_precision"], 0.5)
+        self.assertAlmostEqual(metrics["cov_recall"], 0.5)
+        self.assertAlmostEqual(metrics["metre_rate"], 1.0)
+        self.assertAlmostEqual(metrics["metre_valid_rate"], 0.5)

@@ -13,7 +13,7 @@ Trainer:
   log_freq: 10
   start_eval_epoch: 1
   eval_freq: 1
-  pretrained_model_path: null
+  pretrained_model_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/OMatG/omatg_mp20_dng_linear_sde_gamma.zip
   resume_from_checkpoint: null
   use_amp: False
   amp_level: 'O1'
@@ -173,6 +173,7 @@ Sample:
       __class_name__: NumAtomsCrystalDataset
       __init_params__:
         total_num: 1000
+        dist_name: MP_20
     sampler:
       __class_name__: BatchSampler
       __init_params__:

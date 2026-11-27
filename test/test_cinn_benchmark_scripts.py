@@ -34,7 +34,7 @@ def test_supported_models_cover_every_qualified_registered_weight():
     runner = load_script("run_registry_matrix")
     models = runner.supported_models()
     assert set(MODEL_REGISTRY) - set(models) == {
-        name for name in MODEL_REGISTRY if name.startswith("infgcn_")
+        name for name in MODEL_REGISTRY if name.startswith(("infgcn_", "omatg_"))
     }
 
 

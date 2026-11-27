@@ -25,6 +25,7 @@ from typing import Tuple
 import numpy as np
 
 from ppmat.datasets.build_structure import BuildStructure
+from ppmat.metrics.streaming_base import StreamingMetricBase
 from ppmat.metrics.utils import Crystal
 from ppmat.utils import logger
 
@@ -293,9 +294,7 @@ class _OMatGCrystal(Crystal):
         if lengths.size == 3 and np.all(np.isfinite(lengths)):
             denominator = float(np.prod(lengths))
             volume = float(self.structure.lattice.volume) if self.constructed else 0.0
-            self.polar_sine_valid = (
-                denominator > 0.0 and volume / denominator > 1.0e-3
-            )
+            self.polar_sine_valid = denominator > 0.0 and volume / denominator > 1.0e-3
         self.fingerprint_valid = self.comp_fp is not None and self.struct_fp is not None
         self.valid = bool(
             self.comp_valid
@@ -318,7 +317,7 @@ class _OMatGCrystal(Crystal):
         self.constructed = self.structure.volume >= 0.1
 
     def get_fingerprints(self):
-        if self.constructed:
+        if self.constructed and self.struct_valid:
             super().get_fingerprints()
 
 
@@ -345,7 +344,7 @@ def _constructible(crystals: Sequence[Crystal], label: str) -> List[Crystal]:
     return constructible
 
 
-class DNGMetric:
+class DNGMetric(StreamingMetricBase):
     """De novo generation (DNG) metrics for crystal structure generation.
 
     Reports the validity rate, match-everyone-to-reference (METRe) statistics,
@@ -353,6 +352,11 @@ class DNGMetric:
     datasets with published cutoffs, composition-structure coverage. The metric
     only consumes generated structure dictionaries and a reference set, so it is
     independent of the model that produced them.
+
+    Streaming updates consume ``result["result"]`` from structure sampling.
+    Loss-only forward results do not contribute. Each stage retains its complete
+    population until reset so coverage and METRe include cross-batch matches.
+    Distributed results must be gathered by the caller before ingestion.
 
     Args:
         gt_file_path (str): CSV file with a ``cif`` column holding the reference
@@ -379,6 +383,19 @@ class DNGMetric:
         self._angle_tol = angle_tol
         self._check_reduced = check_reduced
         self._gt_crystals: Optional[List[Crystal]] = None
+        self.reset()
+
+    def reset(self):
+        self._crystals_by_stage: Dict[str, List[Crystal]] = {}
+
+    def update_step(self, *, result: Dict, batch: Dict, stage: str):
+        if "result" in result:
+            self._crystals_by_stage.setdefault(stage, []).extend(
+                _parse_crystals(result["result"])
+            )
+
+    def compute_epoch(self, *, stage: str) -> Dict[str, float]:
+        return self._finalize(self._crystals_by_stage.get(stage, []))
 
     def _load_reference(self, gt_data: Optional[Sequence]) -> List[Crystal]:
         if gt_data is not None:
@@ -489,14 +506,16 @@ class DNGMetric:
         self, pred_data: Sequence[dict], gt_data: Optional[Sequence] = None
     ) -> Dict[str, float]:
         """Score generated structures against the reference set."""
-        if len(pred_data) == 0:
+        return self._finalize(_parse_crystals(pred_data), gt_data)
+
+    def _finalize(
+        self, gen_crystals: List[Crystal], gt_data: Optional[Sequence] = None
+    ) -> Dict[str, float]:
+        if len(gen_crystals) == 0:
             logger.warning("[DNGMetric] No generated structures to evaluate.")
             return {}
-        gen_crystals = _parse_crystals(pred_data)
         ref_crystals = self._load_reference(gt_data)
         if len(ref_crystals) == 0:
-            logger.warning(
-                "[DNGMetric] The reference set is empty; nothing to score."
-            )
+            logger.warning("[DNGMetric] The reference set is empty; nothing to score.")
             return {}
         return self._dng_metrics(gen_crystals, ref_crystals)
