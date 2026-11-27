@@ -1,0 +1,195 @@
+Global:
+  # Whether to train, evaluate or test
+  do_train: True
+  do_eval: True
+  do_test: False
+
+Trainer:
+  # Max epochs to train
+  max_epochs: 2000
+  seed: 42
+  output_dir: ./output/omatg_mp20_dng
+  save_freq: 100
+  log_freq: 10
+  start_eval_epoch: 1
+  eval_freq: 1
+  pretrained_model_path: https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/structure_generation/OMatG/omatg_mp20_dng_linear_sde_gamma.zip
+  resume_from_checkpoint: null
+  use_amp: False
+  amp_level: 'O1'
+  eval_with_no_grad: True
+  # The upstream effective batch is 512. A per-step batch of 128 with four
+  # accumulation steps keeps that effective batch and fits a 32 GB GPU.
+  gradient_accumulation_steps: 4
+  best_metric_indicator: 'eval_loss'
+  name_for_best_metric: "loss"
+  greater_is_better: False
+  compute_metric_during_train: False
+  metric_strategy_during_eval: 'step'
+  use_visualdl: False
+  use_wandb: False
+  use_tensorboard: False
+
+Model:
+  __class_name__: OMatG
+  __init_params__:
+    decoder_cfg:
+      hidden_dim: 512
+      num_layers: 6
+      max_atoms: 100
+      act_fn: silu
+      dis_emb: sin
+      num_freqs: 128
+      edge_style: fc
+      cutoff: 7.0
+      max_neighbors: 20
+      ln: True
+      ip: True
+      smooth: False
+      pred_type: True
+      pred_scalar: False
+      time_embed_dim: 256
+    si_scheduler_cfg:
+      # Per-field stochastic interpolants from the official
+      # dng_linear_sde_mp_20.yaml. Every top-level key is a data field except
+      # 'integration_time_steps' and 'relative_si_costs'.
+      species:
+        __class_name__: DiscreteFlowMatchingMask
+        __init_params__:
+          noise: 0.189
+      pos:
+        __class_name__: SingleStochasticInterpolant
+        __init_params__:
+          interpolant:
+            __class_name__: PeriodicLinearInterpolant
+          gamma:
+            __class_name__: LatentGammaSqrt
+            __init_params__:
+              a: 0.018159684059653552
+          epsilon:
+            __class_name__: VanishingEpsilon
+            __init_params__:
+              c: 9.74900863316411
+              mu: 0.17191546490562354
+              sigma: 0.029425925880471573
+          differential_equation_type: SDE
+          integrator_kwargs: null
+          correct_center_of_mass_motion: True
+          velocity_annealing_factor: 6.334345265874859
+      cell:
+        __class_name__: SingleStochasticInterpolant
+        __init_params__:
+          interpolant:
+            __class_name__: LinearInterpolant
+          gamma: null
+          epsilon: null
+          differential_equation_type: ODE
+          integrator_kwargs: null
+          correct_center_of_mass_motion: False
+          velocity_annealing_factor: 1.0674474901964888
+      integration_time_steps: 710
+      relative_si_costs:
+        species_loss: 0.5918064683979826
+        pos_loss_b: 0.13091891010303253
+        pos_loss_z: 0.27077286248215743
+        cell_loss_b: 0.006501759016827464
+    sampler_cfg:
+      dataset_name: mp_20
+      mirror_species: False
+      mask_species: True
+    # The official DNG configuration permutes the base positions to minimise
+    # the periodic distance to the target before building the interpolants.
+    use_min_perm_dist: True
+
+Optimizer:
+  __class_name__: Adam
+  __init_params__:
+    beta1: 0.9
+    beta2: 0.999
+    weight_decay: 0.01
+    lr:
+      __class_name__: Cosine
+      __init_params__:
+        learning_rate: 0.001
+        by_epoch: True
+
+Dataset:
+  train:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/train.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 10
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: True
+        drop_last: False
+        batch_size: 128
+  val:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/val.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 10
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 256
+  test:
+    dataset:
+      __class_name__: MP20Dataset
+      __init_params__:
+        path: "./data/mp_20/test.csv"
+        build_structure_cfg:
+          format: cif_str
+          primitive: False
+          niggli: False
+          canocial: False
+          num_cpus: 10
+    sampler:
+      __class_name__: DistributedBatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 256
+
+Sample:
+  # De novo generation: atom counts are drawn from the dataset distribution.
+  data:
+    dataset:
+      __class_name__: NumAtomsCrystalDataset
+      __init_params__:
+        total_num: 1000
+        dist_name: MP_20
+    sampler:
+      __class_name__: BatchSampler
+      __init_params__:
+        shuffle: False
+        drop_last: False
+        batch_size: 32
+
+  build_structure_cfg:
+    format: array
+    niggli: False
+
+  model_sample_params:
+    num_inference_steps: ${Model.__init_params__.si_scheduler_cfg.integration_time_steps}
+
+  metrics:
+    __class_name__: DNGMetric
+    __init_params__:
+      dataset_name: mp_20
+      gt_file_path: "./data/mp_20/test.csv"
