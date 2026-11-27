@@ -12,41 +12,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Shared activation function registry for MatterChat.
-
-from __future__ import annotations
+"""Activation lookup shared by the Q-Former and Mistral blocks."""
 
 from paddle import nn
 
-
-class ScaledSiLU(nn.Layer):
-    """Scaled Sigmoid Linear Unit."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.scale_factor = 1 / 0.6
-        self._activation = nn.Silu()
-
-    def forward(self, x):
-        return self._activation(x) * self.scale_factor
-
-
 ACT2FN = {
     "gelu": nn.GELU,
-    "gelu_new": nn.GELU,
-    "gelu_python": nn.GELU,
     "relu": nn.ReLU,
     "silu": nn.Silu,
-    "scaledsilu": ScaledSiLU,
-    "softplus": nn.Softplus,
-    "sigmoid": nn.Sigmoid,
-    "tanh": nn.Tanh,
 }
 
 
 def get_activation(name: str) -> nn.Layer:
-    if isinstance(name, str):
-        if name.lower() in ACT2FN:
-            return ACT2FN[name.lower()]()
-        raise ValueError(f"Unsupported activation: {name}")
-    return name
+    try:
+        return ACT2FN[name.lower()]()
+    except KeyError:
+        raise ValueError(f"Unsupported activation: {name}") from None

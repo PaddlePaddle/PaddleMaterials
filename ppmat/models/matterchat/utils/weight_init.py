@@ -12,30 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Shared weight initialization and model utilities for MatterChat.
+"""Weight initialization for MatterChat transformer blocks."""
 
-from __future__ import annotations
-
-import paddle
 import paddle.nn as nn
+
+from ppmat.models.common.initializer import normal_
+from ppmat.models.common.initializer import ones_
+from ppmat.models.common.initializer import zeros_
 
 
 def default_init_weights(module, initializer_range: float = 0.02):
     """Default weight initialization for Linear, Embedding, and LayerNorm."""
     if isinstance(module, nn.Linear):
-        module.weight.set_value(
-            paddle.normal(shape=module.weight.shape, mean=0.0, std=initializer_range)
-        )
+        normal_(module.weight, std=initializer_range)
         if module.bias is not None:
-            module.bias.set_value(paddle.zeros(module.bias.shape))
+            zeros_(module.bias)
     elif isinstance(module, nn.Embedding):
-        module.weight.set_value(
-            paddle.normal(shape=module.weight.shape, mean=0.0, std=initializer_range)
-        )
-        if hasattr(module, "_padding_idx") and module._padding_idx is not None:
-            module.weight[module._padding_idx].set_value(
-                paddle.zeros([module.weight.shape[1]])
-            )
+        normal_(module.weight, std=initializer_range)
+        if module._padding_idx is not None:
+            zeros_(module.weight[module._padding_idx])
     elif isinstance(module, nn.LayerNorm):
-        module.bias.set_value(paddle.zeros(module.bias.shape))
-        module.weight.set_value(paddle.ones(module.weight.shape))
+        zeros_(module.bias)
+        ones_(module.weight)

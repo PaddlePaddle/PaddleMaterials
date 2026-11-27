@@ -14,6 +14,7 @@
 
 """Complete MatterChat model: Blip2MistralInstruct."""
 
+import contextlib
 import json
 import os
 
@@ -22,14 +23,17 @@ import paddle.nn as nn
 from omegaconf import OmegaConf
 
 from ppmat.models.common.runtime import RuntimeMixin
+from ppmat.models.matterchat.material_encoder import MatterChatEncoder
 from ppmat.models.matterchat.mistral.configuration_mistral import MistralConfig
 from ppmat.models.matterchat.mistral.modeling_mistral import MistralForCausalLM
-from ppmat.models.matterchat.q_former.q_former_base import Blip2Base
+from ppmat.models.matterchat.q_former import BertConfig
+from ppmat.models.matterchat.q_former import QFormer
+from ppmat.models.matterchat.utils.tokenizer import MistralTokenizerWrapper
 from ppmat.utils import download
 from ppmat.utils.model_package import resolve_model_package_dir
 
 
-class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
+class Blip2MistralInstruct(RuntimeMixin, nn.Layer):
     pretrained_model_name = "matterchat_full"
     pretrained_url = "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/llm/MatterChat/matterchat_full.zip"  # noqa
 
@@ -64,26 +68,16 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
             and not tokenizer_path
         ):
             tokenizer_path = os.path.join(pretrained_package, "tokenizer.json")
-        if llm_tokenizer is None and tokenizer_path is not None and tokenizer_path:
-            from ppmat.models.matterchat.utils.tokenizer import MistralTokenizerWrapper
+        if llm_tokenizer is None and tokenizer_path:
+            llm_tokenizer = MistralTokenizerWrapper(os.path.expanduser(tokenizer_path))
 
-            _resolved = os.path.expanduser(tokenizer_path)
-            llm_tokenizer = MistralTokenizerWrapper(_resolved)
-
-        self.material_encoder = self.init_material_encoder(material_encoder_config)
+        self.material_encoder = MatterChatEncoder(material_encoder_config)
         for param in self.material_encoder.parameters():
             param.stop_gradient = True
 
-        self.Qformer, self.query_tokens = self.init_Qformer(
+        self.Qformer, self.query_tokens = self._init_qformer(
             num_query_token, self.material_encoder.atom_fea_dim, qformer_config
         )
-
-        self.Qformer.bert.embeddings.word_embeddings = None
-        self.Qformer.bert.embeddings.position_embeddings = None
-        for layer in self.Qformer.bert.encoder.layer:
-            layer.output = None
-            layer.intermediate = None
-        self.Qformer.cls = None
 
         self.llm_tokenizer = llm_tokenizer
         self.llm_model = (
@@ -105,11 +99,6 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
         self.max_output_txt_len = max_output_txt_len
         self.prompt = prompt
 
-        if self.llm_tokenizer is not None:
-            prompt_tokens = self.llm_tokenizer(self.prompt, return_tensors="pd")
-            self.prompt_length = prompt_tokens.attention_mask.sum(1).item()
-        else:
-            self.prompt_length = 0
         if pretrained_package is not None:
             self._load_package_weights(pretrained_package)
 
@@ -132,6 +121,46 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
     def _build_llm_config(llm_config):
         """Build the Mistral config; a dict selects a smaller custom LLM."""
         return MistralConfig(**({} if llm_config is None else llm_config))
+
+    @staticmethod
+    def _init_qformer(num_query_token, vision_width, qformer_config=None):
+        settings = {} if qformer_config is None else dict(qformer_config)
+        derived = {
+            "encoder_width": vision_width,
+            "query_length": num_query_token,
+            "add_cross_attention": True,
+        }
+        for name, value in derived.items():
+            if name in settings and settings[name] != value:
+                raise ValueError(f"{name} must match the model-derived value {value}.")
+        config = BertConfig(**dict(settings, **derived))
+        if config.num_hidden_layers < 1 or config.cross_attention_freq < 1:
+            raise ValueError(
+                "Q-Former depth and cross-attention frequency must be positive."
+            )
+        if config.num_attention_heads < 1 or config.hidden_size < 1:
+            raise ValueError(
+                "Q-Former hidden size and attention heads must be positive."
+            )
+        if config.hidden_size % config.num_attention_heads:
+            raise ValueError(
+                "Q-Former hidden size must be divisible by attention heads."
+            )
+
+        query_tokens = paddle.create_parameter(
+            shape=[1, num_query_token, config.hidden_size],
+            dtype=paddle.float32,
+            default_initializer=nn.initializer.Normal(
+                mean=0.0, std=config.initializer_range
+            ),
+        )
+        return QFormer(config), query_tokens
+
+    def maybe_autocast(self, dtype=paddle.float16):
+        """Context manager for mixed precision."""
+        if not paddle.is_compiled_with_cuda():
+            return contextlib.nullcontext()
+        return paddle.amp.auto_cast(dtype=dtype)
 
     @classmethod
     def from_pretrained(cls, path):
@@ -229,15 +258,14 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
 
     def _run_qformer(self, query_tokens, material_embeds, material_atts):
         """Encode crystal features using the released query-only Q-Former."""
-        return self.Qformer.bert(
+        return self.Qformer(
             query_embeds=query_tokens,
             encoder_hidden_states=material_embeds,
             encoder_attention_mask=material_atts,
-            return_dict=True,
         )
 
     def _encode_for_generate(self, samples):
-        """Shared encoding pipeline for generate / generate_followup."""
+        """Shared encoding pipeline for chat / generate / generate_followup."""
         self.llm_tokenizer.padding_side = "left"
         prompt = samples.get("prompt", self.prompt)
         if isinstance(prompt, str):
@@ -256,9 +284,7 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
         )
         atts_llm = paddle.ones(inputs_llm.shape[:-1], dtype=paddle.int64)
 
-        prompt_tokens = self.llm_tokenizer(
-            prompt, return_tensors="pd", padding="longest"
-        )
+        prompt_tokens = self.llm_tokenizer(prompt, padding="longest")
         input_embeds = self.llm_model.get_input_embeddings()(prompt_tokens.input_ids)
         inputs_embeds = paddle.concat([inputs_llm, input_embeds], axis=1)
         attention_mask = paddle.concat([atts_llm, prompt_tokens.attention_mask], axis=1)
@@ -346,7 +372,6 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
         if "text_input" in samples:
             text_input_tokens = self.llm_tokenizer(
                 samples["text_input"],
-                return_tensors="pd",
                 padding="longest",
                 truncation=True,
                 max_length=self.max_txt_len,
@@ -356,7 +381,6 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
             input_text = [bos_token] * material_embeds.shape[0]
             text_input_tokens = self.llm_tokenizer(
                 input_text,
-                return_tensors="pd",
                 padding="longest",
                 truncation=True,
                 max_length=self.max_txt_len,
@@ -365,7 +389,6 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
         self.llm_tokenizer.truncation_side = "right"
         text_output_tokens = self.llm_tokenizer(
             [t + self.llm_tokenizer.eos_token for t in samples["text"]],
-            return_tensors="pd",
             padding="longest",
             truncation=True,
             max_length=self.max_output_txt_len,
@@ -404,27 +427,34 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
 
         return {"loss_dict": {"loss": outputs.loss}, "pred_dict": {}}
 
+    def _generate_text(self, samples, **generation_kwargs):
+        inputs_embeds, attention_mask, prompt = self._encode_for_generate(samples)
+
+        with self.maybe_autocast():
+            outputs = self.llm_model.generate(
+                inputs_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                **generation_kwargs,
+            )
+
+        outputs[outputs == 0] = 2  # sanitize output
+        decoded_outputs = [
+            self.llm_tokenizer.decode(o, skip_special_tokens=True).strip()
+            for o in outputs
+        ]
+        return decoded_outputs, prompt
+
     @paddle.no_grad()
     def chat(self, structure, prompt, max_new_tokens=64):
         """Single-turn dialogue over a crystal structure and a text prompt."""
-        embed = self.material_encoder.predict_structure_embedding(structure).unsqueeze(
-            0
+        inputs_embeds, attention_mask, _ = self._encode_for_generate(
+            {"material_sample": structure, "prompt": prompt}
         )
-        mask = paddle.ones(embed.shape[:-1], dtype=paddle.int64)
-        qt = self.query_tokens.expand([1, -1, -1])
-        qo = self._run_qformer(qt, embed, mask)
-        inputs_llm = self.llm_proj(qo.last_hidden_state[:, : qt.shape[1], :])
-        atts_llm = paddle.ones(inputs_llm.shape[:-1], dtype=paddle.int64)
-        self.llm_tokenizer.padding_side = "left"
-        pt = self.llm_tokenizer([prompt], return_tensors="pd", padding="longest")
-        ie = self.llm_model.get_input_embeddings()(pt.input_ids)
-        ie = paddle.concat([inputs_llm, ie], axis=1)
-        am = paddle.concat([atts_llm, pt.attention_mask], axis=1)
         out = self.llm_model.generate(
-            inputs_embeds=ie,
-            attention_mask=am,
+            inputs_embeds=inputs_embeds,
+            attention_mask=attention_mask,
             do_sample=False,
-            max_length=ie.shape[1] + max_new_tokens,
+            max_length=inputs_embeds.shape[1] + max_new_tokens,
         )
         out[out == 0] = 2
         return self.llm_tokenizer.decode(out[0], skip_special_tokens=True).strip()
@@ -443,28 +473,19 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
         num_captions=1,
         temperature=1,
     ):
-        inputs_embeds, attention_mask, _prompt = self._encode_for_generate(samples)
-
-        with self.maybe_autocast():
-            outputs = self.llm_model.generate(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                do_sample=use_nucleus_sampling,
-                top_p=top_p,
-                temperature=temperature,
-                num_beams=num_beams,
-                max_length=max_length,
-                min_length=min_length,
-                repetition_penalty=repetition_penalty,
-                length_penalty=length_penalty,
-                num_return_sequences=num_captions,
-            )
-
-        outputs[outputs == 0] = 2  # sanitize output
-        return [
-            self.llm_tokenizer.decode(o, skip_special_tokens=True).strip()
-            for o in outputs
-        ]
+        decoded_outputs, _ = self._generate_text(
+            samples,
+            do_sample=use_nucleus_sampling,
+            top_p=top_p,
+            temperature=temperature,
+            num_beams=num_beams,
+            max_length=max_length,
+            min_length=min_length,
+            repetition_penalty=repetition_penalty,
+            length_penalty=length_penalty,
+            num_return_sequences=num_captions,
+        )
+        return decoded_outputs
 
     @paddle.no_grad()
     def generate_followup(
@@ -480,28 +501,18 @@ class Blip2MistralInstruct(RuntimeMixin, Blip2Base):
         num_captions=1,
         temperature=1,
     ):
-        inputs_embeds, attention_mask, prompt = self._encode_for_generate(samples)
-
-        with self.maybe_autocast():
-            outputs = self.llm_model.generate(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
-                do_sample=use_nucleus_sampling,
-                top_p=top_p,
-                temperature=temperature,
-                num_beams=num_beams,
-                max_length=max_length,
-                min_length=min_length,
-                repetition_penalty=repetition_penalty,
-                length_penalty=length_penalty,
-                num_return_sequences=num_captions,
-            )
-
-        outputs[outputs == 0] = 2  # sanitize output
-        decoded_outputs = [
-            self.llm_tokenizer.decode(o, skip_special_tokens=True).strip()
-            for o in outputs
-        ]
+        decoded_outputs, prompt = self._generate_text(
+            samples,
+            do_sample=use_nucleus_sampling,
+            top_p=top_p,
+            temperature=temperature,
+            num_beams=num_beams,
+            max_length=max_length,
+            min_length=min_length,
+            repetition_penalty=repetition_penalty,
+            length_penalty=length_penalty,
+            num_return_sequences=num_captions,
+        )
 
         cleaned_outputs = []
         for out, p in zip(decoded_outputs, prompt * num_captions):

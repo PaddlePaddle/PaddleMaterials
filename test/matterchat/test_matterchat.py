@@ -25,9 +25,9 @@ from pymatgen.core import Lattice
 from pymatgen.core import Structure
 
 from ppmat.models import MODEL_REGISTRY
+from ppmat.models.matterchat.matterchat import Blip2MistralInstruct
 from ppmat.models.matterchat.mistral.configuration_mistral import MistralConfig
 from ppmat.models.matterchat.mistral.modeling_mistral import MistralForCausalLM
-from ppmat.models.matterchat.q_former.q_former_complete import Blip2MistralInstruct
 
 # Tiny Mistral config; the default 7B setting does not fit on one GPU.
 _SMALL_LLM_CONFIG = {

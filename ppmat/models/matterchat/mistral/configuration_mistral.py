@@ -33,7 +33,6 @@ class MistralConfig:
     rms_norm_eps: float = 1e-5
     use_cache: bool = True
     pad_token_id: int | None = None
-    bos_token_id: int = 1
     eos_token_id: int = 2
     rope_theta: float = 1000000.0
     attention_dropout: float = 0.0

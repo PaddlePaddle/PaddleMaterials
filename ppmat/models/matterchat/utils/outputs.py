@@ -11,3 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+"""Tuple-indexable base for MatterChat model outputs."""
+
+
+class SubscriptableOutput:
+    """Expose dataclass fields through tuple-like indexing."""
+
+    def __getitem__(self, index):
+        fields = [f for f in self.__dataclass_fields__ if not f.startswith("_")]
+        return getattr(self, fields[index])
+
+    def __len__(self):
+        return len([f for f in self.__dataclass_fields__ if not f.startswith("_")])

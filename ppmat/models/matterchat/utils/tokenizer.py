@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tokenizer wrapper for MatterChat inference."""
+"""Tokenizer wrapper for MatterChat training and inference."""
 
 import os
 from dataclasses import dataclass
@@ -27,7 +27,7 @@ from tokenizers import Tokenizer
 
 @dataclass
 class EncodingResult:
-    """Mimics HuggingFace BatchEncoding for compatibility."""
+    """Token ids and attention mask returned by the wrapper."""
 
     input_ids: paddle.Tensor
     attention_mask: paddle.Tensor
@@ -44,13 +44,8 @@ class MistralTokenizerWrapper:
             raise FileNotFoundError(f"Tokenizer file not found: {tokenizer_path}")
 
         self._tokenizer = Tokenizer.from_file(tokenizer_path)
-        self._tokenizer.enable_padding(direction="right")
         self.padding_side = "right"
         self.truncation_side = "right"
-
-        self.bos_token_id = 1
-        self.eos_token_id = 2
-        self.pad_token_id = self.PAD_TOKEN_ID
 
         self.bos_token = "<s>"
         self.eos_token = "</s>"
@@ -59,16 +54,13 @@ class MistralTokenizerWrapper:
     def __call__(
         self,
         text: Union[str, List[str]],
-        return_tensors: str = "pd",
         padding: Union[bool, str] = False,
         truncation: bool = False,
         max_length: Optional[int] = None,
         add_special_tokens: bool = True,
-        **kwargs,
     ) -> EncodingResult:
         """Encode text to token IDs and attention mask."""
-        is_batched = isinstance(text, list)
-        if not is_batched:
+        if not isinstance(text, list):
             text = [text]
 
         if truncation and max_length is not None:
@@ -78,11 +70,9 @@ class MistralTokenizerWrapper:
         else:
             self._tokenizer.no_truncation()
 
-        if padding and padding != "do_not_pad":
-            dir_map = {"right": "right", "left": "left"}
-            direction = dir_map.get(self.padding_side, "right")
+        if padding:
             self._tokenizer.enable_padding(
-                direction=direction,
+                direction=self.padding_side,
                 pad_id=self.PAD_TOKEN_ID,
                 pad_token=self.pad_token,
             )
@@ -92,16 +82,12 @@ class MistralTokenizerWrapper:
         encodings = self._tokenizer.encode_batch(
             text, add_special_tokens=add_special_tokens
         )
-
-        all_ids = []
-        all_masks = []
-        for enc in encodings:
-            all_ids.append(enc.ids)
-            all_masks.append(enc.attention_mask)
-
-        input_ids = paddle.to_tensor(np.array(all_ids, dtype=np.int64))
-        attention_mask = paddle.to_tensor(np.array(all_masks, dtype=np.int64))
-
+        input_ids = paddle.to_tensor(
+            np.array([enc.ids for enc in encodings], dtype=np.int64)
+        )
+        attention_mask = paddle.to_tensor(
+            np.array([enc.attention_mask for enc in encodings], dtype=np.int64)
+        )
         return EncodingResult(input_ids=input_ids, attention_mask=attention_mask)
 
     def decode(
@@ -114,43 +100,11 @@ class MistralTokenizerWrapper:
             token_ids = token_ids.numpy().tolist()
         elif isinstance(token_ids, np.ndarray):
             token_ids = token_ids.tolist()
-
         if token_ids and isinstance(token_ids[0], list):
             token_ids = token_ids[0]
 
-        # Filter out the added pad token (32768) which the base tokenizer doesn't know
+        # The added pad token is outside the tokenizer vocabulary.
         token_ids = [t for t in token_ids if t < self.VOCAB_SIZE]
-
         return self._tokenizer.decode(
             token_ids, skip_special_tokens=skip_special_tokens
         )
-
-    def batch_decode(
-        self,
-        sequences: Union[List, paddle.Tensor],
-        skip_special_tokens: bool = True,
-    ) -> List[str]:
-        """Decode a batch of token ID sequences."""
-        if isinstance(sequences, paddle.Tensor):
-            sequences = sequences.numpy().tolist()
-
-        results = []
-        for seq in sequences:
-            if isinstance(seq, (list, np.ndarray)):
-                token_ids = list(seq)
-            else:
-                token_ids = [int(seq)]
-            token_ids = [t for t in token_ids if t < self.VOCAB_SIZE]
-            results.append(
-                self._tokenizer.decode(
-                    token_ids, skip_special_tokens=skip_special_tokens
-                )
-            )
-        return results
-
-    def get_vocab_size(self) -> int:
-        return self.VOCAB_SIZE + 1
-
-    @property
-    def vocab_size(self) -> int:
-        return self.VOCAB_SIZE + 1

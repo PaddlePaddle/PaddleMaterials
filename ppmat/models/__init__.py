@@ -37,7 +37,7 @@ from ppmat.models.diffnmr.diffnmr import MolecularGraphFormer
 from ppmat.models.diffnmr.diffnmr import NMRNetCLIP
 from ppmat.models.dimenetpp.dimenetpp import DimeNetPlusPlus
 from ppmat.models.infgcn.infgcn import InfGCN
-from ppmat.models.matterchat.q_former.q_former_complete import Blip2MistralInstruct
+from ppmat.models.matterchat.matterchat import Blip2MistralInstruct
 from ppmat.models.mattergen.mattergen import MatterGen
 from ppmat.models.mattergen.mattergen import MatterGenWithCondition
 from ppmat.models.mattersim.m3gnet import M3GNet
