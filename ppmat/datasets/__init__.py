@@ -40,6 +40,7 @@ from ppmat.datasets.high_level_water_dataset import HighLevelWaterDataset
 from ppmat.datasets.jarvis_dataset import JarvisDataset
 from ppmat.datasets.matbench_dataset import MatbenchDataset
 from ppmat.datasets.md17_dataset import MD17Dataset  # noqa
+from ppmat.datasets.miad_dataset import MiADSamplingDataset
 from ppmat.datasets.mp20_dataset import AlexMP20MatterGenDataset
 from ppmat.datasets.mp20_dataset import MP20Dataset
 from ppmat.datasets.mp20_dataset import MP20MatterGenDataset
@@ -64,6 +65,7 @@ __all__ = [
     "MP20MatterGenDataset",
     "AlexMP20MatterGenDataset",
     "NumAtomsCrystalDataset",
+    "MiADSamplingDataset",
     "set_signal_handlers",
     "MPTrjDataset",
     "JarvisDataset",

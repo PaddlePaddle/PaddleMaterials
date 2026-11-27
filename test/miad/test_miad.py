@@ -24,7 +24,7 @@ import pytest
 from cinn_workflow_harness import REPO_ROOT
 from omegaconf import OmegaConf
 
-from ppmat.datasets import NumAtomsCrystalDataset
+from ppmat.datasets import MiADSamplingDataset
 from ppmat.datasets import build_dataloader
 from ppmat.datasets.collate_fn import DefaultCollator
 from ppmat.datasets.custom_data_type import ConcatData
@@ -311,9 +311,12 @@ class TestMiADConfig:
         with pytest.raises(ValueError, match="must match num_train_timesteps"):
             build_model(config["Model"])
         paddle.seed(2026)
-        model = _make_model_from_yaml(
+        default_config = _load_miad_yaml(
             num_steps=TINY_DIFFUSION_CFG["num_train_timesteps"]
-        )
+        )["Model"]
+        del default_config["__init_params__"]["smooth"]
+        del default_config["__init_params__"]["pred_type"]
+        model = build_model(default_config)
         assert isinstance(model.lattice_scheduler, DDPMScheduler)
 
         lattice = paddle.full([1, 3, 3], 4.0)
@@ -366,8 +369,12 @@ class TestMiADConfig:
         ]
         sample_config["dataset"]["__init_params__"]["total_num"] = 2
         sample_loader = build_dataloader(sample_config)
-        assert isinstance(sample_loader.dataset, NumAtomsCrystalDataset)
+        assert isinstance(sample_loader.dataset, MiADSamplingDataset)
         sample_batch = next(iter(sample_loader))
+        np.testing.assert_array_equal(
+            sample_batch["structure_array"]["num_atoms"].numpy(),
+            [model.mirage_num_atoms] * 2,
+        )
         paddle.seed(123)
         result = model.sample(
             copy.deepcopy(sample_batch),

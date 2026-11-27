@@ -5,6 +5,7 @@ Global:
   num_train_timesteps: 1000
   time_embed_dim: 256
   num_atom_types: 100
+  mirage_num_atoms: 25
 
 Trainer:
   max_epochs: 2
@@ -44,7 +45,7 @@ Model:
     smooth: true
     pred_type: true
     num_classes: ${Global.num_atom_types}
-    mirage_num_atoms: 25
+    mirage_num_atoms: ${Global.mirage_num_atoms}
     num_train_timesteps: ${Global.num_train_timesteps}
     cont_time: false
     eps: 1e-3
@@ -144,12 +145,10 @@ Dataset:
 Sample:
   data:
     dataset:
-      __class_name__: NumAtomsCrystalDataset
+      __class_name__: MiADSamplingDataset
       __init_params__:
         total_num: 16
-        dist_name: MP_20
-        prop_names: null
-        prop_values: null
+        num_atoms: ${Global.mirage_num_atoms}
     sampler:
       __class_name__: BatchSampler
       __init_params__:

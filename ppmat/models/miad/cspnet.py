@@ -48,8 +48,8 @@ class MiADCSPNet(CSPNet):
         edge_style: str = "fc",
         ln: bool = False,
         ip: bool = True,
-        smooth: bool = False,
-        pred_type: bool = False,
+        smooth: bool = True,
+        pred_type: bool = True,
         num_classes: int = 100,
     ) -> None:
         if act_fn != "silu":
