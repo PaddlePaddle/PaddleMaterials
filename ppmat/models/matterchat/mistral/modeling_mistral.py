@@ -397,12 +397,21 @@ def _apply_repetition_penalty(logits, gen_ids, penalty):
     """Vectorized repetition penalty following HF GenerationMixin."""
     if gen_ids is None or len(gen_ids) == 0:
         return logits
-    unique_ids = paddle.unique(gen_ids)
-    gathered = logits[:, unique_ids]
-    penalized = paddle.where(gathered > 0, gathered / penalty, gathered * penalty)
-    logits = logits.clone()
-    logits[:, unique_ids] = penalized
-    return logits
+    if gen_ids.ndim == 1:
+        unique_ids = paddle.unique(gen_ids)
+        gathered = logits[:, unique_ids]
+        penalized = paddle.where(gathered > 0, gathered / penalty, gathered * penalty)
+        logits = logits.clone()
+        logits[:, unique_ids] = penalized
+        return logits
+
+    # Batched generation: penalize the ids seen by each row independently.
+    seen = paddle.zeros(list(logits.shape), dtype="int32")
+    seen = paddle.put_along_axis(
+        seen, gen_ids, paddle.ones_like(gen_ids, dtype="int32"), axis=1
+    )
+    penalized = paddle.where(logits > 0, logits / penalty, logits * penalty)
+    return paddle.where(seen.astype("bool"), penalized, logits)
 
 
 def _create_causal_mask(
@@ -830,8 +839,6 @@ class MistralForCausalLM(MistralPreTrainedModel):
 
         batch_size = hidden.shape[0]
         seq_len = hidden.shape[1]
-        if batch_size != 1:
-            raise ValueError("MatterChat generation accepts one crystal per call.")
         if max_length <= seq_len or min_length > max_length - seq_len:
             raise ValueError("Generation length must exceed the input and minimum.")
 
@@ -841,6 +848,8 @@ class MistralForCausalLM(MistralPreTrainedModel):
         _suppress_token_id = self.config.pad_token_id
 
         if num_beams > 1:
+            if batch_size != 1:
+                raise ValueError("Beam search accepts one crystal per call.")
             return self._generate_beam_search(
                 inputs_embeds=hidden,
                 attention_mask=attention_mask,
@@ -856,10 +865,13 @@ class MistralForCausalLM(MistralPreTrainedModel):
         # Greedy / sampling path (num_beams == 1)
         past_key_values = DynamicCache()
         cache_position = paddle.arange(seq_len)
+        # Left-padded rows must keep their unpadded rotary positions.
+        position_ids = (attention_mask.cumsum(axis=-1) - 1).clip(min=0)
 
         outputs = self.model(
             inputs_embeds=hidden,
             attention_mask=attention_mask,
+            position_ids=position_ids,
             past_key_values=past_key_values,
             use_cache=True,
             cache_position=cache_position,
@@ -875,13 +887,16 @@ class MistralForCausalLM(MistralPreTrainedModel):
         next_tokens = self._next_token(logits, do_sample, top_p)
 
         generated = [next_tokens]
-        gen_ids_tensor = next_tokens.reshape([-1])
+        gen_ids_tensor = next_tokens
+        finished = next_tokens[:, 0] == self.config.eos_token_id
 
         max_new_tokens = max_length - seq_len
         eos_token_id = self.config.eos_token_id
+        eos_only = paddle.full_like(logits, float("-inf"))
+        eos_only[:, eos_token_id] = 0.0
 
         for step in range(1, max_new_tokens):
-            if next_tokens.reshape([-1])[0].item() == eos_token_id:
+            if bool(finished.all()):
                 break
             attention_mask = paddle.concat(
                 [
@@ -893,10 +908,12 @@ class MistralForCausalLM(MistralPreTrainedModel):
 
             past_len = seq_len + step
             cache_position = paddle.arange(past_len - 1, past_len)
+            position_ids = (attention_mask.cumsum(axis=-1) - 1)[:, -1:]
 
             step_outputs = self.model(
                 input_ids=next_tokens,
                 attention_mask=attention_mask,
+                position_ids=position_ids,
                 past_key_values=past_key_values,
                 use_cache=True,
                 cache_position=cache_position,
@@ -915,13 +932,13 @@ class MistralForCausalLM(MistralPreTrainedModel):
 
             if step < min_length:
                 logits[:, eos_token_id] = float("-inf")
+            # Rows that already emitted EOS keep emitting EOS until the batch ends.
+            logits = paddle.where(finished.unsqueeze(-1), eos_only, logits)
             next_tokens = self._next_token(logits, do_sample, top_p)
 
             generated.append(next_tokens)
-            gen_ids_tensor = paddle.concat([gen_ids_tensor, next_tokens.reshape([-1])])
-
-            if next_tokens.reshape([-1])[0].item() == eos_token_id:
-                break
+            gen_ids_tensor = paddle.concat([gen_ids_tensor, next_tokens], axis=1)
+            finished = finished | (next_tokens[:, 0] == eos_token_id)
 
         output_ids = paddle.concat(generated, axis=-1)
         return output_ids

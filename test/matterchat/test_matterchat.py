@@ -25,6 +25,7 @@ from pymatgen.core import Lattice
 from pymatgen.core import Structure
 
 from ppmat.models import MODEL_REGISTRY
+from ppmat.models import build_model_from_name
 from ppmat.models.matterchat.matterchat import Blip2MistralInstruct
 from ppmat.models.matterchat.mistral.configuration_mistral import MistralConfig
 from ppmat.models.matterchat.mistral.modeling_mistral import MistralForCausalLM
@@ -84,8 +85,59 @@ _TOK_JSON = {
 }
 
 
-def _write_tokenizer_json(path):
-    path.write_text(json.dumps(_TOK_JSON))
+def _write_tokenizer_json(path, bpe=False):
+    config = _TOK_JSON
+    if bpe:
+        config = dict(
+            _TOK_JSON,
+            pre_tokenizer={
+                "type": "Metaspace",
+                "replacement": "\u2581",
+                "prepend_scheme": "first",
+                "split": False,
+            },
+            model={
+                "type": "BPE",
+                "vocab": {
+                    "<unk>": 0,
+                    "<s>": 1,
+                    "</s>": 2,
+                    "\u2581": 3,
+                    "a": 4,
+                    "b": 5,
+                    "\u2581a": 6,
+                    "<0xC3>": 7,
+                    "<0xA9>": 8,
+                    "\u2581b": 9,
+                },
+                "merges": ["\u2581 a", "\u2581 b"],
+                "unk_token": "<unk>",
+                "byte_fallback": True,
+                "fuse_unk": True,
+            },
+            post_processor={
+                "type": "TemplateProcessing",
+                "single": [
+                    {"SpecialToken": {"id": "<s>", "type_id": 0}},
+                    {"Sequence": {"id": "A", "type_id": 0}},
+                ],
+                "special_tokens": {"<s>": {"ids": [1], "tokens": ["<s>"]}},
+            },
+            decoder={
+                "type": "Sequence",
+                "decoders": [
+                    {
+                        "type": "Replace",
+                        "pattern": {"String": "\u2581"},
+                        "content": " ",
+                    },
+                    {"type": "ByteFallback"},
+                    {"type": "Fuse"},
+                    {"type": "Strip", "content": " ", "start": 1, "stop": 0},
+                ],
+            },
+        )
+    path.write_text(json.dumps(config))
 
 
 def _build_tiny_model(tokenizer_path=None, **settings):
@@ -112,12 +164,12 @@ def small_model():
     return model
 
 
-@pytest.fixture
-def chat_model(tmp_path_factory):
+@pytest.fixture(params=[False, True], ids=["wordlevel", "bpe"])
+def chat_model(tmp_path_factory, request):
     """Tiny Blip2MistralInstruct with a generated tokenizer for chat()."""
     tok_dir = tmp_path_factory.mktemp("tokenizer")
     tok_path = tok_dir / "tokenizer.json"
-    _write_tokenizer_json(tok_path)
+    _write_tokenizer_json(tok_path, bpe=request.param)
     model = _build_tiny_model(tokenizer_path=str(tok_path))
     model.eval()
     return model
@@ -195,13 +247,15 @@ def test_model_configuration_and_structure_encoding(
         _build_tiny_model(qformer_config={"encoder_width": 32})
     with pytest.raises(TypeError, match="hidden_szie"):
         _build_tiny_model(qformer_config={"hidden_szie": 32})
-    assert "matterchat_full" not in MODEL_REGISTRY
-    assert Blip2MistralInstruct.pretrained_url.startswith("https://")
 
 
 def test_chat_and_generation_workflows(
     chat_model, si_structure, gan_structure, monkeypatch
 ):
+    if chat_model.llm_tokenizer.model.vocab.get("\u2581a") == 6:
+        encoded = chat_model.llm_tokenizer("a b \u00e9")
+        assert encoded.input_ids.tolist() == [[1, 6, 9, 3, 7, 8]]
+        assert chat_model.llm_tokenizer.decode(encoded.input_ids[0]) == "a b \u00e9"
     for structure in (si_structure, gan_structure):
         answer = chat_model.chat(structure, "a b", max_new_tokens=4)
         assert isinstance(answer, str)
@@ -216,6 +270,33 @@ def test_chat_and_generation_workflows(
     assert isinstance(generated[0], str) and isinstance(followup[0], str)
     with pytest.raises(ValueError, match="one response"):
         chat_model.generate(samples, num_beams=1, max_length=8, num_captions=2)
+
+    structures = [si_structure, gan_structure]
+    batched = chat_model.chat_batch(structures, ["a b", "a b"], max_new_tokens=4)
+    assert len(batched) == 2
+    assert batched == [
+        chat_model.chat(si_structure, "a b", max_new_tokens=4),
+        chat_model.chat(gan_structure, "a b", max_new_tokens=4),
+    ]
+    mixed = chat_model.chat_batch(structures, ["a b", "a"], max_new_tokens=4)
+    assert mixed == [
+        chat_model.chat(si_structure, "a b", max_new_tokens=4),
+        chat_model.chat(gan_structure, "a", max_new_tokens=4),
+    ]
+    batched_text = chat_model.generate(
+        {"material_sample": structures, "prompt": ["a b", "a"]},
+        num_beams=1,
+        max_length=8,
+    )
+    assert len(batched_text) == 2
+    with pytest.raises(ValueError, match="prompt count"):
+        chat_model.chat_batch(structures, ["a b"], max_new_tokens=2)
+    with pytest.raises(ValueError, match="Beam search"):
+        chat_model.generate(
+            {"material_sample": structures, "prompt": ["a b", "a"]},
+            num_beams=2,
+            max_length=8,
+        )
     for layer in (chat_model.material_encoder, chat_model.llm_model):
         assert all(parameter.stop_gradient for parameter in layer.parameters())
 
@@ -369,9 +450,11 @@ def test_attention_backends_training_and_cached_generation(use_gpu):
             )
 
 
-def _registry_layout(tmp_path, model):
+def _registry_layout(tmp_path, model, model_config=None):
     """Materialize a complete local model package for checkpoint integration."""
     import os
+
+    from omegaconf import OmegaConf
 
     config = {
         "Model": {
@@ -389,16 +472,11 @@ def _registry_layout(tmp_path, model):
             },
         }
     }
-    try:
-        from omegaconf import OmegaConf
-
-        OmegaConf.save(config, str(tmp_path / "matterchat_full.yaml"))
-    except ImportError:
-        import yaml
-
-        with open(tmp_path / "matterchat_full.yaml", "w") as f:
-            yaml.safe_dump(config, f)
+    if model_config is not None:
+        config["Model"] = model_config
+    config["Model"]["__init_params__"]["tokenizer_path"] = "matterchat_full"
     os.makedirs(tmp_path / "checkpoints", exist_ok=True)
+    OmegaConf.save(config, str(tmp_path / "matterchat_full.yaml"))
     _write_tokenizer_json(tmp_path / "tokenizer.json")
     paddle.save(model.state_dict(), str(tmp_path / "checkpoints" / "best.pdparams"))
     return tmp_path
@@ -421,12 +499,21 @@ def test_pretrained_package_roundtrip(small_model, tmp_path, monkeypatch):
         "ppmat.utils.download.get_weights_path_from_url", download_package
     )
     loaded = Blip2MistralInstruct.from_pretrained("matterchat_full")
-    assert downloads == [Blip2MistralInstruct.pretrained_url]
+    assert downloads == [MODEL_REGISTRY["matterchat_full"]]
     ref_sd = small_model.state_dict()
     loaded_sd = loaded.state_dict()
     assert set(ref_sd.keys()) == set(loaded_sd.keys())
     for key in ("llm_proj.weight", "llm_proj.bias", "query_tokens"):
         assert paddle.allclose(ref_sd[key], loaded_sd[key])
+
+    registered, config = build_model_from_name("matterchat_full")
+    assert config["Model"]["__init_params__"]["tokenizer_path"] == "matterchat_full"
+    assert registered.llm_tokenizer("a b").input_ids.tolist() == [[3, 4]]
+    for key, value in ref_sd.items():
+        np.testing.assert_array_equal(
+            registered.state_dict()[key].numpy(), value.numpy()
+        )
+    assert all(p.stop_gradient for p in registered.llm_model.parameters())
 
     checkpoints = path / "checkpoints"
     partial = checkpoints / "partial.pdparams"
@@ -511,7 +598,8 @@ def test_gpu_cinn_chat_matches_eager(chat_model, si_structure):
         paddle.set_device("cpu")
 
 
-def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatch):
+@pytest.mark.parametrize("bpe", [False, True], ids=["wordlevel", "bpe"])
+def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatch, bpe):
     from cinn_workflow_harness import assert_state_dict_close
     from cinn_workflow_harness import trainer_config
     from omegaconf import OmegaConf
@@ -524,8 +612,13 @@ def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatc
     config = OmegaConf.load(
         "structure_generation/configs/matterchat/matterchat_train.yaml"
     )
+    assert (
+        config.Model.__init_params__.pretrained_package
+        == "./data/matterchat/matterchat_full"
+    )
+    assert config.Model.__init_params__.tokenizer_path is None
     tokenizer_path = tmp_path / "tokenizer.json"
-    _write_tokenizer_json(tokenizer_path)
+    _write_tokenizer_json(tokenizer_path, bpe=bpe)
     config.Model.__init_params__.tokenizer_path = str(tokenizer_path)
     llm_config = dict(_SMALL_LLM_CONFIG, vocab_size=32769)
     config.Model.__init_params__.llm_config = llm_config
@@ -539,9 +632,23 @@ def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatc
         "intermediate_size": 64,
     }
     model_config = OmegaConf.to_container(config.Model, resolve=True)
+    model_config["__init_params__"]["pretrained_package"] = None
     paddle.seed(2026)
     with paddle.utils.unique_name.guard():
         model = build_model(model_config)
+    package = _registry_layout(tmp_path / "pretrained", model, model_config)
+    _write_tokenizer_json(package / "tokenizer.json", bpe=bpe)
+    monkeypatch.setattr(
+        "ppmat.utils.download.get_weights_path_from_url", lambda url: str(package)
+    )
+    model_config["__init_params__"]["pretrained_package"] = (
+        str(package) if bpe else "matterchat_full"
+    )
+    model_config["__init_params__"]["tokenizer_path"] = None
+    with paddle.utils.unique_name.guard():
+        initialized = build_model(model_config)
+    assert_state_dict_close(initialized.state_dict(), model.state_dict(), 0)
+    model = initialized
     model.eval()
     larger_structure = si_structure.copy()
     larger_structure.make_supercell([2, 1, 1])
@@ -579,13 +686,18 @@ def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatc
     monkeypatch.setattr(model.llm_model, "forward", capture_labels)
     loss = model(batch)["loss_dict"]["loss"]
     monkeypatch.setattr(model.llm_model, "forward", llm_forward)
-    np.testing.assert_array_equal(
-        captured_labels[0],
+    expected_labels = (
         [
+            [-100, -100, -100, -100, -100, -100, 9, 2, -100, -100],
+            [-100, -100, -100, -100, -100, -100, -100, 6, 9, 2],
+        ]
+        if bpe
+        else [
             [-100, -100, -100, -100, -100, 4, 2, -100, -100],
             [-100, -100, -100, -100, -100, -100, 3, 4, 2],
-        ],
+        ]
     )
+    np.testing.assert_array_equal(captured_labels[0], expected_labels)
     assert bool(paddle.isfinite(loss))
     loss.backward()
     for name, parameter in model.named_parameters():
@@ -596,7 +708,6 @@ def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatc
             assert bool(paddle.isfinite(parameter.grad).all()), name
     model.clear_gradients()
     initial_projection = model.llm_proj.weight.numpy().copy()
-    frozen_embedding = model.llm_model.model.embed_tokens.weight.numpy().copy()
     optimizer_config = OmegaConf.to_container(config.Optimizer, resolve=True)
     optimizer_config["__init_params__"]["lr"] = {
         "__class_name__": "ExponentialDecay",
@@ -622,9 +733,15 @@ def test_official_trainer_training_and_resume(tmp_path, si_structure, monkeypatc
         trainer.train()
     assert trainer.state.global_step == 1
     assert not np.array_equal(initial_projection, model.llm_proj.weight.numpy())
-    np.testing.assert_array_equal(
-        frozen_embedding, model.llm_model.model.embed_tokens.weight.numpy()
-    )
+    trainable_roots = set()
+    for name, parameter in model.named_parameters():
+        if parameter.stop_gradient:
+            np.testing.assert_array_equal(
+                parameter.numpy(), initial_state[name].numpy()
+            )
+        else:
+            trainable_roots.add(name.split(".")[0])
+    assert trainable_roots == {"Qformer", "query_tokens", "llm_proj"}
     checkpoint = tmp_path / "first" / "checkpoints" / "latest"
     for suffix in ("pdparams", "pdopt", "pdstates"):
         assert checkpoint.with_suffix("." + suffix).is_file()

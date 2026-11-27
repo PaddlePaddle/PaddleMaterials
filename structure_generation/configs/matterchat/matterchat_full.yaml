@@ -12,11 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# MatterChat inference config.
-# NOTE: MatterChat is a dialogue model, not a structure generator. It does NOT
-# use structure_generation/sample.py (StructureSampler). Inference is done via
-# Blip2MistralInstruct.from_pretrained(), see
-# README.md for usage.
+# MatterChat dialogue inference uses chat() rather than StructureSampler.
 
 Model:
   __class_name__: Blip2MistralInstruct
@@ -28,7 +24,7 @@ Model:
     qformer_text_input: false
     llm_tokenizer: null
     llm_model: null
-    tokenizer_path: ""
+    tokenizer_path: matterchat_full
     material_encoder_config:
       atom_fea_dim: 64
       bond_fea_dim: 64

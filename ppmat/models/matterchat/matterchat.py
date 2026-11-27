@@ -34,9 +34,6 @@ from ppmat.utils.model_package import resolve_model_package_dir
 
 
 class Blip2MistralInstruct(RuntimeMixin, nn.Layer):
-    pretrained_model_name = "matterchat_full"
-    pretrained_url = "https://paddle-org.bj.bcebos.com/paddlematerials/checkpoints/llm/MatterChat/matterchat_full.zip"  # noqa
-
     def __init__(
         self,
         num_query_token=32,
@@ -62,14 +59,13 @@ class Blip2MistralInstruct(RuntimeMixin, nn.Layer):
                 "Only qformer_text_input=False is supported by MatterChat."
             )
 
-        if (
-            pretrained_package is not None
-            and llm_tokenizer is None
-            and not tokenizer_path
-        ):
-            tokenizer_path = os.path.join(pretrained_package, "tokenizer.json")
-        if llm_tokenizer is None and tokenizer_path:
-            llm_tokenizer = MistralTokenizerWrapper(os.path.expanduser(tokenizer_path))
+        if pretrained_package is not None:
+            pretrained_package = self._resolve_package(pretrained_package)
+            if not tokenizer_path:
+                tokenizer_path = os.path.join(pretrained_package, "tokenizer.json")
+
+        self.tokenizer_path = tokenizer_path
+        self._llm_tokenizer = llm_tokenizer
 
         self.material_encoder = MatterChatEncoder(material_encoder_config)
         for param in self.material_encoder.parameters():
@@ -79,7 +75,6 @@ class Blip2MistralInstruct(RuntimeMixin, nn.Layer):
             num_query_token, self.material_encoder.atom_fea_dim, qformer_config
         )
 
-        self.llm_tokenizer = llm_tokenizer
         self.llm_model = (
             llm_model
             if llm_model is not None
@@ -116,6 +111,16 @@ class Blip2MistralInstruct(RuntimeMixin, nn.Layer):
         self.llm_model.model.validate_execution_backend(
             use_amp=use_amp, world_size=world_size
         )
+
+    @property
+    def llm_tokenizer(self):
+        """Load the package tokenizer lazily for registry-built models."""
+        if self._llm_tokenizer is None and self.tokenizer_path:
+            path = self._resolve_package(self.tokenizer_path)
+            if os.path.isdir(path):
+                path = os.path.join(path, "tokenizer.json")
+            self._llm_tokenizer = MistralTokenizerWrapper(path)
+        return self._llm_tokenizer
 
     @staticmethod
     def _build_llm_config(llm_config):
@@ -162,12 +167,20 @@ class Blip2MistralInstruct(RuntimeMixin, nn.Layer):
             return contextlib.nullcontext()
         return paddle.amp.auto_cast(dtype=dtype)
 
+    @staticmethod
+    def _resolve_package(path):
+        # Local import avoids the circular dependency with ppmat.models.__init__.
+        from ppmat.models import MODEL_REGISTRY
+
+        if path in MODEL_REGISTRY:
+            extracted_path = download.get_weights_path_from_url(MODEL_REGISTRY[path])
+            return resolve_model_package_dir(path, extracted_path)
+        return os.path.expanduser(path)
+
     @classmethod
     def from_pretrained(cls, path):
-        """Load the published model name or an explicit local model package."""
-        if path == cls.pretrained_model_name:
-            extracted_path = download.get_weights_path_from_url(cls.pretrained_url)
-            path = resolve_model_package_dir(cls.pretrained_model_name, extracted_path)
+        """Load a registered model name or an explicit local model package."""
+        path = cls._resolve_package(path)
 
         yaml_files = [
             f for f in os.listdir(path) if f.endswith(".yaml") or f.endswith(".yml")
@@ -264,28 +277,76 @@ class Blip2MistralInstruct(RuntimeMixin, nn.Layer):
             encoder_attention_mask=material_atts,
         )
 
+    def _encode_materials(self, structures):
+        """Encode one or more crystals into padded Q-Former embeddings."""
+        if not isinstance(structures, (list, tuple)):
+            structures = [structures]
+        if not structures:
+            raise ValueError("At least one crystal structure is required.")
+
+        embeddings = [
+            self.material_encoder.predict_structure_embedding(structure)
+            for structure in structures
+        ]
+        feature_dim = embeddings[0].shape[1]
+        max_atoms = max(int(embedding.shape[0]) for embedding in embeddings)
+
+        padded, masks = [], []
+        for embedding in embeddings:
+            atoms = int(embedding.shape[0])
+            padded.append(
+                paddle.concat(
+                    [
+                        embedding,
+                        paddle.zeros(
+                            [max_atoms - atoms, feature_dim], dtype=embedding.dtype
+                        ),
+                    ],
+                    axis=0,
+                )
+            )
+            masks.append(
+                paddle.concat(
+                    [
+                        paddle.ones([atoms], dtype="int64"),
+                        paddle.zeros([max_atoms - atoms], dtype="int64"),
+                    ],
+                    axis=0,
+                )
+            )
+        material_embeds = paddle.stack(padded)
+        material_atts = paddle.stack(masks)
+
+        query_tokens = self.query_tokens.expand([len(structures), -1, -1])
+        query_output = self._run_qformer(query_tokens, material_embeds, material_atts)
+        projected = self.llm_proj(
+            query_output.last_hidden_state[:, : query_tokens.shape[1], :]
+        )
+        return projected, paddle.ones(projected.shape[:-1], dtype="int64")
+
     def _encode_for_generate(self, samples):
-        """Shared encoding pipeline for chat / generate / generate_followup."""
+        """Shared encoding pipeline for chat / chat_batch / generate."""
         self.llm_tokenizer.padding_side = "left"
         prompt = samples.get("prompt", self.prompt)
         if isinstance(prompt, str):
             prompt = [prompt]
+        structures = samples["material_sample"]
+        if not isinstance(structures, (list, tuple)):
+            structures = [structures]
+        if len(prompt) != len(structures):
+            raise ValueError("prompt count must match crystal count.")
 
-        material_embed = self.material_encoder.predict_structure_embedding(
-            samples["material_sample"]
-        ).unsqueeze(0)
-        material_att = paddle.ones(material_embed.shape[:-1], dtype=paddle.int64)
-
-        query_tokens = self.query_tokens.expand([1, -1, -1])
-        query_output = self._run_qformer(query_tokens, material_embed, material_att)
-
-        inputs_llm = self.llm_proj(
-            query_output.last_hidden_state[:, : query_tokens.shape[1], :]
-        )
-        atts_llm = paddle.ones(inputs_llm.shape[:-1], dtype=paddle.int64)
+        inputs_llm, atts_llm = self._encode_materials(structures)
 
         prompt_tokens = self.llm_tokenizer(prompt, padding="longest")
-        input_embeds = self.llm_model.get_input_embeddings()(prompt_tokens.input_ids)
+        # Left-padded prompt positions are masked; map the pad id to 0 so the
+        # lookup stays inside the language model vocabulary.
+        input_ids = paddle.where(
+            prompt_tokens.attention_mask == 0,
+            paddle.zeros_like(prompt_tokens.input_ids),
+            prompt_tokens.input_ids,
+        )
+        input_embeds = self.llm_model.get_input_embeddings()(input_ids)
         inputs_embeds = paddle.concat([inputs_llm, input_embeds], axis=1)
         attention_mask = paddle.concat([atts_llm, prompt_tokens.attention_mask], axis=1)
         return inputs_embeds, attention_mask, prompt
@@ -445,11 +506,8 @@ class Blip2MistralInstruct(RuntimeMixin, nn.Layer):
         return decoded_outputs, prompt
 
     @paddle.no_grad()
-    def chat(self, structure, prompt, max_new_tokens=64):
-        """Single-turn dialogue over a crystal structure and a text prompt."""
-        inputs_embeds, attention_mask, _ = self._encode_for_generate(
-            {"material_sample": structure, "prompt": prompt}
-        )
+    def _greedy_chat(self, samples, max_new_tokens):
+        inputs_embeds, attention_mask, _ = self._encode_for_generate(samples)
         out = self.llm_model.generate(
             inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
@@ -457,7 +515,26 @@ class Blip2MistralInstruct(RuntimeMixin, nn.Layer):
             max_length=inputs_embeds.shape[1] + max_new_tokens,
         )
         out[out == 0] = 2
-        return self.llm_tokenizer.decode(out[0], skip_special_tokens=True).strip()
+        return [
+            self.llm_tokenizer.decode(row, skip_special_tokens=True).strip()
+            for row in out
+        ]
+
+    @paddle.no_grad()
+    def chat(self, structure, prompt, max_new_tokens=64):
+        """Single-turn dialogue over a crystal structure and a text prompt."""
+        return self._greedy_chat(
+            {"material_sample": structure, "prompt": prompt}, max_new_tokens
+        )[0]
+
+    @paddle.no_grad()
+    def chat_batch(self, structures, prompts, max_new_tokens=64):
+        """Greedy dialogue over a batch of crystals; one answer per crystal."""
+        if isinstance(prompts, str):
+            prompts = [prompts] * len(structures)
+        return self._greedy_chat(
+            {"material_sample": structures, "prompt": prompts}, max_new_tokens
+        )
 
     @paddle.no_grad()
     def generate(

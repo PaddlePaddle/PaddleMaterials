@@ -11,7 +11,8 @@ Model:
   __init_params__:
     material_encoder_config: null
     qformer_config: null
-    tokenizer_path: ./data/matterchat/tokenizer.json
+    tokenizer_path: null
+    pretrained_package: ./data/matterchat/matterchat_full
 
 Dataset:
   train:
