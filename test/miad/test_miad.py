@@ -31,6 +31,8 @@ from ppmat.datasets.custom_data_type import ConcatData
 from ppmat.datasets.mp20_dataset import MP20Dataset
 from ppmat.models import build_model
 from ppmat.models.miad.miad import MiAD
+from ppmat.models.miad.miad import _extract_x0
+from ppmat.sampler import StructureSampler
 from ppmat.schedulers import DDPMScheduler
 from ppmat.trainer.base_trainer import BaseTrainer
 
@@ -274,9 +276,9 @@ class TestMiADSmoke:
         for entry in result:
             for key in ("num_atoms", "atom_types", "frac_coords", "lattice"):
                 assert key in entry
-            assert entry["frac_coords"].shape[-1] == 3
-            assert entry["num_atoms"] == entry["atom_types"].shape[0]
-            assert (entry["atom_types"] != 0).all()
+            assert len(entry["frac_coords"][0]) == 3
+            assert entry["num_atoms"] == len(entry["atom_types"])
+            assert (np.asarray(entry["atom_types"]) != 0).all()
 
 
 class TestMiADConfig:
@@ -300,45 +302,16 @@ class TestMiADConfig:
         with pytest.raises(TypeError, match="Unknown MiAD model parameters"):
             build_model(config)
         del config["__init_params__"]["model_cfg"]["hidden_dims"]
+        config["__init_params__"]["diffusion_cfg"]["method"] = "DiffCSP"
+        with pytest.raises(TypeError, match="Unknown MiAD diffusion parameters"):
+            build_model(config)
+        del config["__init_params__"]["diffusion_cfg"]["method"]
         config["__init_params__"]["diffusion_cfg"]["num_steps"] += 1
         with pytest.raises(ValueError, match="schedules must match num_steps"):
             build_model(config)
         paddle.seed(2026)
         model = _make_model_from_yaml(num_steps=TINY_DIFFUSION_CFG["num_steps"])
         assert isinstance(model.lat_scheduler, DDPMScheduler)
-        legacy_config = _load_miad_yaml(num_steps=model.num_steps)["Model"]
-        legacy_diffusion = legacy_config["__init_params__"]["diffusion_cfg"]
-        legacy_lattice = legacy_diffusion.pop("lattice_noise_scheduler_cfg")
-        legacy_lattice["__class_name__"] = "DDPMScheduler"
-        legacy_lattice["__init_params__"]["beta_schedule"] = "clipped_cosine"
-        legacy_diffusion["lat_diffusion"] = {"scheduler_cfg": legacy_lattice}
-        legacy_coord = legacy_diffusion.pop("coord_noise_scheduler_cfg")
-        legacy_coord["__class_name__"] = "ScoreSdeVeSchedulerWrapped"
-        legacy_diffusion["frac_diffusion"] = {
-            "step_lr": legacy_coord["__init_params__"].pop("step_lr"),
-            "scheduler_cfg": legacy_coord,
-        }
-        legacy_atom = legacy_diffusion.pop("atom_noise_scheduler_cfg")
-        legacy_diffusion["type_diffusion"] = {
-            "__class_name__": "D3PMUniformDiffusion",
-            "__init_params__": {
-                "loss_scale": legacy_atom["__init_params__"].pop("loss_scale"),
-                "scheduler_cfg": legacy_atom,
-            },
-        }
-        original_config = copy.deepcopy(legacy_config)
-        paddle.seed(2026)
-        legacy_model = build_model(legacy_config)
-        assert legacy_config == original_config
-        for name in ("betas", "alphas_cumprod"):
-            np.testing.assert_array_equal(
-                getattr(model.lat_scheduler, name).numpy(),
-                getattr(legacy_model.lat_scheduler, name).numpy(),
-            )
-        assert model.state_dict().keys() == legacy_model.state_dict().keys()
-        for name, parameter in model.state_dict().items():
-            assert parameter.shape == legacy_model.state_dict()[name].shape
-        assert legacy_model.set_state_dict(model.state_dict()) == ([], [])
 
         lattice = paddle.full([1, 3, 3], 4.0)
         recovered = model.lat_scheduler.step(
@@ -352,21 +325,11 @@ class TestMiADConfig:
         ).prev_sample
         np.testing.assert_array_equal(recovered_coords.numpy(), coords.numpy())
         model.eval()
-        legacy_model.eval()
         synthetic_batch = _make_synthetic_batch()
         paddle.seed(2026)
         with paddle.no_grad():
             output = model(copy.deepcopy(synthetic_batch))
         assert paddle.isfinite(output["loss_dict"]["loss"])
-        paddle.seed(2026)
-        with paddle.no_grad():
-            legacy_output = legacy_model(copy.deepcopy(synthetic_batch))
-        np.testing.assert_allclose(
-            output["loss_dict"]["loss"].numpy(),
-            legacy_output["loss_dict"]["loss"].numpy(),
-            rtol=1e-6,
-            atol=1e-6,
-        )
 
         source = DefaultCollator()(
             [_make_structure_sample(4, seed=1), _make_structure_sample(3, seed=2)]
@@ -390,7 +353,6 @@ class TestMiADConfig:
                 expected_counts.append(padded_count)
                 offset += count
             expected_next_random = rng.rand()
-            model.mirage_num_atoms = capacity
             for numpy_input in (False, True):
                 batch = {
                     "structure_array": {
@@ -399,27 +361,24 @@ class TestMiADConfig:
                     }
                 }
                 np.random.seed(2026)
+                state = _extract_x0(batch, mirage_num_atoms=capacity)
                 with paddle.no_grad():
-                    output = model(batch)
+                    output = model(state)
                 assert paddle.isfinite(output["loss_dict"]["loss"])
                 np.testing.assert_array_equal(
-                    batch["num_atoms"].numpy(), expected_counts
+                    state["num_atoms"].numpy(), expected_counts
                 )
                 np.testing.assert_array_equal(
-                    batch["x0"][0].numpy(), source["lattice"].reshape(2, 3, 3)
+                    state["x0"][0].numpy(), source["lattice"].reshape(2, 3, 3)
                 )
                 np.testing.assert_array_equal(
-                    batch["x0"][1].numpy(), np.concatenate(expected_coords)
+                    state["x0"][1].numpy(), np.concatenate(expected_coords)
                 )
                 np.testing.assert_array_equal(
-                    batch["x0"][2].numpy(), np.concatenate(expected_types)
+                    state["x0"][2].numpy(), np.concatenate(expected_types)
                 )
                 assert np.random.rand() == expected_next_random
 
-        # Zero predictions isolate schedule compatibility from GPU scatter roundoff.
-        for parameter in model.parameters():
-            parameter.set_value(paddle.zeros_like(parameter))
-        assert legacy_model.set_state_dict(model.state_dict()) == ([], [])
         sample_config = _load_miad_yaml(num_steps=model.num_steps)["Sample"]["data"]
         sample_config["dataset"]["__init_params__"]["total_num"] = 2
         sample_loader = build_dataloader(sample_config)
@@ -429,16 +388,12 @@ class TestMiADConfig:
         result = model.sample(
             copy.deepcopy(sample_batch), num_inference_steps=model.num_steps
         )["result"]
-        paddle.seed(123)
-        legacy_result = legacy_model.sample(
-            copy.deepcopy(sample_batch), num_inference_steps=legacy_model.num_steps
-        )["result"]
         assert len(result) == 2
-        for entry, previous in zip(result, legacy_result):
-            assert "num_atoms" in entry
-            assert "lattice" in entry
-            for key in ("atom_types", "frac_coords", "lattice"):
-                np.testing.assert_array_equal(entry[key], previous[key])
+        for entry in result:
+            assert entry["num_atoms"] == len(entry["atom_types"])
+            assert (np.asarray(entry["atom_types"]) != 0).all()
+            assert len(entry["frac_coords"][0]) == 3
+            assert np.asarray(entry["lattice"]).shape == (3, 3)
 
 
 @pytest.mark.skipif(
@@ -464,34 +419,80 @@ class TestMiADDataset:
         assert paddle.isfinite(output["loss_dict"]["loss"])
 
 
-class TestMiADStateDict:
-    """Official checkpoint layout compatibility, end to end."""
+class TestMiADFrameworkEntry:
+    """StructureSampler and metric entry points driven by config files."""
 
-    def test_official_layout_weight_load(self):
-        # Layout facts: no "decoder." prefix, PyTorch (out, in) Linear weights,
-        # no prop_mlp; the registered checkpoint download is exercised by
-        # weight-registry checks.
+    def test_sampler_and_metric_entry(self, tmp_path):
+        import pandas as pd
+        from pymatgen.core import Lattice
+        from pymatgen.core import Structure
+
+        reference = Structure(Lattice.cubic(4), ["Na", "Cl"], [[0, 0, 0], [0.5] * 3])
+        reference_path = tmp_path / "reference.csv"
+        pd.DataFrame({"cif": [reference.to(fmt="cif")]}).to_csv(
+            reference_path, index=False
+        )
+
+        config = _load_miad_yaml(num_steps=TINY_DIFFUSION_CFG["num_steps"])
+        config["Global"]["time_embed_dim"] = TINY_DIFFUSION_CFG["time_embed_dim"]
+        config["Model"]["__init_params__"]["model_cfg"] = dict(TINY_MODEL_CFG)
+        diffusion_cfg = copy.deepcopy(TINY_DIFFUSION_CFG)
+        # Untrained tiny models are numerically unstable at ten steps; clipping
+        # keeps this entry-point test focused on the sampler contract.
+        diffusion_cfg["lattice_noise_scheduler_cfg"]["__init_params__"][
+            "clip_sample"
+        ] = True
+        config["Model"]["__init_params__"]["diffusion_cfg"] = diffusion_cfg
+        config["Sample"]["data"]["dataset"]["__init_params__"]["total_num"] = 2
+        config["Sample"]["metrics"]["__init_params__"].update(
+            {
+                "reference_file_path": str(reference_path),
+                "cache_dir": str(tmp_path),
+            }
+        )
+        config_path = tmp_path / "miad.yaml"
+        OmegaConf.save(OmegaConf.create(config), config_path)
+        checkpoint_path = tmp_path / "best.pdparams"
+        paddle.seed(2026)
+        paddle.save(build_model(config["Model"]).state_dict(), str(checkpoint_path))
+
+        sampler = StructureSampler(
+            config_path=str(config_path), checkpoint_path=str(checkpoint_path)
+        )
+        sample_dir = tmp_path / "num_atoms_samples"
+        paddle.seed(2026)
+        sampled = sampler.sample_by_num_atoms(num_atoms=5, save_path=str(sample_dir))
+        assert len(sampled) == 1
+        assert len(list(sample_dir.glob("*.cif"))) == 1
+
+        metric_dir = tmp_path / "metric_samples"
+        paddle.seed(2026)
+        metrics = sampler.compute_metric(save_path=str(metric_dir))
+        assert metrics["total"] == 2
+        for key in ("uniqueness_rate", "novelty_rate"):
+            assert 0.0 <= metrics[key] <= 100.0
+        assert "stability_rate" not in metrics
+        assert "sun_rate" not in metrics
+
+
+class TestMiADStateDict:
+    """Native Paddle layout load through the default Layer API."""
+
+    def test_native_layout_weight_load(self):
         model = _make_model_from_yaml()
-        sd = model.state_dict()
-        assert not any(("prop_mlp" in k for k in sd.keys()))
-        official = {}
-        for k, v in sd.items():
-            if k.startswith("decoder."):
-                name = k[len("decoder.") :]
-                if name.endswith(".weight") and len(v.shape) == 2:
-                    v = v.T
-                official[name] = v
+        state = {key: value.clone() for key, value in model.state_dict().items()}
+        assert not any(("prop_mlp" in key for key in state))
         model2 = _make_model_from_yaml()
-        missing, unexpected = model2.set_state_dict(official)
+        missing, unexpected = model2.set_state_dict(state)
         assert len(missing) == 0
         assert len(unexpected) == 0
         params1 = list(model.named_parameters())
         params2 = list(model2.named_parameters())
         assert len(params1) == len(params2)
-        for (n1, p1), (_, p2) in zip(params1, params2):
-            assert np.allclose(
-                p1.numpy(), p2.numpy()
-            ), f"parameter {n1} differs after official-layout load"
+        for (name, param1), (_, param2) in zip(params1, params2):
+            np.testing.assert_array_equal(
+                param1.numpy(), param2.numpy(), err_msg=f"parameter {name} differs"
+            )
         model2.eval()
         with paddle.no_grad():
             output = model2(_make_synthetic_batch())
@@ -558,13 +559,10 @@ class TestMiADSUNMetric:
             model.eval()
             sampled_results = metrics_fn(_sample_small_batch(model))
             assert sampled_results["total"] == len(_SAMPLE_NUM_ATOMS)
-            for key in (
-                "stability_rate",
-                "uniqueness_rate",
-                "novelty_rate",
-                "sun_rate",
-            ):
+            for key in ("uniqueness_rate", "novelty_rate"):
                 assert np.isfinite(sampled_results[key])
+            assert "stability_rate" not in sampled_results
+            assert "sun_rate" not in sampled_results
 
     def test_novelty_reference_lifecycle(self):
         import pandas as pd
@@ -849,4 +847,4 @@ class TestMiADGpuCinn:
             result = _sample_small_batch(cinn_model)
             assert len(result) == 2
             for entry in result:
-                assert (entry["atom_types"] != 0).all()
+                assert (np.asarray(entry["atom_types"]) != 0).all()

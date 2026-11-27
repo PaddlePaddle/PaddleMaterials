@@ -55,6 +55,9 @@ Model:
         __class_name__: CosineDDPMScheduler
         __init_params__:
           num_train_timesteps: ${Global.num_train_timesteps}
+          s: 0.008
+          beta_min: 0.0001
+          beta_max: 0.9999
           clip_sample: false
       coord_noise_scheduler_cfg:
         __class_name__: WrappedVESDEPCScheduler
@@ -70,6 +73,8 @@ Model:
           loss_scale: 1000
           num_train_timesteps: ${Global.num_train_timesteps}
           num_types: ${Global.num_atom_types}
+          s: 0.008
+          kl_eps: 0.0001
 
 Optimizer:
   __class_name__: Adam
@@ -156,6 +161,7 @@ Sample:
   build_structure_cfg:
     format: array
     niggli: False
+    canocial: False
   metrics:
     __class_name__: SUNMetric
     __init_params__:

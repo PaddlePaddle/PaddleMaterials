@@ -56,7 +56,6 @@ def _match_against(
     structures: List[Optional["Structure"]],
     reference_by_comp: dict,
     matcher,
-    symmetric: bool = False,
     dynamic: bool = False,
 ) -> List[bool]:
     results = []
@@ -70,7 +69,7 @@ def _match_against(
             results.append(True)
         else:
             for ref in refs:
-                if matcher.fit(struct, ref, symmetric=symmetric):
+                if matcher.fit(struct, ref):
                     results.append(False)
                     break
             else:
@@ -83,24 +82,12 @@ def _match_against(
 def compute_novelty(
     structures: List[Optional["Structure"]],
     reference_structures: List["Structure"],
-    stol: float = 0.5,
-    angle_tol: float = 10.0,
-    ltol: float = 0.3,
-    attempt_supercell: bool = False,
-    symmetric: bool = False,
+    matcher,
 ) -> List[bool]:
-    from pymatgen.analysis.structure_matcher import StructureMatcher
-
-    matcher = StructureMatcher(
-        stol=stol,
-        angle_tol=angle_tol,
-        ltol=ltol,
-        attempt_supercell=attempt_supercell,
-    )
     reference_by_comp = defaultdict(list)
     for ref in reference_structures:
         reference_by_comp[str(sorted(ref.atomic_numbers))].append(ref)
-    return _match_against(structures, reference_by_comp, matcher, symmetric=symmetric)
+    return _match_against(structures, reference_by_comp, matcher)
 
 
 def compute_stability(
@@ -114,14 +101,18 @@ def compute_stability(
 
 
 def compute_sun(
-    stability: List[bool],
+    stability: Optional[List[bool]],
     uniqueness: List[bool],
     novelty: List[bool],
     structures: List[Optional["Structure"]],
     min_elements: int = 2,
 ) -> Dict[str, float]:
     n = len(structures)
-    if any(len(flags) != n for flags in (stability, uniqueness, novelty)):
+    if stability is None:
+        flags = [uniqueness, novelty]
+    else:
+        flags = [stability, uniqueness, novelty]
+    if any(len(flag_list) != n for flag_list in flags):
         raise ValueError("S.U.N. flags must align with every generated structure")
     non_trivial = []
     for s in structures:
@@ -130,32 +121,37 @@ def compute_sun(
         else:
             non_trivial.append(False)
 
-    sun = [
-        s and u and nv and nt
-        for s, u, nv, nt in zip(stability, uniqueness, novelty, non_trivial)
-    ]
+    def rate(values):
+        return round(100 * sum(values) / max(len(values), 1), 2)
 
-    def rate(flags):
-        return round(100 * sum(flags) / max(len(flags), 1), 2)
-
-    return {
+    results = {
         "total": n,
         "valid": sum(1 for s in structures if s is not None),
         "non_trivial": sum(non_trivial),
-        "stability_rate": rate(stability),
         "uniqueness_rate": rate(uniqueness),
         "novelty_rate": rate(novelty),
-        "sun_rate": rate(sun),
-        "sun_count": sum(sun),
     }
+    if stability is not None:
+        sun = [
+            s and u and nv and nt
+            for s, u, nv, nt in zip(stability, uniqueness, novelty, non_trivial)
+        ]
+        results.update(
+            {
+                "stability_rate": rate(stability),
+                "sun_rate": rate(sun),
+                "sun_count": sum(sun),
+            }
+        )
+    return results
 
 
 class SUNMetric(StreamingMetricBase):
     """S.U.N. (Stability / Uniqueness / Novelty) metric for crystal generation.
 
     Novelty references the training split (``reference_file_path``). Stability
-    requires ``energy_above_hull`` (hull reference not yet migrated); otherwise
-    ``stability_rate`` reports 0.0 with a warning. One-shot (``__call__``) and
+    requires ``energy_above_hull``; without it, stability and S.U.N. keys are
+    omitted instead of reporting misleading zeros. One-shot (``__call__``) and
     streaming evaluation share the same cross-batch uniqueness pool.
     """
 
@@ -163,8 +159,7 @@ class SUNMetric(StreamingMetricBase):
 
     def __init__(
         self,
-        gt_file_path: Optional[str] = None,
-        reference_file_path: Optional[str] = None,
+        reference_file_path: str,
         stol: float = 0.5,
         angle_tol: float = 10.0,
         ltol: float = 0.3,
@@ -172,7 +167,7 @@ class SUNMetric(StreamingMetricBase):
         attempt_supercell: bool = False,
         cache_dir: Optional[str] = None,
     ):
-        self.reference_file_path = reference_file_path or gt_file_path
+        self.reference_file_path = reference_file_path
         self.stol = stol
         self.angle_tol = angle_tol
         self.ltol = ltol
@@ -198,9 +193,7 @@ class SUNMetric(StreamingMetricBase):
         """Accumulate one step's generated structures from a dict ``result``."""
         if stage not in ("eval", "sample"):
             return
-        generated = (
-            result.get("result") or result.get("samples") or result.get("structures")
-        )
+        generated = result.get("result")
         if not generated:
             return
         self._ingest(generated, result.get("energy_above_hull"))
@@ -236,26 +229,6 @@ class SUNMetric(StreamingMetricBase):
         stability = compute_stability(energies, threshold=self.stability_threshold)
         if not self._structures:
             self._load_reference()
-        structures = _parse_structures(generated)
-        novelty = compute_novelty(
-            structures,
-            self._reference_structures,
-            stol=self.stol,
-            angle_tol=self.angle_tol,
-            ltol=self.ltol,
-            attempt_supercell=self.attempt_supercell,
-        )
-        uniqueness = self._match_unique(structures)
-        logger.info(f"Evaluating {n} generated structures")
-        self._structures.extend(structures)
-        self._unique.extend(uniqueness)
-        self._novelty.extend(novelty)
-        self._stability.extend(stability)
-        self._energy_above_hull.extend(energies)
-        self._stability_given |= energy_above_hull is not None
-
-    def _match_unique(self, structures: List[Optional["Structure"]]) -> List[bool]:
-        """Incremental uniqueness against the shared (cross-batch) pool."""
         from pymatgen.analysis.structure_matcher import StructureMatcher
 
         matcher = StructureMatcher(
@@ -264,18 +237,35 @@ class SUNMetric(StreamingMetricBase):
             ltol=self.ltol,
             attempt_supercell=self.attempt_supercell,
         )
+        structures = _parse_structures(generated)
+        novelty = compute_novelty(structures, self._reference_structures, matcher)
+        uniqueness = self._match_unique(structures, matcher)
+        logger.info(f"Evaluating {n} generated structures")
+        self._structures.extend(structures)
+        self._unique.extend(uniqueness)
+        self._novelty.extend(novelty)
+        self._stability.extend(stability)
+        self._energy_above_hull.extend(energies)
+        self._stability_given |= energy_above_hull is not None
+
+    def _match_unique(
+        self, structures: List[Optional["Structure"]], matcher
+    ) -> List[bool]:
+        """Incremental uniqueness against the shared (cross-batch) pool."""
         return _match_against(structures, self._unique_pool, matcher, dynamic=True)
 
     def _finalize_dict(self) -> Dict[str, float]:
         if not self._stability_given and not self._warned_no_eah:
             logger.warning(
-                "No energy_above_hull provided; "
-                "stability_rate will be 0.0 (prerelaxation + hull not migrated yet)."
+                "No energy_above_hull provided; stability and S.U.N. rates are omitted."
             )
             self._warned_no_eah = True
 
         results = compute_sun(
-            self._stability, self._unique, self._novelty, self._structures
+            self._stability if self._stability_given else None,
+            self._unique,
+            self._novelty,
+            self._structures,
         )
 
         if self._stability_given:
@@ -287,12 +277,17 @@ class SUNMetric(StreamingMetricBase):
             results["msun_rate"] = msun["sun_rate"]
             results["msun_count"] = msun["sun_count"]
 
-        logger.info(
-            f"S.U.N.: Stability={results['stability_rate']:.2f}%, "
-            f"Uniqueness={results['uniqueness_rate']:.2f}%, "
-            f"Novelty={results['novelty_rate']:.2f}%, "
-            f"S.U.N.={results['sun_rate']:.2f}%"
-        )
+            logger.info(
+                f"S.U.N.: Stability={results['stability_rate']:.2f}%, "
+                f"Uniqueness={results['uniqueness_rate']:.2f}%, "
+                f"Novelty={results['novelty_rate']:.2f}%, "
+                f"S.U.N.={results['sun_rate']:.2f}%"
+            )
+        else:
+            logger.info(
+                f"Generation rates: Uniqueness={results['uniqueness_rate']:.2f}%, "
+                f"Novelty={results['novelty_rate']:.2f}%"
+            )
         return results
 
     def _load_reference(self):
@@ -317,7 +312,7 @@ class SUNMetric(StreamingMetricBase):
         if cache_key == self._reference_cache_key:
             return
 
-        cache_dir = self.cache_dir or os.path.join(download.DATASETS_HOME, "miad")
+        cache_dir = self.cache_dir or os.path.join(download.DATASETS_HOME, "sun_metric")
         cache_path = os.path.join(cache_dir, f"novelty_reference_{cache_key}.pkl")
         try:
             with open(cache_path, "rb") as cached:

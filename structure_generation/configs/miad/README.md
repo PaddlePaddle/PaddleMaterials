@@ -36,8 +36,7 @@ Lattice matrices are unbounded, so DDPM sample clipping is disabled.
 `CosineDDPMScheduler` constructs the clipped cosine table and reuses the shared
 DDPM implementation through `trained_betas`. The three diffusion components use
 `lattice_noise_scheduler_cfg`, `coord_noise_scheduler_cfg` and
-`atom_noise_scheduler_cfg`. Legacy `lat_diffusion`, `frac_diffusion` and
-`type_diffusion` configurations remain supported.
+`atom_noise_scheduler_cfg`.
 
 #### 2) Fractional-coordinate diffusion on a torus (wrapped Normal / score matching)
 
@@ -67,12 +66,13 @@ at all candidate sites instead of an empty structure.
 
 During training, every crystal is padded to `model_cfg.mirage_num_atoms` atoms (configured as 25, matching the official MiAD `add_mirage_atoms_upto25`) by appending type-0 mirage atoms with random fractional coordinates. The coordinate loss masks out mirage atoms and rescales to keep the loss scale.
 
-Generation evaluation uses CHGNet/FIRE relaxation with fmax 0.05 eV/Angstrom
-and at most 1500 steps. Stability requires energy above the 2023-02-07 MP hull
-< 0; uniqueness and novelty compare unrelaxed structures, with novelty measured
-against all 27136 training structures. RMSD is the mean per-structure root mean
-square of same-index atomic displacements before and after relaxation, using
-the minimum image under the relaxed cell.
+The in-repo `SUNMetric` reports validity, uniqueness and novelty. Stability and
+S.U.N. require energies above hull from an external CHGNet/FIRE relaxation
+pipeline (fmax 0.05 eV/Angstrom, at most 1500 steps, 2023-02-07 MP hull) and are
+omitted when those energies are not provided. The Stable, S.U.N. and RMSD values
+below were obtained with that external pipeline. RMSD is the mean per-structure
+root mean square of same-index atomic displacements before and after relaxation,
+using the minimum image under the relaxed cell.
 
 ---
 
@@ -122,6 +122,9 @@ python structure_generation/train.py -c structure_generation/configs/miad/miad_m
 ```
 
 ### Sample
+
+MiAD is unconditional: sample by `by_dataloader` or `by_num_atoms`; the
+`by_chemical_formula` mode does not constrain the generated composition.
 
 ```bash
 python structure_generation/sample.py --model_name=miad_mp20 --mode=by_dataloader
