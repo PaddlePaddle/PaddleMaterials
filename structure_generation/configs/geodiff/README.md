@@ -121,6 +121,12 @@ python structure_generation/train.py -c structure_generation/configs/geodiff/geo
 # initialize from the released weights
 python structure_generation/train.py -c structure_generation/configs/geodiff/geodiff_qm9_default.yaml Trainer.pretrained_model_path=./geodiff_qm9_default/checkpoints/best.pdparams
 ```
+```bash
+# the same training on the CINN backend
+SOT_ENABLE_COMPILE_TIME_LIMIT=0 python structure_generation/train.py -c structure_generation/configs/geodiff/geodiff_qm9_default.yaml Execution.backend=cinn
+```
+
+`Execution.backend=cinn` runs the denoising network as a CINN-compiled program. Keep `SOT_ENABLE_COMPILE_TIME_LIMIT=0` set: without it, Paddle gives up compiling the function after its first trace and traces again for every new atom or edge count. The first call compiles for about 80 s and the first batch with a new atom count for up to about 90 s more; later batches reuse the compiled program (one RTX 4060 Ti shared with a desktop, PaddlePaddle 3.4.0, batches of 64 molecules). Validation and testing accept the same override.
 
 To continue a PaddleMaterials run, set `Trainer.resume_from_checkpoint` to the checkpoint prefix, for example `./output/geodiff_qm9_default/checkpoints/latest` without the file extension. Both optimizer groups and their learning-rate schedules are restored.
 
@@ -149,6 +155,17 @@ python structure_generation/sample.py --mode by_molecular_graph \
     --output_path ./output/geodiff_conformations \
     Sampler.sample_batch_iters=1
 ```
+```bash
+# the same sampling on the CINN backend
+SOT_ENABLE_COMPILE_TIME_LIMIT=0 python structure_generation/sample.py --mode by_molecular_graph \
+    --config_path structure_generation/configs/geodiff/geodiff_qm9_default.yaml \
+    --checkpoint_path ./geodiff_qm9_default/checkpoints/best.pdparams \
+    --input_path ./data/geodiff_qm9_data/test_data_1k.npz \
+    --output_path ./output/geodiff_conformations_cinn \
+    Sampler.sample_batch_iters=1 Execution.backend=cinn
+```
+
+The first molecule takes about 60 s and the first molecule with a new atom count about 30 s more; later molecules reuse the compiled program (same machine and PaddlePaddle version as above).
 
 Each molecule is sampled once from the graph of its first reference record, with `Sampler.model_sample_params.num_confs` conformers: an integer, or `2x` for two per reference record (the default). The example samples the first molecule only; remove `Sampler.sample_batch_iters=1` to process the entire input file. The presets use a 5,000-step Langevin sampling schedule.
 

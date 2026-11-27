@@ -170,13 +170,33 @@ class SchNetEncoder(nn.Layer):
         self.num_filters = num_filters
         self.num_interactions = num_interactions
         self.cutoff = cutoff
-        self.embedding = paddle.nn.Embedding(100, hidden_channels, max_norm=10.0)
+        self.max_norm = 10.0
+        self.embedding = paddle.nn.Embedding(100, hidden_channels)
         self.interactions = nn.LayerList()
         for _ in range(num_interactions):
             block = InteractionBlock(
                 hidden_channels, edge_channels, num_filters, cutoff, smooth
             )
             self.interactions.append(block)
+
+    def clip_embedding_norms(self, index):
+        """Scale the embedding rows looked up by ``index`` to ``max_norm`` in place.
+
+        This is the ``max_norm`` handling of ``paddle.nn.Embedding``. It runs
+        before the lookup because the in-place weight update cannot be part of
+        the compiled boundary; the lookup itself only gathers rows.
+        """
+        with paddle.no_grad():
+            rows = paddle.unique(index)
+            selected = paddle.index_select(self.embedding.weight, rows)
+            norm = paddle.norm(selected, p=2.0, axis=1, keepdim=True)
+            scale = paddle.where(
+                norm > self.max_norm,
+                self.max_norm / (norm + 1e-7),
+                paddle.ones_like(norm),
+            )
+            updated = selected * paddle.expand_as(scale, selected)
+            paddle.scatter_(self.embedding.weight, rows, updated, overwrite=True)
 
     def forward(self, z, edge_index, edge_length, edge_attr, embed_node=True):
         if embed_node:
@@ -258,8 +278,7 @@ class GINEncoder(paddle.nn.Layer):
             hidden = conv(conv_input, edge_index, edge_attr)
             if conv_idx < len(self.convs) - 1 and self.activation is not None:
                 hidden = self.activation(hidden)
-            assert hidden.shape == conv_input.shape
-            if self.short_cut and hidden.shape == conv_input.shape:
+            if self.short_cut:
                 hidden = hidden + conv_input
             hiddens.append(hidden)
             conv_input = hidden

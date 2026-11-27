@@ -48,7 +48,15 @@ def _dense_adjacency(edge_index, num_nodes, edge_attr=None):
 
 
 @paddle.no_grad()
-def _radius(x, y, r, batch_x, batch_y, max_num_neighbors, ignore_same_index):
+def _radius(
+    x, y, r, batch_x, batch_y, max_num_neighbors, ignore_same_index, source_window=None
+):
+    if source_window is not None and (
+        not isinstance(source_window, int)
+        or isinstance(source_window, bool)
+        or source_window < 1
+    ):
+        raise ValueError("source_window must be a positive int or None.")
     if x.numel() == 0 or y.numel() == 0 or max_num_neighbors == 0:
         return paddle.empty([2, 0], dtype="int64", device=x.place)
     if x.ndim == 1:
@@ -63,12 +71,13 @@ def _radius(x, y, r, batch_x, batch_y, max_num_neighbors, ignore_same_index):
         # Each query compares only against the sorted source interval for its batch.
         start = paddle.searchsorted(batch_x, batch_y).unsqueeze(1)
         stop = paddle.searchsorted(batch_x, batch_y, right=True).unsqueeze(1)
-        width = int((stop - start).max())
-        if width == 0:
+        if source_window is None:
+            source_window = int((stop - start).max())
+        if source_window == 0:
             return paddle.empty([2, 0], dtype="int64", device=x.place)
-        sources = start + paddle.arange(width, dtype="int64", device=x.place)
+        sources = start + paddle.arange(source_window, dtype="int64", device=x.place)
         points = paddle.gather(x, sources.clip(max=x.shape[0] - 1).flatten()).reshape(
-            [y.shape[0], width, x.shape[1]]
+            [y.shape[0], source_window, x.shape[1]]
         )
 
     valid = (points - y.unsqueeze(1)).square().sum(axis=-1) < r * r
@@ -85,17 +94,29 @@ def _radius(x, y, r, batch_x, batch_y, max_num_neighbors, ignore_same_index):
     return paddle.stack((query, source), axis=0)
 
 
-def radius(x, y, r, batch_x=None, batch_y=None, max_num_neighbors=32):
-    """Return (query, source) pairs in first-matching source order."""
-    return _radius(x, y, r, batch_x, batch_y, max_num_neighbors, False)
+def radius(
+    x, y, r, batch_x=None, batch_y=None, max_num_neighbors=32, source_window=None
+):
+    """Return (query, source) pairs in first-matching source order.
+
+    ``source_window`` bounds the number of source points a query compares
+    against; it defaults to the widest interval of ``batch_x``.
+    """
+    return _radius(x, y, r, batch_x, batch_y, max_num_neighbors, False, source_window)
 
 
 def radius_graph(
-    x, r, batch=None, loop=False, max_num_neighbors=32, flow="source_to_target"
+    x,
+    r,
+    batch=None,
+    loop=False,
+    max_num_neighbors=32,
+    flow="source_to_target",
+    source_window=None,
 ):
     """Construct capped radius edges, optionally excluding self pairs."""
     assert flow in ("source_to_target", "target_to_source")
-    edges = _radius(x, x, r, batch, batch, max_num_neighbors, not loop)
+    edges = _radius(x, x, r, batch, batch, max_num_neighbors, not loop, source_window)
     if flow == "source_to_target":
         return paddle.stack((edges[1], edges[0]), axis=0)
     return edges
@@ -135,11 +156,14 @@ def _extend_to_radius_graph(
     batch,
     unspecified_type_number=0,
     is_sidechain=None,
+    source_window=None,
 ):
     assert edge_type.ndim == 1
     N = pos.shape[0]
     if is_sidechain is None:
-        rgraph_edge_index = radius_graph(pos, r=cutoff, batch=batch)
+        rgraph_edge_index = radius_graph(
+            pos, r=cutoff, batch=batch, source_window=source_window
+        )
     else:
         is_sidechain = is_sidechain.astype(paddle.bool)
         dummy_index = paddle.arange(N, dtype=paddle.int64, device=pos.place)
@@ -147,7 +171,12 @@ def _extend_to_radius_graph(
         sidechain_index = dummy_index[is_sidechain]
         sidechain_batch = batch[is_sidechain]
         assign_index = radius(
-            x=pos, y=sidechain_pos, r=cutoff, batch_x=batch, batch_y=sidechain_batch
+            x=pos,
+            y=sidechain_pos,
+            r=cutoff,
+            batch_x=batch,
+            batch_y=sidechain_batch,
+            source_window=source_window,
         )
         r_edge_index_x = assign_index[1]
         r_edge_index_y = assign_index[0]
@@ -184,6 +213,7 @@ def extend_graph_order_radius(
     extend_order=True,
     extend_radius=True,
     is_sidechain=None,
+    source_window=None,
 ):
     if extend_order:
         edge_index, edge_type, _ = higher_order_edges(
@@ -197,6 +227,7 @@ def extend_graph_order_radius(
             cutoff=cutoff,
             batch=batch,
             is_sidechain=is_sidechain,
+            source_window=source_window,
         )
     return edge_index, edge_type
 

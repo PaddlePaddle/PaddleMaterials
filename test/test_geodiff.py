@@ -77,6 +77,28 @@ def test_denoise_preserves_bonds_and_strict_same_graph_radius_edges():
     assert list(local_score.shape) == [2, 1]
 
 
+def test_denoise_step_source_window_matches_the_data_dependent_window():
+    arguments = dict(
+        atom_type=paddle.to_tensor([6, 1, 8, 1, 6], dtype="int64"),
+        pos=paddle.to_tensor(
+            [[0.0, 0, 0], [1.0, 0, 0], [2.5, 0, 0], [-0.25, 0, 0], [0.0, 0, 0]],
+            dtype="float32",
+        ),
+        bond_index=paddle.to_tensor([[1, 0], [0, 1]], dtype="int64"),
+        bond_type=paddle.to_tensor([1, 1], dtype="int64"),
+        batch=paddle.to_tensor([0, 0, 0, 0, 1], dtype="int64"),
+        time_step=paddle.to_tensor([0, 0], dtype="int64"),
+        return_edges=True,
+    )
+    model = _model()
+    with paddle.no_grad():
+        expected = model.denoise_step(**arguments)
+        actual = model.denoise_step(**arguments, source_window=4)
+
+    for left, right in zip(actual, expected):
+        assert left.tolist() == right.tolist()
+
+
 def test_denoise_caps_radius_neighbors_in_source_order_not_distance_order():
     with paddle.no_grad():
         _, _, edges, types, _, local = _model().denoise_step(

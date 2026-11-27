@@ -178,6 +178,7 @@ def test_models_accepting_a_backend_implement_the_protocol():
         ("M3GNet", "_runtime_forward"),
         ("SphereNet", "_runtime_forward"),
         ("DiffCSP", "_runtime_decode"),
+        ("GeoDiff", "_runtime_denoise"),
         ("MatterGen", "_runtime_denoise"),
         ("MatterGenWithCondition", "_runtime_denoise"),
     ],

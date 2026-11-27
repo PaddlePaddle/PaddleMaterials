@@ -20,6 +20,8 @@ from paddle import nn
 
 from ppmat.datasets.geometric_data_type.batch import Batch
 from ppmat.datasets.geometric_data_type.data import Data
+from ppmat.models.common.runtime import RuntimeMixin
+from ppmat.models.common.runtime import runtime_boundary
 from ppmat.schedulers import build_scheduler
 from ppmat.utils.scatter import scatter_mean
 
@@ -53,7 +55,7 @@ def _clip_norm(vec, limit):
     return vec * scale
 
 
-class GeoDiff(nn.Layer):
+class GeoDiff(RuntimeMixin, nn.Layer):
     """Dual-encoder coordinate diffusion for GEOM molecular conformers."""
 
     def __init__(
@@ -72,8 +74,11 @@ class GeoDiff(nn.Layer):
         edge_order=3,
         edge_encoder="mlp",
         smooth_conv=False,
+        execution_backend="eager",
+        runtime_options=None,
     ):
         super().__init__()
+        self._init_runtime(execution_backend, runtime_options)
         if (type, network, edge_encoder) != ("diffusion", "dualenc", "mlp"):
             raise ValueError(
                 "GeoDiff supports the dual-encoder diffusion model with MLP edges"
@@ -142,10 +147,13 @@ class GeoDiff(nn.Layer):
         extend_order=True,
         extend_radius=True,
         is_sidechain=None,
+        source_window=None,
     ):
         """Predict global and local edge scores, optionally with their graph.
 
         The QM9 network does not condition its features on the timestep.
+        ``source_window`` bounds the number of atoms a radius query compares
+        against and must cover the largest molecule in the batch.
         """
         if edge_index is None or edge_type is None or edge_length is None:
             edge_index, edge_type = extend_graph_order_radius(
@@ -159,8 +167,31 @@ class GeoDiff(nn.Layer):
                 extend_order=extend_order,
                 extend_radius=extend_radius,
                 is_sidechain=is_sidechain,
+                source_window=source_window,
             )
             edge_length = get_distance(pos, edge_index).unsqueeze(-1)
+        self.encoder_global.clip_embedding_norms(atom_type)
+        score_global, score_local = self._runtime_denoise(
+            atom_type, edge_index, edge_type, edge_length
+        )
+        if return_edges:
+            return (
+                score_global,
+                score_local,
+                edge_index,
+                edge_type,
+                edge_length,
+                edge_type > 0,
+            )
+        return score_global, score_local
+
+    @runtime_boundary("denoise_step")
+    def _runtime_denoise(self, atom_type, edge_index, edge_type, edge_length):
+        """Predict the global and local edge scores of a prepared graph.
+
+        The caller clips the atom embedding rows beforehand; the in-place
+        weight update cannot be part of the compiled boundary.
+        """
         local_mask = edge_type > 0
         edge_global = self.edge_encoder_global(
             edge_length=edge_length, edge_type=edge_type
@@ -179,15 +210,6 @@ class GeoDiff(nn.Layer):
         score_local = self.grad_local_dist_mlp(
             _pair_features(nodes_local, local_index, edge_local)
         )
-        if return_edges:
-            return (
-                score_global,
-                score_local,
-                edge_index,
-                edge_type,
-                edge_length,
-                local_mask,
-            )
         return score_global, score_local
 
     def forward(self, batch):
@@ -377,6 +399,7 @@ class GeoDiff(nn.Layer):
                 clip=1000,
                 sampling_type="ld",
                 eta=1.0,
+                source_window=num_atoms,
             )
             mol_stop = mol_start + mol_size
             pred.append(
@@ -412,11 +435,15 @@ class GeoDiff(nn.Layer):
         sampling_type="ddpm_noisy",
         eta=1.0,
         return_trajectory=False,
+        source_window=None,
     ):
         """Return the denoised coordinates and optional CPU trajectory."""
         if sampling_type not in ("generalized", "ddpm_noisy", "ld"):
             raise ValueError(f"Unknown GeoDiff sampling type: {sampling_type}")
         sigmas = (1.0 - self.alphas).sqrt() / self.alphas.sqrt()
+        # Compare the whole sigma table once; reading one sigma per step would
+        # synchronize with the device at every step.
+        use_global = (sigmas < global_start_sigma).numpy()
         if sampling_type != "ld":
             # Include alpha at t=-1, retaining the original reverse table formula.
             beta = paddle.concat([paddle.zeros_like(self.betas[:1]), self.betas])
@@ -446,13 +473,14 @@ class GeoDiff(nn.Layer):
                 return_edges=True,
                 extend_order=extend_order,
                 extend_radius=extend_radius,
+                source_window=source_window,
             )
             node_eq_local = eq_transform(
                 score_local, pos, edge_index[:, local_mask], edge_length[local_mask]
             )
             if clip_local is not None:
                 node_eq_local = _clip_norm(node_eq_local, clip_local)
-            if sigmas[i] < global_start_sigma:
+            if use_global[i]:
                 score_global = score_global * (
                     1 - local_mask.unsqueeze(-1).astype(score_global.dtype)
                 )
@@ -508,7 +536,7 @@ class GeoDiff(nn.Layer):
                     pos = mean + mask * paddle.exp(0.5 * beta_t.log()) * noise
             if paddle.isnan(pos).any():
                 raise FloatingPointError("NaN detected in GeoDiff reverse diffusion")
-            pos = pos - scatter_mean(pos, batch, dim=0)[batch]
+            pos = pos - scatter_mean(pos, batch, dim=0, dim_size=num_graphs)[batch]
             if clip_pos is not None:
                 pos = paddle.clamp(pos, min=-clip_pos, max=clip_pos)
             if return_trajectory:
