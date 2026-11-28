@@ -1,0 +1,15 @@
+{
+  "environment": {
+    "dtype": "float32",
+    "numpy": "1.26.4",
+    "python": "3.10.21",
+    "seed": 20260910,
+    "torch": "2.5.1+cpu",
+    "torch_scatter": "2.1.2+pt25cpu"
+  },
+  "reference": {
+    "commit": "e6fc475361d046865f12cae1aee11c4f56c48d87",
+    "repository": "learningmatter-mit/liflow",
+    "url": "https://github.com/learningmatter-mit/liflow/tree/e6fc475361d046865f12cae1aee11c4f56c48d87"
+  }
+}

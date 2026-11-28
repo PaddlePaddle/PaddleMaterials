@@ -38,6 +38,8 @@ from ppmat.datasets.density_dataset import OMol25MC5kTrimmedDensityDataset
 from ppmat.datasets.density_dataset import QM9DensityDataset
 from ppmat.datasets.high_level_water_dataset import HighLevelWaterDataset
 from ppmat.datasets.jarvis_dataset import JarvisDataset
+from ppmat.datasets.liflow_dataset import LiFlowDataset
+from ppmat.datasets.liflow_noised_frame_dataset import NoisedFrameDataset
 from ppmat.datasets.matbench_dataset import MatbenchDataset
 from ppmat.datasets.md17_dataset import MD17Dataset  # noqa
 from ppmat.datasets.mp20_dataset import AlexMP20MatterGenDataset
@@ -79,6 +81,8 @@ __all__ = [
     "SFINDataset",
     "OMol25Dataset",
     "MD17Dataset",
+    "LiFlowDataset",
+    "NoisedFrameDataset",
 ]
 
 INFO_CLASS_REGISTRY: Dict[str, type] = {
